@@ -1,0 +1,935 @@
+import asyncio
+import datetime
+import json
+import os
+import re
+import discord
+from discord.ext import commands
+
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+intents.moderation = True
+
+bot = commands.Bot(command_prefix=".", intents=intents)
+
+DURACION_REGEX = re.compile(r"^(\d+)([hmsHMS])$")
+
+LINKS_BANEADOS_PATH = "linkban_canal.json"
+linkban_canal = set()
+
+WARNS_PATH = "warns.json"
+warns_db = {}
+
+LOGS_CHANNELS_PATH = "logs_channels.json"
+logs_channels = set()
+
+
+def parsear_duracion(texto: str):
+    """
+    Convierte una cadena tipo '5h', '30m', '10s' o combinaciones a segundos.
+    Acepta combinaciones como '1h30m', '2h15m30s'.
+    Devuelve (segundos_totales, None) o (None, mensaje_error).
+    """
+    if not texto:
+        return None, "Debes indicar una duración (ej: 5h, 30m, 10s)."
+
+    match = re.findall(r"(\d+)([hmsHMS])", texto)
+    if not match or "".join(d + u for d, u in match) != texto.lower():
+        return None, f"Formato de duración inválido: `{texto}`. Usa combinaciones de h/m/s (ej: `5h`, `1h30m`, `10s`)."
+
+    total = 0
+    for cantidad, unidad in match:
+        cantidad = int(cantidad)
+        unidad = unidad.lower()
+        if unidad == "h":
+            total += cantidad * 3600
+        elif unidad == "m":
+            total += cantidad * 60
+        elif unidad == "s":
+            total += cantidad
+    return total, None
+
+
+async def resolver_miembro(guild: discord.Guild, user_id: int):
+    """Intenta obtener el miembro del servidor; si no está, devuelve el usuario."""
+    miembro = guild.get_member(user_id)
+    if miembro is not None:
+        return miembro, False
+    try:
+        usuario = await bot.fetch_user(user_id)
+    except discord.NotFound:
+        return None, None
+    return usuario, True
+
+
+def cargar_linkban():
+    global linkban_canal
+    if os.path.exists(LINKS_BANEADOS_PATH):
+        try:
+            with open(LINKS_BANEADOS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            linkban_canal = {int(x) for x in data.get("canales", [])}
+        except (json.JSONDecodeError, OSError):
+            linkban_canal = set()
+    else:
+        linkban_canal = set()
+    print(f"Canales con links baneados cargados: {len(linkban_canal)}")
+
+
+def guardar_linkban():
+    try:
+        with open(LINKS_BANEADOS_PATH, "w", encoding="utf-8") as f:
+            json.dump({"canales": list(linkban_canal)}, f, indent=2)
+    except OSError as e:
+        print(f"Error guardando linkban_canal.json: {e}")
+
+
+def cargar_warns():
+    global warns_db
+    if os.path.exists(WARNS_PATH):
+        try:
+            with open(WARNS_PATH, "r", encoding="utf-8") as f:
+                warns_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            warns_db = {}
+    else:
+        warns_db = {}
+    print(f"Warns cargados: {sum(len(v) for v in warns_db.values())} sobre {len(warns_db)} usuarios.")
+
+
+def guardar_warns():
+    try:
+        with open(WARNS_PATH, "w", encoding="utf-8") as f:
+            json.dump(warns_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando warns.json: {e}")
+
+
+def cargar_logs_channels():
+    global logs_channels
+    if os.path.exists(LOGS_CHANNELS_PATH):
+        try:
+            with open(LOGS_CHANNELS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            logs_channels = {int(x) for x in data.get("canales", [])}
+        except (json.JSONDecodeError, OSError):
+            logs_channels = set()
+    else:
+        logs_channels = set()
+    print(f"Canales de logs cargados: {len(logs_channels)}")
+
+
+def guardar_logs_channels():
+    try:
+        with open(LOGS_CHANNELS_PATH, "w", encoding="utf-8") as f:
+            json.dump({"canales": list(logs_channels)}, f, indent=2)
+    except OSError as e:
+        print(f"Error guardando logs_channels.json: {e}")
+
+
+async def enviar_logs(guild: discord.Guild, embed: discord.Embed):
+    """Envía un embed de logs a todos los canales configurados en el servidor."""
+    for canal_id in list(logs_channels):
+        canal = guild.get_channel(canal_id)
+        if canal is None:
+            continue
+        try:
+            await canal.send(embed=embed)
+        except discord.Forbidden:
+            print(f"Sin permisos para enviar logs al canal {canal_id}")
+        except discord.HTTPException as e:
+            print(f"Error enviando logs a {canal_id}: {e}")
+
+
+URL_REGEX = re.compile(
+    r"(?:https?://|www\.)[^\s<>\"']+",
+    re.IGNORECASE,
+)
+
+
+# Caché ligero de mensajes recientes para reconstruir el autor al borrar.
+_cache_mensajes = {}
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot or not message.guild:
+        await bot.process_commands(message)
+        return
+
+    # Cachear para on_message_delete (sólo últimos 1000 para limitar RAM).
+    if message.content or message.attachments:
+        _cache_mensajes[message.id] = {
+            "content": message.content or "",
+            "author_id": message.author.id,
+            "author_name": str(message.author),
+            "author_avatar": message.author.display_avatar.url,
+            "channel_id": message.channel.id,
+            "guild_id": message.guild.id,
+            "attachments": [a.url for a in message.attachments[:3]],
+        }
+        if len(_cache_mensajes) > 1000:
+            # Eliminar las 200 entradas más viejas.
+            _cache_mensajes.pop(next(iter(_cache_mensajes)), None)
+
+    if message.channel.id in linkban_canal:
+        if URL_REGEX.search(message.content or "") or message.attachments:
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
+            try:
+                await message.channel.send(
+                    f"🚫 {message.author.mention}, no se permiten enlaces ni archivos en este canal.",
+                    delete_after=5,
+                )
+            except discord.HTTPException:
+                pass
+            return
+    await bot.process_commands(message)
+
+
+@bot.event
+async def on_message_delete(message: discord.Message):
+    if message.author.bot or not message.guild:
+        return
+    cached = _cache_mensajes.pop(message.id, None)
+
+    if cached is None:
+        # No tenemos info guardada: usamos los datos que llegan en el payload.
+        autor = message.author
+        contenido = message.content or ""
+        adjuntos = [a.url for a in message.attachments[:3]]
+        autor_id = autor.id if autor else None
+        autor_name = str(autor) if autor else "Desconocido"
+        autor_avatar = autor.display_avatar.url if autor else None
+    else:
+        contenido = cached["content"]
+        autor_id = cached["author_id"]
+        autor_name = cached["author_name"]
+        autor_avatar = cached["author_avatar"]
+        adjuntos = cached["attachments"]
+
+    # Determinar quién borró el mensaje vía audit log (el más reciente en MESSAGE_DELETE).
+    autor_borrado = None
+    try:
+        async for entry in message.guild.audit_logs(
+            action=discord.AuditLogAction.message_delete, limit=5
+        ):
+            if entry.target and entry.target.id == autor_id and entry.channel and entry.channel.id == message.channel.id:
+                # Decisión: apenas pasa unos segundos desde el borrado.
+                if (datetime.datetime.now(datetime.timezone.utc) - entry.created_at).total_seconds() < 15:
+                    autor_borrado = entry.user
+                    break
+    except discord.Forbidden:
+        pass
+    except Exception:
+        pass
+
+    contenido_mostrar = contenido[:1024] if contenido else "*(sin texto)*"
+    embed = discord.Embed(
+        title="🗑️ Mensaje borrado",
+        color=discord.Color.dark_red(),
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    embed.add_field(
+        name="Canal",
+        value=f"{message.channel.mention} (`{message.channel.id}`)",
+        inline=False,
+    )
+    embed.add_field(
+        name="Autor del mensaje",
+        value=f"{autor_name} (`{autor_id}`)" if autor_id else "Desconocido",
+        inline=True,
+    )
+    embed.add_field(
+        name="Borrado por",
+        value=f"{autor_borrado.mention} (`{autor_borrado.id}`)" if autor_borrado else "Desconocido (¿ Discord o autor ?)",
+        inline=True,
+    )
+    embed.add_field(name="Contenido", value=contenido_mostrar, inline=False)
+    if adjuntos:
+        embed.add_field(name="Adjuntos", value="\n".join(adjuntos)[:1024], inline=False)
+    if autor_avatar:
+        embed.set_thumbnail(url=autor_avatar)
+    embed.set_footer(text=f"ID del mensaje: {message.id}")
+
+    await enviar_logs(message.guild, embed)
+
+
+@bot.event
+async def on_ready():
+    cargar_linkban()
+    cargar_warns()
+    cargar_logs_channels()
+    print(f"Conectado como {bot.user} (ID: {bot.user.id})")
+    print(f"Servidores: {len(bot.guilds)}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Comandos slash sincronizados: {len(synced)}")
+    except Exception as e:
+        print(f"Error al sincronizar slash commands: {e}")
+
+
+@bot.command(name="ban")
+@commands.has_permissions(ban_members=True)
+@commands.bot_has_permissions(ban_members=True)
+async def ban(ctx, user_id: int, *, motivo: str = "No especificado"):
+    """Banea a un usuario por su ID. Uso: .ban <id> [motivo]"""
+    try:
+        usuario = await bot.fetch_user(user_id)
+    except discord.NotFound:
+        return await ctx.send(f"❌ No se encontró ningún usuario con ID `{user_id}`.")
+
+    miembro = ctx.guild.get_member(user_id)
+    if miembro is not None:
+        if miembro.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+            return await ctx.send("❌ No puedes banear a alguien con un rol igual o superior al tuyo.")
+        if ctx.guild.me.top_role <= miembro.top_role:
+            return await ctx.send("❌ Mi rol es inferior al de ese usuario, no puedo banearlo.")
+
+    try:
+        await ctx.guild.ban(usuario, reason=f"{ctx.author} (ID {ctx.author.id}): {motivo}", delete_message_days=1)
+    except discord.Forbidden:
+        return await ctx.send("❌ No tengo permisos para banear a ese usuario.")
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Error al banear: {e}")
+
+    embed = discord.Embed(
+        title="🔨 Usuario baneado",
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Usuario", value=f"{usuario} (`{usuario.id}`)", inline=False)
+    embed.add_field(name="Moderador", value=f"{ctx.author.mention}", inline=True)
+    embed.add_field(name="Motivo", value=motivo, inline=True)
+    embed.set_thumbnail(url=usuario.display_avatar.url)
+    await ctx.send(embed=embed)
+
+
+@ban.error
+async def ban_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ No tienes permiso para banear miembros.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.ban <id_usuario> [motivo]`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ La ID debe ser un número entero.")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me faltan permisos (Ban members) para ejecutar este comando.")
+
+
+@bot.command(name="kick")
+@commands.has_permissions(kick_members=True)
+@commands.bot_has_permissions(kick_members=True)
+async def kick(ctx, user_id: int, *, motivo: str = "No especificado"):
+    """Expulsa a un miembro por su ID. Uso: .kick <id> [motivo]"""
+    try:
+        usuario = await bot.fetch_user(user_id)
+    except discord.NotFound:
+        return await ctx.send(f"❌ No se encontró ningún usuario con ID `{user_id}`.")
+
+    miembro = ctx.guild.get_member(user_id)
+    if miembro is None:
+        return await ctx.send("❌ Ese usuario no está en este servidor, no puedo expulsarlo.")
+
+    if miembro.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+        return await ctx.send("❌ No puedes expulsar a alguien con un rol igual o superior al tuyo.")
+    if ctx.guild.me.top_role <= miembro.top_role:
+        return await ctx.send("❌ Mi rol es inferior al de ese usuario, no puedo expulsarlo.")
+
+    try:
+        await miembro.kick(reason=f"{ctx.author} (ID {ctx.author.id}): {motivo}")
+    except discord.Forbidden:
+        return await ctx.send("❌ No tengo permisos para expulsar a ese usuario.")
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Error al expulsar: {e}")
+
+    embed = discord.Embed(
+        title="👢 Usuario expulsado",
+        color=discord.Color.orange(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Usuario", value=f"{miembro} (`{miembro.id}`)", inline=False)
+    embed.add_field(name="Moderador", value=f"{ctx.author.mention}", inline=True)
+    embed.add_field(name="Motivo", value=motivo, inline=True)
+    embed.set_thumbnail(url=usuario.display_avatar.url)
+    await ctx.send(embed=embed)
+
+
+@kick.error
+async def kick_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ No tienes permiso para expulsar miembros.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.kick <id_usuario> [motivo]`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ La ID debe ser un número entero.")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me faltan permisos (Kick members) para ejecutar este comando.")
+
+
+@bot.command(name="mute")
+@commands.has_permissions(moderate_members=True)
+@commands.bot_has_permissions(moderate_members=True)
+async def mute(ctx, user_id: int, duracion: str, *, motivo: str = "No especificado"):
+    """
+    Silencia (timeout) a un miembro por su ID.
+    Uso: .mute <id> <duración> [motivo]
+    La duración usa h/m/s. Ejemplos: 5h, 30m, 10s, 1h30m, 2h15m30s.
+    """
+    segundos, err = parsear_duracion(duracion)
+    if err:
+        return await ctx.send(f"❌ {err}")
+
+    miembro = ctx.guild.get_member(user_id)
+    if miembro is None:
+        return await ctx.send(f"❌ El usuario con ID `{user_id}` no está en este servidor.")
+
+    if miembro.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
+        return await ctx.send("❌ No puedes silenciar a alguien con un rol igual o superior al tuyo.")
+    if ctx.guild.me.top_role <= miembro.top_role:
+        return await ctx.send("❌ Mi rol es inferior al de ese usuario, no puedo silenciarlo.")
+    if ctx.guild.owner_id == miembro.id:
+        return await ctx.send("❌ No puedo silenciar al dueño del servidor.")
+
+    try:
+        hasta = discord.utils.utcnow() + datetime.timedelta(seconds=segundos)
+        await miembro.timeout(hasta, reason=f"{ctx.author} (ID {ctx.author.id}): {motivo}")
+    except discord.Forbidden:
+        return await ctx.send("❌ No tengo permisos para silenciar a ese usuario.")
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Error al silenciar: {e}")
+
+    # Tarea en segundo plano para quitar el timeout cuando termine.
+    bot.loop.create_task(_quitar_timeout_automatico(ctx.guild.id, user_id, segundos, ctx.author))
+
+    humanas = []
+    h = segundos // 3600
+    m = (segundos % 3600) // 60
+    s = segundos % 60
+    if h: humanas.append(f"{h}h")
+    if m: humanas.append(f"{m}m")
+    if s: humanas.append(f"{s}s")
+    duracion_str = " ".join(humanas) or "0s"
+
+    embed = discord.Embed(
+        title="🔇 Usuario silenciado",
+        color=discord.Color.dark_grey(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Usuario", value=f"{miembro.mention} (`{miembro.id}`)", inline=False)
+    embed.add_field(name="Moderador", value=f"{ctx.author.mention}", inline=True)
+    embed.add_field(name="Duración", value=duracion_str, inline=True)
+    embed.add_field(name="Motivo", value=motivo, inline=False)
+    embed.set_thumbnail(url=miembro.display_avatar.url)
+    embed.set_footer(text=f"Se quitará automáticamente a las {discord.utils.format_dt(hasta, 'T')}")
+    await ctx.send(embed=embed)
+
+
+async def _quitar_timeout_automatico(guild_id, user_id, segundos, moderador):
+    await asyncio.sleep(segundos)
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        return
+    miembro = guild.get_member(user_id)
+    if miembro is None:
+        return
+    if miembro.is_timed_out():
+        try:
+            await miembro.timeout(None, reason="Timeout automático finalizado.")
+            print(f"Timeout automático finalizado para {miembro} ({miembro.id}).")
+        except discord.HTTPException:
+            pass
+
+
+@mute.error
+async def mute_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ No tienes permiso para silenciar miembros (Timeout members).")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.mute <id_usuario> <duración> [motivo]`\nEj: `.mute 123456789 5h Spam`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ La ID debe ser un número entero.")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me faltan permisos (Timeout members) para ejecutar este comando.")
+
+
+@bot.command(name="unmute")
+@commands.has_permissions(moderate_members=True)
+@commands.bot_has_permissions(moderate_members=True)
+async def unmute(ctx, user_id: int, *, motivo: str = "No especificado"):
+    """Quita el timeout a un miembro. Uso: .unmute <id> [motivo]"""
+    miembro = ctx.guild.get_member(user_id)
+    if miembro is None:
+        return await ctx.send(f"❌ El usuario con ID `{user_id}` no está en este servidor.")
+    if not miembro.is_timed_out():
+        return await ctx.send("ℹ️ Ese usuario no está silenciado.")
+    try:
+        await miembro.timeout(None, reason=f"{ctx.author} (ID {ctx.author.id}): {motivo}")
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Error al quitar el silencio: {e}")
+    await ctx.send(f"✅ {miembro.mention} ya puede hablar de nuevo.")
+
+
+@bot.command(name="unban")
+@commands.has_permissions(ban_members=True)
+@commands.bot_has_permissions(ban_members=True)
+async def unban(ctx, user_id: int, *, motivo: str = "No especificado"):
+    """Levanta el ban de un usuario por ID. Uso: .unban <id> [motivo]"""
+    try:
+        usuario = await bot.fetch_user(user_id)
+    except discord.NotFound:
+        return await ctx.send(f"❌ No se encontró ningún usuario con ID `{user_id}`.")
+    try:
+        await ctx.guild.unban(usuario, reason=f"{ctx.author} (ID {ctx.author.id}): {motivo}")
+    except discord.NotFound:
+        return await ctx.send("ℹ️ Ese usuario no estaba baneado.")
+    except discord.Forbidden:
+        return await ctx.send("❌ No tengo permisos para desbanear.")
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Error al desbanear: {e}")
+    await ctx.send(f"✅ {usuario} (`{usuario.id}`) ha sido desbaneado.")
+
+
+@bot.command(name="warn")
+@commands.has_permissions(moderate_members=True)
+async def warn(ctx, user_id: int, *, motivo: str):
+    """Advierte a un usuario. Uso: .warn <id> <motivo> (motivo obligatorio)"""
+    if not motivo or motivo.strip() == "":
+        return await ctx.send("❌ Debes indicar un motivo. Uso: `.warn <id> <motivo>`")
+
+    try:
+        usuario = await bot.fetch_user(user_id)
+    except discord.NotFound:
+        return await ctx.send(f"❌ No se encontró ningún usuario con ID `{user_id}`.")
+
+    clave = str(user_id)
+    lista = warns_db.setdefault(clave, [])
+
+    numero = len(lista) + 1
+    entrada = {
+        "numero": numero,
+        "motivo": motivo.strip(),
+        "moderador_id": ctx.author.id,
+        "moderador": str(ctx.author),
+        "fecha": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    lista.append(entrada)
+    guardar_warns()
+
+    embed = discord.Embed(
+        title="⚠️ Advertencia aplicada",
+        color=discord.Color.gold(),
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    embed.add_field(name="Usuario", value=f"{usuario} (`{usuario.id}`)", inline=False)
+    embed.add_field(name="Moderador", value=ctx.author.mention, inline=True)
+    embed.add_field(name="Número de warn", value=f"**#{numero}**", inline=True)
+    embed.add_field(name="Motivo", value=motivo, inline=False)
+    embed.set_thumbnail(url=usuario.display_avatar.url)
+    embed.set_footer(text=f"Total de warns: {len(lista)}")
+    await ctx.send(embed=embed)
+
+
+@warn.error
+async def warn_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Timeout Members para advertir.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        if "motivo" in str(error):
+            await ctx.send("❌ Debes indicar un motivo. Uso: `.warn <id> <motivo>`")
+        else:
+            await ctx.send("❌ Uso correcto: `.warn <id_usuario> <motivo>`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ La ID debe ser un número entero.")
+
+
+@bot.command(name="warnremove")
+@commands.has_permissions(moderate_members=True)
+async def warnremove(ctx, user_id: int, numero: int):
+    """Elimina un warn por su número. Uso: .warnremove <id> <número>"""
+    clave = str(user_id)
+    lista = warns_db.get(clave, [])
+    if not lista:
+        return await ctx.send(f"ℹ️ El usuario con ID `{user_id}` no tiene ningún warn.")
+
+    warn_a_borrar = None
+    for w in lista:
+        if w["numero"] == numero:
+            warn_a_borrar = w
+            break
+
+    if warn_a_borrar is None:
+        return await ctx.send(f"❌ No existe el warn #{numero}. El usuario tiene warns del 1 al {len(lista)}.")
+
+    lista.remove(warn_a_borrar)
+    # Renumerar los restantes (1..N) para mantener consistencia.
+    for i, w in enumerate(lista, start=1):
+        w["numero"] = i
+    guardar_warns()
+
+    embed = discord.Embed(
+        title="✅ Warn eliminado",
+        color=discord.Color.green(),
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    embed.add_field(name="Usuario", value=f"<@{user_id}> (`{user_id}`)", inline=False)
+    embed.add_field(name="Warn eliminado", value=f"#{numero}", inline=True)
+    embed.add_field(name="Motivo original", value=warn_a_borrar["motivo"][:1024], inline=False)
+    embed.set_footer(text=f"Warns restantes: {len(lista)}")
+    await ctx.send(embed=embed)
+
+
+@warnremove.error
+async def warnremove_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Timeout Members.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.warnremove <id_usuario> <número>`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ La ID y el número deben ser enteros.")
+
+
+@bot.command(name="warns")
+@commands.has_permissions(moderate_members=True)
+async def warns(ctx, user_id: int):
+    """Muestra todos los warns de un usuario con motivo y fecha. Uso: .warns <id>"""
+    clave = str(user_id)
+    lista = warns_db.get(clave, [])
+
+    try:
+        usuario = await bot.fetch_user(user_id)
+        nombre_usuario = f"{usuario}"
+    except discord.NotFound:
+        nombre_usuario = f"ID {user_id}"
+
+    if not lista:
+        embed = discord.Embed(
+            title="✅ Sin advertencias",
+            description=f"{nombre_usuario} (`{user_id}`) no tiene ningún warn.",
+            color=discord.Color.green(),
+        )
+        return await ctx.send(embed=embed)
+
+    embed = discord.Embed(
+        title=f"⚠️ Warns de {nombre_usuario}",
+        color=discord.Color.gold(),
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    embed.set_footer(text=f"Total: {len(lista)} advertencia(s)")
+
+    for w in lista:
+        try:
+            fecha_dt = datetime.datetime.fromisoformat(w["fecha"])
+            fecha_str = discord.utils.format_dt(fecha_dt, "f")
+        except (ValueError, KeyError):
+            fecha_str = "Fecha desconocida"
+        embed.add_field(
+            name=f"#{w['numero']} — {fecha_str}",
+            value=(f"**Motivo:** {w['motivo'][:900]}\n"
+                   f"**Moderador:** {w['moderador']}"),
+            inline=False,
+        )
+    await ctx.send(embed=embed)
+
+
+@warns.error
+async def warns_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Timeout Members.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.warns <id_usuario>`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ La ID debe ser un número entero.")
+
+
+@bot.command(name="logchannel")
+@commands.has_permissions(manage_guild=True)
+async def logchannel(ctx, canal: discord.TextChannel):
+    """Asigna un canal para enviar logs. Uso: .logchannel #canal"""
+    if canal.id in logs_channels:
+        return await ctx.send(f"ℹ️ {canal.mention} ya estaba configurado como canal de logs.")
+    logs_channels.add(canal.id)
+    guardar_logs_channels()
+    await ctx.send(f"✅ {canal.mention} configurado como canal de logs.")
+
+
+@logchannel.error
+async def logchannel_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Server.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.logchannel #canal`")
+    elif isinstance(error, commands.ChannelNotFound):
+        await ctx.send("❌ No encontré ese canal. Uso: `.logchannel #canal`")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me faltan permisos.")
+
+
+@bot.command(name="logunchannel")
+@commands.has_permissions(manage_guild=True)
+async def logunchannel(ctx, canal: discord.TextChannel):
+    """Quita un canal de la lista de logs. Uso: .logunchannel #canal"""
+    if canal.id not in logs_channels:
+        return await ctx.send(f"ℹ️ {canal.mention} no estaba configurado como canal de logs.")
+    logs_channels.discard(canal.id)
+    guardar_logs_channels()
+    await ctx.send(f"✅ {canal.mention} ya no recibirá logs.")
+
+
+@logunchannel.error
+async def logunchannel_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Server.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.logunchannel #canal`")
+    elif isinstance(error, commands.ChannelNotFound):
+        await ctx.send("❌ No encontré ese canal.")
+
+
+@bot.command(name="logschannels")
+@commands.has_permissions(manage_guild=True)
+async def logschannels(ctx):
+    """Lista todos los canales configurados para logs."""
+    if not logs_channels:
+        return await ctx.send("ℹ️ No hay canales de logs configurados. Usa `.logchannel #canal` para añadir uno.")
+
+    embed = discord.Embed(
+        title="📋 Canales configurados para logs",
+        color=discord.Color.blurple(),
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    existe_alguno = False
+    lineas = []
+    for canal_id in sorted(logs_channels):
+        canal = ctx.guild.get_channel(canal_id)
+        if canal is None:
+            lineas.append(f"• `<#{canal_id}>` *(canal ya no existe)*")
+        else:
+            existe_alguno = True
+            lineas.append(f"• {canal.mention} (`{canal.id}`)")
+    embed.description = "\n".join(lineas)
+    embed.set_footer(text=f"Total: {len(logs_channels)} canal(es)")
+    await ctx.send(embed=embed)
+
+
+@logschannels.error
+async def logschannels_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Server.")
+
+
+@bot.command(name="linkban")
+@commands.has_permissions(manage_messages=True)
+@commands.bot_has_permissions(manage_messages=True)
+async def linkban(ctx, canal: discord.TextChannel):
+    """Prohibe enlaces y archivos en un canal. Uso: .linkban #canal"""
+    if canal.id in linkban_canal:
+        return await ctx.send(f"ℹ️ {canal.mention} ya tenía los enlaces prohibidos.")
+    linkban_canal.add(canal.id)
+    guardar_linkban()
+    await ctx.send(f"✅ Enlaces y archivos prohibidos en {canal.mention}.")
+
+
+@linkban.error
+async def linkban_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Messages.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.linkban #canal`")
+    elif isinstance(error, commands.ChannelNotFound):
+        await ctx.send(f"❌ No encontré ese canal. Uso: `.linkban #canal`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ Debes mencionar un canal válido. Uso: `.linkban #canal`")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me falta el permiso Manage Messages.")
+
+
+@bot.command(name="linkunban")
+@commands.has_permissions(manage_messages=True)
+async def linkunban(ctx, canal: discord.TextChannel):
+    """Permite de nuevo enlaces en un canal. Uso: .linkunban #canal"""
+    if canal.id not in linkban_canal:
+        return await ctx.send(f"ℹ️ {canal.mention} no tenía los enlaces prohibidos.")
+    linkban_canal.discard(canal.id)
+    guardar_linkban()
+    await ctx.send(f"✅ Enlaces permitidos de nuevo en {canal.mention}.")
+
+
+@linkunban.error
+async def linkunban_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Messages.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.linkunban #canal`")
+    elif isinstance(error, commands.ChannelNotFound):
+        await ctx.send(f"❌ No encontré ese canal. Uso: `.linkunban #canal`")
+
+
+@bot.command(name="linkbanlist")
+@commands.has_permissions(manage_messages=True)
+async def linkbanlist(ctx):
+    """Lista los canales con enlaces prohibidos."""
+    if not linkban_canal:
+        return await ctx.send("ℹ️ No hay canales con enlaces prohibidos.")
+    canales = [f"<#{cid}>" for cid in sorted(linkban_canal)]
+    embed = discord.Embed(
+        title="🔗 Canales con enlaces prohibidos",
+        description="\n".join(canales),
+        color=discord.Color.blurple(),
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="roleadd")
+@commands.has_permissions(manage_roles=True)
+@commands.bot_has_permissions(manage_roles=True)
+async def roleadd(ctx, user_id: int, rol: discord.Role):
+    """Otorga un rol a un usuario. Uso: .roleadd <id_usuario> @rol"""
+    miembro = ctx.guild.get_member(user_id)
+    if miembro is None:
+        return await ctx.send(f"❌ El usuario con ID `{user_id}` no está en este servidor.")
+
+    if rol.position >= ctx.author.top_role.position and ctx.author != ctx.guild.owner:
+        return await ctx.send("❌ No puedes otorgar un rol igual o superior al tuyo.")
+    if rol.position >= ctx.guild.me.top_role.position:
+        return await ctx.send("❌ Ese rol está por encima del mío, no puedo asignarlo.")
+    if rol.managed:
+        return await ctx.send("❌ Ese rol está gestionado por una integración/bot, no puedo asignarlo.")
+
+    if rol in miembro.roles:
+        return await ctx.send(f"ℹ️ {miembro.mention} ya tiene el rol {rol.mention}.")
+
+    try:
+        await miembro.add_roles(rol, reason=f"{ctx.author} (ID {ctx.author.id})")
+    except discord.Forbidden:
+        return await ctx.send("❌ No tengo permisos para asignar ese rol.")
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Error al asignar el rol: {e}")
+
+    await ctx.send(f"✅ Rol {rol.mention} asignado a {miembro.mention}.")
+
+
+@roleadd.error
+async def roleadd_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Roles.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.roleadd <id_usuario> @rol`")
+    elif isinstance(error, commands.RoleNotFound):
+        await ctx.send("❌ No encontré ese rol. Menciónalo con @rol.")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ La ID debe ser un número entero.")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me falta el permiso Manage Roles.")
+
+
+@bot.command(name="roleremove")
+@commands.has_permissions(manage_roles=True)
+@commands.bot_has_permissions(manage_roles=True)
+async def roleremove(ctx, user_id: int, rol: discord.Role):
+    """Quita un rol a un usuario. Uso: .roleremove <id_usuario> @rol"""
+    miembro = ctx.guild.get_member(user_id)
+    if miembro is None:
+        return await ctx.send(f"❌ El usuario con ID `{user_id}` no está en este servidor.")
+
+    if rol.position >= ctx.author.top_role.position and ctx.author != ctx.guild.owner:
+        return await ctx.send("❌ No puedes quitar un rol igual o superior al tuyo.")
+    if rol.position >= ctx.guild.me.top_role.position:
+        return await ctx.send("❌ Ese rol está por encima del mío, no puedo quitarlo.")
+    if rol.managed:
+        return await ctx.send("❌ Ese rol está gestionado por una integración/bot.")
+
+    if rol not in miembro.roles:
+        return await ctx.send(f"ℹ️ {miembro.mention} no tiene el rol {rol.mention}.")
+
+    try:
+        await miembro.remove_roles(rol, reason=f"{ctx.author} (ID {ctx.author.id})")
+    except discord.Forbidden:
+        return await ctx.send("❌ No tengo permisos para quitar ese rol.")
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Error al quitar el rol: {e}")
+
+    await ctx.send(f"✅ Rol {rol.mention} quitado a {miembro.mention}.")
+
+
+@bot.command(name="avatar")
+async def avatar(ctx, user_id: int):
+    """Muestra el avatar completo de un usuario por ID. Uso: .avatar <id>"""
+    try:
+        usuario = await bot.fetch_user(user_id)
+    except discord.NotFound:
+        return await ctx.send(f"❌ No se encontró ningún usuario con ID `{user_id}`.")
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Error al buscar el usuario: {e}")
+
+    avatar_url = usuario.display_avatar.with_size(4096).url
+    embed = discord.Embed(
+        title=f"Avatar de {usuario}",
+        color=discord.Color.blurple(),
+    )
+    embed.set_image(url=avatar_url)
+    embed.set_footer(text=f"ID: {usuario.id}")
+    await ctx.send(embed=embed)
+
+
+@avatar.error
+async def avatar_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.avatar <id_usuario>`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ La ID debe ser un número entero.")
+
+
+@bot.command(name="banner")
+async def banner(ctx, user_id: int):
+    """Muestra el banner completo de un usuario por ID. Uso: .banner <id>"""
+    try:
+        usuario = await bot.fetch_user(user_id)
+    except discord.NotFound:
+        return await ctx.send(f"❌ No se encontró ningún usuario con ID `{user_id}`.")
+    except discord.HTTPException as e:
+        return await ctx.send(f"❌ Error al buscar el usuario: {e}")
+
+    banner_obj = usuario.banner
+    if banner_obj is None:
+        return await ctx.send(f"ℹ️ {usuario} no tiene banner de perfil.")
+
+    color_hex = usuario.accent_color
+    if color_hex is not None:
+        color_embed = color_hex
+        descripcion = f"**Color de acento:** `#{color_hex.value:06X}`"
+    else:
+        color_embed = discord.Color.blurple()
+        descripcion = "Sin color de acento."
+
+    banner_url = banner_obj.with_size(4096).url
+    embed = discord.Embed(
+        title=f"Banner de {usuario}",
+        description=descripcion,
+        color=color_embed,
+    )
+    embed.set_image(url=banner_url)
+    embed.set_footer(text=f"ID: {usuario.id}")
+    await ctx.send(embed=embed)
+
+
+@banner.error
+async def banner_error(ctx, error):
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.banner <id_usuario>`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ La ID debe ser un número entero.")
+
+
+if __name__ == "__main__":
+    import os
+    TOKEN = os.environ.get("DISCORD_TOKEN")
+    if not TOKEN:
+        TOKEN = input("Pega el token de tu bot: ").strip()
+    if not TOKEN:
+        print("No se proporcionó token. Saliendo.")
+    else:
+        bot.run(TOKEN)
