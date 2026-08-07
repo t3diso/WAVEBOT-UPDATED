@@ -29,6 +29,9 @@ warns_db = {}
 LOGS_CHANNELS_PATH = "logs_channels.json"
 logs_channels = set()
 
+HONEYPOTS_PATH = "honeypots.json"
+honeypots_db = {}   # guild_id (str) -> {channel_id (str): {"action": "ban|kick|mute", "duration": int|None}}
+
 PREFIXES_PATH = "prefixes.json"
 prefixes_db = {}     # guild_id (str) -> list[str] de prefijos válidos
 REMINDERS_PATH = "reminders.json"
@@ -203,6 +206,35 @@ def guardar_logs_channels():
         print(f"Error guardando logs_channels.json: {e}")
 
 
+def guardar_logs_channels():
+    try:
+        with open(LOGS_CHANNELS_PATH, "w", encoding="utf-8") as f:
+            json.dump({"canales": list(logs_channels)}, f, indent=2)
+    except OSError as e:
+        print(f"Error guardando logs_channels.json: {e}")
+
+
+def cargar_honeypots():
+    global honeypots_db
+    if os.path.exists(HONEYPOTS_PATH):
+        try:
+            with open(HONEYPOTS_PATH, "r", encoding="utf-8") as f:
+                honeypots_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            honeypots_db = {}
+    else:
+        honeypots_db = {}
+    print(f"Honeypots cargados: {sum(len(v) for v in honeypots_db.values())} en {len(honeypots_db)} servidores.")
+
+
+def guardar_honeypots():
+    try:
+        with open(HONEYPOTS_PATH, "w", encoding="utf-8") as f:
+            json.dump(honeypots_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando honeypots.json: {e}")
+
+
 def cargar_giveaways():
     global giveaways_db
     if os.path.exists(GIVEAWAYS_PATH):
@@ -325,6 +357,37 @@ async def on_message(message: discord.Message):
             except discord.HTTPException:
                 pass
             return
+
+    # Honeypot check
+    guild_id_str = str(message.guild.id)
+    channel_id_str = str(message.channel.id)
+    hp_config = honeypots_db.get(guild_id_str, {}).get(channel_id_str)
+    if hp_config:
+        # Delete the triggering message
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+        # Apply sanction
+        member = message.guild.get_member(message.author.id)
+        if member:
+            action = hp_config.get("action", "ban")
+            duration = hp_config.get("duration")
+            try:
+                if action == "ban":
+                    await message.guild.ban(message.author, reason="Honeypot trigger", delete_message_days=1)
+                elif action == "kick":
+                    await member.kick(reason="Honeypot trigger")
+                elif action == "mute":
+                    if duration:
+                        until = discord.utils.utcnow() + datetime.timedelta(seconds=duration)
+                        await member.timeout(until, reason="Honeypot trigger")
+            except discord.Forbidden:
+                pass
+            except discord.HTTPException:
+                pass
+        return
+
     await bot.process_commands(message)
 
 
@@ -404,6 +467,7 @@ async def on_ready():
     cargar_giveaways()
     cargar_prefixes()
     cargar_reminders()
+    cargar_honeypots()
     print(f"Conectado como {bot.user} (ID: {bot.user.id})")
     print(f"Servidores: {len(bot.guilds)}")
     # Intentar sync global primero.
@@ -1906,6 +1970,108 @@ async def ipunban_error(ctx, error):
         await ctx.send("❌ Me falta el permiso Ban Members.")
 
 
+@ipunban.error
+async def ipunban_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ No tienes permiso para banear.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.ipunban <id_usuario>`")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ La ID debe ser un número entero.")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me falta el permiso Ban Members.")
+
+
+# ============================================================
+#  HONEYPOT
+# ============================================================
+
+@bot.command(name="honeypot")
+@commands.has_permissions(manage_guild=True)
+@commands.bot_has_permissions(manage_channels=True, ban_members=True, kick_members=True, moderate_members=True)
+async def honeypot(ctx, canal: discord.TextChannel):
+    """Configura un canal como honeypot (por defecto banea). Uso: .honeypot #canal"""
+    gid = str(ctx.guild.id)
+    cid = str(canal.id)
+    honeypots_db.setdefault(gid, {})
+    if cid in honeypots_db[gid]:
+        return await ctx.send(f"ℹ️ {canal.mention} ya es un honeypot.")
+    honeypots_db[gid][cid] = {"action": "ban", "duration": None}
+    guardar_honeypots()
+    await ctx.send(f"✅ {canal.mention} configurado como honeypot (acción: ban).")
+
+
+@bot.command(name="honeypots")
+@commands.has_permissions(manage_guild=True)
+async def honeypots_cmd(ctx):
+    """Lista los honeypots configurados con botón para eliminar."""
+    gid = str(ctx.guild.id)
+    data = honeypots_db.get(gid, {})
+    if not data:
+        return await ctx.send("ℹ️ No hay honeypots configurados en este servidor.")
+    view = HoneypotListView(ctx.guild, data)
+    embed = discord.Embed(title="🍯 Honeypots configurados", color=discord.Color.dark_gold())
+    lines = []
+    for cid_str, cfg in data.items():
+        canal = ctx.guild.get_channel(int(cid_str))
+        nombre = canal.mention if canal else f"ID {cid_str}"
+        lines.append(f"{nombre} → acción: **{cfg['action']}**{' ('+str(cfg['duration'])+'s)' if cfg.get('duration') else ''}")
+    embed.description = "\n".join(lines)
+    await ctx.send(embed=embed, view=view)
+
+
+class HoneypotListView(discord.ui.View):
+    def __init__(self, guild: discord.Guild, data: dict):
+        super().__init__(timeout=60)
+        self.guild = guild
+        self.data = data
+        for cid_str in list(data.keys())[:25]:  # max 25 buttons
+            canal = guild.get_channel(int(cid_str))
+            label = f"🗑️ {canal.name}" if canal else f"🗑️ {cid_str}"
+            btn = discord.ui.Button(label=label[:80], style=discord.ButtonStyle.danger, custom_id=f"delhp_{cid_str}")
+            btn.callback = self.make_callback(cid_str)
+            self.add_item(btn)
+
+    def make_callback(self, cid_str):
+        async def callback(interaction: discord.Interaction):
+            if not interaction.user.guild_permissions.manage_guild:
+                await interaction.response.send_message("❌ Sin permiso.", ephemeral=True)
+                return
+            gid = str(self.guild.id)
+            if cid_str in self.data:
+                del self.data[cid_str]
+                honeypots_db[gid] = self.data
+                guardar_honeypots()
+                await interaction.response.send_message(f"✅ Honeypot eliminado para <#{cid_str}>.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ No encontrado.", ephemeral=True)
+        return callback
+
+
+@bot.command(name="honeypotset")
+@commands.has_permissions(manage_guild=True)
+async def honeypotset(ctx, canal: discord.TextChannel, accion: str, duracion: str = None):
+    """Configura la acción del honeypot. Uso: .honeypotset #canal ban|kick|mute [duración]"""
+    gid = str(ctx.guild.id)
+    cid = str(canal.id)
+    if gid not in honeypots_db or cid not in honeypots_db[gid]:
+        return await ctx.send("❌ Ese canal no es un honeypot.")
+    accion = accion.lower()
+    if accion not in ("ban", "kick", "mute"):
+        return await ctx.send("❌ Acción inválida. Usa ban, kick o mute.")
+    cfg = {"action": accion, "duration": None}
+    if accion == "mute":
+        if not duracion:
+            return await ctx.send("❌ Para mute debes indicar duración (ej: 5m, 1h).")
+        segundos, err = parsear_duracion(duracion)
+        if err:
+            return await ctx.send(f"❌ {err}")
+        cfg["duration"] = segundos
+    honeypots_db[gid][cid] = cfg
+    guardar_honeypots()
+    await ctx.send(f"✅ Honeypot {canal.mention} actualizado: acción **{accion}**{' ('+duracion+')' if duracion else ''}.")
+
+
 # ============================================================
 #  SOFTBAN (baneo temporal automático)
 # ============================================================
@@ -2377,6 +2543,9 @@ async def on_guild_role_update(before: discord.Role, after: discord.Role):
     for nombre, antes, despues in cambios:
         embed.add_field(name=nombre, value=f"`{antes}` → `{despues}`", inline=False)
     await enviar_logs(after.guild, embed)
+
+
+
 
 
 # ============================================================
@@ -3432,6 +3601,89 @@ async def slash_prefixremove(interaction: discord.Interaction, prefijo: str):
         del prefixes_db[gid]
     guardar_prefixes()
     await interaction.response.send_message(f"✅ Prefijo `{prefijo}` eliminado.")
+
+
+
+
+
+# ============================================================
+#  SLASH: /honeypot
+# ============================================================
+
+honeypot_group = app_commands.Group(name="honeypot", description="Configuración de canales honeypot")
+
+
+@honeypot_group.command(name="set", description="Configura un canal como honeypot (por defecto banea)")
+@app_commands.describe(canal="Canal a convertir en honeypot")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_honeypot_set(interaction: discord.Interaction, canal: discord.TextChannel):
+    gid = str(interaction.guild.id)
+    cid = str(canal.id)
+    honeypots_db.setdefault(gid, {})
+    if cid in honeypots_db[gid]:
+        return await interaction.response.send_message(f"ℹ️ {canal.mention} ya es un honeypot.", ephemeral=True)
+    honeypots_db[gid][cid] = {"action": "ban", "duration": None}
+    guardar_honeypots()
+    await interaction.response.send_message(f"✅ {canal.mention} configurado como honeypot (acción: ban).")
+
+
+@honeypot_group.command(name="list", description="Lista los honeypots configurados")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_honeypot_list(interaction: discord.Interaction):
+    gid = str(interaction.guild.id)
+    data = honeypots_db.get(gid, {})
+    if not data:
+        return await interaction.response.send_message("ℹ️ No hay honeypots configurados en este servidor.", ephemeral=True)
+    embed = discord.Embed(title="🍯 Honeypots configurados", color=discord.Color.dark_gold())
+    lines = []
+    for cid_str, cfg in data.items():
+        canal = interaction.guild.get_channel(int(cid_str))
+        nombre = canal.mention if canal else f"ID {cid_str}"
+        lines.append(f"{nombre} → acción: **{cfg['action']}**{' ('+str(cfg['duration'])+'s)' if cfg.get('duration') else ''}")
+    embed.description = "\n".join(lines)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@honeypot_group.command(name="remove", description="Elimina un honeypot")
+@app_commands.describe(canal="Canal a quitar como honeypot")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_honeypot_remove(interaction: discord.Interaction, canal: discord.TextChannel):
+    gid = str(interaction.guild.id)
+    cid = str(canal.id)
+    if gid not in honeypots_db or cid not in honeypots_db[gid]:
+        return await interaction.response.send_message("❌ Ese canal no es un honeypot.", ephemeral=True)
+    del honeypots_db[gid][cid]
+    if not honeypots_db[gid]:
+        del honeypots_db[gid]
+    guardar_honeypots()
+    await interaction.response.send_message(f"✅ Honeypot eliminado para {canal.mention}.", ephemeral=True)
+
+
+@honeypot_group.command(name="config", description="Configura la acción del honeypot")
+@app_commands.describe(canal="Canal honeypot", accion="ban/kick/mute", duracion="Duración si mute (ej: 5m, 1h)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_honeypot_config(interaction: discord.Interaction, canal: discord.TextChannel, accion: str, duracion: str = None):
+    gid = str(interaction.guild.id)
+    cid = str(canal.id)
+    if gid not in honeypots_db or cid not in honeypots_db[gid]:
+        return await interaction.response.send_message("❌ Ese canal no es un honeypot.", ephemeral=True)
+    accion = accion.lower()
+    if accion not in ("ban", "kick", "mute"):
+        return await interaction.response.send_message("❌ Acción inválida. Usa ban, kick o mute.", ephemeral=True)
+    cfg = {"action": accion, "duration": None}
+    if accion == "mute":
+        if not duracion:
+            return await interaction.response.send_message("❌ Para mute debes indicar duración (ej: 5m, 1h).", ephemeral=True)
+        segundos, err = parsear_duracion(duracion)
+        if err:
+            return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
+        cfg["duration"] = segundos
+    honeypots_db[gid][cid] = cfg
+    guardar_honeypots()
+    await interaction.response.send_message(f"✅ Honeypot {canal.mention} actualizado: acción **{accion}**{' ('+duracion+')' if duracion else ''}.", ephemeral=True)
+
+
+bot.tree.add_command(honeypot_group)
 
 
 if __name__ == "__main__":
