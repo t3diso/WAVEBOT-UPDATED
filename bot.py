@@ -348,7 +348,7 @@ def get_xp_config(guild_id: int) -> dict:
     """Obtiene la configuración XP para un servidor, con valores por defecto."""
     gid = str(guild_id)
     default = {
-        "enabled": True,
+        "enabled": False,
         "xp_min": 15,
         "xp_max": 25,
         "cooldown": 60,
