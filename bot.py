@@ -1409,6 +1409,27 @@ async def banner_error(ctx, error):
         await ctx.send("❌ Uso correcto: `.banner <id|@|nombre>`")
 
 
+@bot.command(name="jumbo")
+async def jumbo(ctx, emoji: str):
+    """Aumenta un emoji (personalizado o Unicode). Uso: .jumbo <emoji>"""
+    # Intentar parsear como emoji personalizado
+    custom = discord.PartialEmoji.from_str(emoji)
+    if custom.id:
+        # Emoji personalizado (animado o no)
+        url = custom.url
+        name = custom.name
+        embed = discord.Embed(title=f"Jumbo: {name}", color=discord.Color.blurple())
+        embed.set_image(url=url)
+        return await ctx.send(embed=embed)
+    # Emoji Unicode: usar twemoji CDN
+    # Obtener codepoint
+    codepoints = "-".join(f"{ord(c):x}" for c in emoji)
+    url = f"https://twemoji.maxcdn.com/v/latest/72x72/{codepoints}.png"
+    embed = discord.Embed(title="Jumbo", color=discord.Color.blurple())
+    embed.set_image(url=url)
+    await ctx.send(embed=embed)
+
+
 # ============================================================
 #  COMANDOS MASIVOS DE ROLES (humanos / bots / todos)
 # ============================================================
@@ -4629,6 +4650,24 @@ async def slash_reset_level(interaction: discord.Interaction, usuario: discord.M
         await interaction.response.send_message(f"✅ XP y nivel de {usuario.mention} reiniciados.", ephemeral=True)
     else:
         await interaction.response.send_message("ℹ️ Ese usuario no tiene datos de XP.", ephemeral=True)
+
+
+# --- JUMBO slash ---
+@bot.tree.command(name="jumbo", description="Aumenta un emoji (personalizado o Unicode)")
+@app_commands.describe(emoji="Emoji a agrandar (personalizado o Unicode)")
+async def slash_jumbo(interaction: discord.Interaction, emoji: str):
+    custom = discord.PartialEmoji.from_str(emoji)
+    if custom.id:
+        url = custom.url
+        name = custom.name
+        embed = discord.Embed(title=f"Jumbo: {name}", color=discord.Color.blurple())
+        embed.set_image(url=url)
+        return await interaction.response.send_message(embed=embed)
+    codepoints = "-".join(f"{ord(c):x}" for c in emoji)
+    url = f"https://twemoji.maxcdn.com/v/latest/72x72/{codepoints}.png"
+    embed = discord.Embed(title="Jumbo", color=discord.Color.blurple())
+    embed.set_image(url=url)
+    await interaction.response.send_message(embed=embed)
 
 
 bot.tree.add_command(level_group)
