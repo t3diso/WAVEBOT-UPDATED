@@ -4,6 +4,7 @@ import json
 import os
 import random
 import re
+import time
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -31,6 +32,16 @@ logs_channels = set()
 
 HONEYPOTS_PATH = "honeypots.json"
 honeypots_db = {}   # guild_id (str) -> {channel_id (str): {"action": "ban|kick|mute", "duration": int|None}}
+
+XP_PATH = "xp_data.json"
+xp_db = {}  # guild_id (str) -> {user_id (str): {"xp": int, "level": int, "last_xp_gain": float}}
+xp_config_db = {}  # guild_id (str) -> {"enabled": bool, "xp_min": int, "xp_max": int, "cooldown": int, "levelup_channel": int|None, "levelup_msg": str|None, "levelup_enabled": bool}
+
+XP_COOLDOWNS = {}  # guild_id (str) -> {user_id (str): timestamp}
+
+# Level role rewards: guild_id -> {level: role_id}
+level_roles_db = {}  # guild_id (str) -> {level (str): role_id (str)}
+LEVEL_ROLES_PATH = "level_roles.json"
 
 PREFIXES_PATH = "prefixes.json"
 prefixes_db = {}     # guild_id (str) -> list[str] de prefijos válidos
@@ -235,6 +246,199 @@ def guardar_honeypots():
         print(f"Error guardando honeypots.json: {e}")
 
 
+def cargar_level_roles():
+    global level_roles_db
+    if os.path.exists(LEVEL_ROLES_PATH):
+        try:
+            with open(LEVEL_ROLES_PATH, "r", encoding="utf-8") as f:
+                level_roles_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            level_roles_db = {}
+    else:
+        level_roles_db = {}
+    print(f"Level roles cargados: {sum(len(v) for v in level_roles_db.values())} en {len(level_roles_db)} servidores.")
+
+
+def guardar_level_roles():
+    try:
+        with open(LEVEL_ROLES_PATH, "w", encoding="utf-8") as f:
+            json.dump(level_roles_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando level_roles.json: {e}")
+
+
+async def check_level_roles(guild: discord.Guild, member: discord.Member, new_level: int):
+    """Verifica y asigna roles de recompensa por nivel."""
+    gid = str(guild.id)
+    if gid not in level_roles_db:
+        return
+    roles_config = level_roles_db[gid]
+    for level_str, role_id_str in roles_config.items():
+        level_req = int(level_str)
+        if new_level >= level_req:
+            role = guild.get_role(int(role_id_str))
+            if role and role not in member.roles:
+                try:
+                    await member.add_roles(role, reason=f"Recompensa por alcanzar nivel {level_req}")
+                except discord.HTTPException:
+                    pass
+
+
+def cargar_level_roles():
+    global level_roles_db
+    if os.path.exists(LEVEL_ROLES_PATH):
+        try:
+            with open(LEVEL_ROLES_PATH, "r", encoding="utf-8") as f:
+                level_roles_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            level_roles_db = {}
+    else:
+        level_roles_db = {}
+    print(f"Level roles cargados: {sum(len(v) for v in level_roles_db.values())} en {len(level_roles_db)} servidores.")
+
+
+def guardar_level_roles():
+    try:
+        with open(LEVEL_ROLES_PATH, "w", encoding="utf-8") as f:
+            json.dump(level_roles_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando level_roles.json: {e}")
+    global xp_db, xp_config_db
+    if os.path.exists(XP_PATH):
+        try:
+            with open(XP_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            xp_db = data.get("xp", {})
+            xp_config_db = data.get("config", {})
+        except (json.JSONDecodeError, OSError):
+            xp_db = {}
+            xp_config_db = {}
+    else:
+        xp_db = {}
+        xp_config_db = {}
+    print(f"XP data cargado: {sum(len(v) for v in xp_db.values())} usuarios en {len(xp_db)} servidores.")
+
+
+def cargar_xp():
+    global xp_db, xp_config_db
+    if os.path.exists(XP_PATH):
+        try:
+            with open(XP_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            xp_db = data.get("xp", {})
+            xp_config_db = data.get("config", {})
+        except (json.JSONDecodeError, OSError):
+            xp_db = {}
+            xp_config_db = {}
+    else:
+        xp_db = {}
+        xp_config_db = {}
+    print(f"XP data cargado: {sum(len(v) for v in xp_db.values())} usuarios en {len(xp_db)} servidores.")
+
+
+def guardar_xp():
+    try:
+        with open(XP_PATH, "w", encoding="utf-8") as f:
+            json.dump({"xp": xp_db, "config": xp_config_db}, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando xp_data.json: {e}")
+
+
+def get_xp_config(guild_id: int) -> dict:
+    """Obtiene la configuración XP para un servidor, con valores por defecto."""
+    gid = str(guild_id)
+    default = {
+        "enabled": True,
+        "xp_min": 15,
+        "xp_max": 25,
+        "cooldown": 60,
+        "levelup_channel": None,
+        "levelup_msg": "🎉 ¡{user} ha subido al nivel {level}! (XP total: {xp})",
+        "levelup_enabled": True,
+    }
+    if gid not in xp_config_db:
+        xp_config_db[gid] = default.copy()
+    else:
+        # Asegurar que existan todas las claves
+        for k, v in default.items():
+            xp_config_db[gid].setdefault(k, v)
+    return xp_config_db[gid]
+
+
+def get_user_xp(guild_id: int, user_id: int) -> dict:
+    """Obtiene los datos de XP de un usuario, inicializando si no existen."""
+    gid = str(guild_id)
+    uid = str(user_id)
+    if gid not in xp_db:
+        xp_db[gid] = {}
+    if uid not in xp_db[gid]:
+        xp_db[gid][uid] = {"xp": 0, "level": 0, "last_xp_gain": 0}
+    return xp_db[gid][uid]
+
+
+def xp_for_level(level: int) -> int:
+    """Calcula el XP total requerido para alcanzar un nivel."""
+    # Fórmula: 5 * level^2 + 50 * level  (nivel 0 = 0 XP)
+    return 5 * level * level + 50 * level
+
+
+def level_from_xp(xp: int) -> int:
+    """Calcula el nivel basado en el XP total."""
+    level = 0
+    while xp >= xp_for_level(level + 1):
+        level += 1
+    return level
+
+
+def get_xp_progress(user_data: dict) -> tuple:
+    """Retorna (xp_actual, xp_para_siguiente_nivel, porcentaje_progreso)."""
+    xp = user_data["xp"]
+    level = user_data["level"]
+    xp_current_level = xp_for_level(level)
+    xp_next_level = xp_for_level(level + 1)
+    xp_in_level = xp - xp_current_level
+    xp_needed = xp_next_level - xp_current_level
+    progress = (xp_in_level / xp_needed) * 100 if xp_needed > 0 else 100
+    return xp_in_level, xp_needed, progress
+
+
+def get_guild_leaderboard(guild_id: int) -> list:
+    """Retorna lista ordenada de (user_id, xp, level) para el servidor."""
+    gid = str(guild_id)
+    if gid not in xp_db:
+        return []
+    users = []
+    for uid, data in xp_db[gid].items():
+        users.append((int(uid), data["xp"], data["level"]))
+    users.sort(key=lambda x: (-x[1], -x[2]))
+    return users
+
+
+def get_user_rank(guild_id: int, user_id: int) -> int:
+    """Obtiene la posición en el ranking de un usuario (1-indexed)."""
+    leaderboard = get_guild_leaderboard(guild_id)
+    for i, (uid, _, _) in enumerate(leaderboard, 1):
+        if uid == user_id:
+            return i
+    return 0
+
+
+def create_progress_bar(progress: float, length: int = 10) -> str:
+    """Crea una barra de progreso visual."""
+    filled = int(length * progress / 100)
+    return "█" * filled + "░" * (length - filled)
+    global giveaways_db
+    if os.path.exists(GIVEAWAYS_PATH):
+        try:
+            with open(GIVEAWAYS_PATH, "r", encoding="utf-8") as f:
+                giveaways_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            giveaways_db = {}
+    else:
+        giveaways_db = {}
+    print(f"Giveaways cargados: {len(giveaways_db)}")
+
+
 def cargar_giveaways():
     global giveaways_db
     if os.path.exists(GIVEAWAYS_PATH):
@@ -388,6 +592,50 @@ async def on_message(message: discord.Message):
                 pass
         return
 
+    # XP System
+    config = get_xp_config(message.guild.id)
+    if config["enabled"]:
+        user_data = get_user_xp(message.guild.id, message.author.id)
+        now = time.time()
+        last_gain = user_data.get("last_xp_gain", 0)
+        if now - last_gain >= config["cooldown"]:
+            xp_gain = random.randint(config["xp_min"], config["xp_max"])
+            old_level = user_data["level"]
+            user_data["xp"] += xp_gain
+            user_data["last_xp_gain"] = now
+            new_level = level_from_xp(user_data["xp"])
+            user_data["level"] = new_level
+            if new_level > old_level:
+                # Level up!
+                if config["levelup_enabled"]:
+                    msg = config["levelup_msg"]
+                    msg = msg.replace("{user}", message.author.mention)
+                    msg = msg.replace("{level}", str(new_level))
+                    msg = msg.replace("{xp}", str(user_data["xp"]))
+                    msg = msg.replace("{server}", message.guild.name)
+                    channel_id = config["levelup_channel"]
+                    if channel_id:
+                        channel = message.guild.get_channel(channel_id)
+                    else:
+                        channel = message.channel
+                    if channel:
+                        embed = discord.Embed(
+                            title="🎉 ¡Subida de nivel!",
+                            description=msg,
+                            color=discord.Color.gold(),
+                            timestamp=discord.utils.utcnow()
+                        )
+                        embed.set_thumbnail(url=message.author.display_avatar.url)
+                        embed.add_field(name="Nuevo nivel", value=str(new_level), inline=True)
+                        embed.add_field(name="XP total", value=str(user_data["xp"]), inline=True)
+                        try:
+                            await channel.send(embed=embed)
+                        except discord.HTTPException:
+                            pass
+                # Check level role rewards
+                await check_level_roles(message.guild, message.author, new_level)
+            guardar_xp()
+
     await bot.process_commands(message)
 
 
@@ -468,6 +716,8 @@ async def on_ready():
     cargar_prefixes()
     cargar_reminders()
     cargar_honeypots()
+    cargar_xp()
+    cargar_level_roles()
     print(f"Conectado como {bot.user} (ID: {bot.user.id})")
     print(f"Servidores: {len(bot.guilds)}")
     # Intentar sync global primero.
@@ -2273,42 +2523,127 @@ async def ayuda(ctx, *, comando: str = None):
             embed.add_field(name="Aliases", value=", ".join(cmd.aliases), inline=False)
         return await ctx.send(embed=embed)
 
+    # Embed inicial con selector
     embed = discord.Embed(
         title="📖 Lista de comandos",
-        description=f"Prefijo actual: {prefijo}\nTambién puedes usar slash commands `/` y mencionar al bot.",
+        description=f"Prefijo actual: `{prefijo}`\nSelecciona una categoría en el menú desplegable para ver sus comandos.\n\nTambién puedes usar slash commands `/` y mencionar al bot.",
         color=discord.Color.blurple(),
         timestamp=discord.utils.utcnow(),
     )
-    embed.add_field(
-        name="🛡️ Moderación",
-        value=(
-            "`ban` `kick` `unban` `mute` `unmute` `softban` `ipban` `ipunban`\n"
-            "`purge` `nuke` `lock` `unlock` `rename` `namereset` `warn` `warnremove` `warns`"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="👥 Roles",
-        value="`roleadd` `roleremove` `rolehuman` `roleall` `rolebot`",
-        inline=False,
-    )
-    embed.add_field(
-        name="🎉 Sorteos y utilidades",
-        value="`gcreate` `glist` `gdelete` `greroll` `avatar` `banner` `remindme`",
-        inline=False,
-    )
-    embed.add_field(
-        name="🔗 Canales y links",
-        value="`linkban` `linkunban` `linkbanlist` `logchannel` `logunchannel` `logschannels`",
-        inline=False,
-    )
-    embed.add_field(
-        name="⚙️ Configuración",
-        value="`setprefix` `prefix` `prefixremove` `sync` `help`",
-        inline=False,
-    )
-    embed.set_footer(text="Usa .help <comando> para ver el detalle de un comando específico.")
-    await ctx.send(embed=embed)
+    embed.add_field(name="📋 Categorías disponibles", value=(
+        "🛡️ **Moderación** — ban, kick, mute, warn, purge, nuke, etc.\n"
+        "👥 **Roles** — roleadd, roleremove, rolehuman, roleall, rolebot\n"
+        "📊 **Niveles / XP** — rank, level, leaderboard, level-config, set-level-role, etc.\n"
+        "🎉 **Sorteos y utilidades** — gcreate, glist, gdelete, greroll, avatar, banner, remindme\n"
+        "🔗 **Canales y links** — linkban, linkunban, linkbanlist, logchannel, logunchannel, logschannels\n"
+        "⚙️ **Configuración** — setprefix, prefix, prefixremove, sync, help"
+    ), inline=False)
+    embed.set_footer(text="Usa .help <comando> para ver el detalle de un comando específico. • Selecciona una categoría abajo 👇")
+
+    class HelpView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=60)
+
+        @discord.ui.select(
+            placeholder="📂 Selecciona una categoría...",
+            options=[
+                discord.SelectOption(label="🛡️ Moderación", value="mod", emoji="🛡️", description="Ban, kick, mute, warn, purge, nuke, etc."),
+                discord.SelectOption(label="👥 Roles", value="roles", emoji="👥", description="Roleadd, roleremove, rolehuman, etc."),
+                discord.SelectOption(label="📊 Niveles / XP", value="niveles", emoji="📊", description="Rank, level, leaderboard, level-config, etc."),
+                discord.SelectOption(label="🎉 Sorteos y utilidades", value="sorteos", emoji="🎉", description="Giveaways, avatar, banner, remindme, etc."),
+                discord.SelectOption(label="🔗 Canales y links", value="canales", emoji="🔗", description="Linkban, logchannel, honeypot, etc."),
+                discord.SelectOption(label="⚙️ Configuración", value="config", emoji="⚙️", description="Setprefix, prefix, prefixremove, sync, etc."),
+            ],
+            min_values=1,
+            max_values=1,
+        )
+        async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+            if interaction.user != ctx.author:
+                return await interaction.response.send_message("❌ Solo quien ejecutó el comando puede usar el menú.", ephemeral=True)
+            
+            category = select.values[0]
+            p = prefijo
+            
+            embeds = {
+                "mod": discord.Embed(title="🛡️ Moderación", description=(
+                    f"`{p}ban (@usuario) [motivo]` — Banea usuario\n"
+                    f"`{p}kick (@usuario) [motivo]` — Expulsa usuario\n"
+                    f"`{p}unban (id) [motivo]` — Desbanea usuario\n"
+                    f"`{p}mute (@usuario) (duración) [motivo]` — Silencia (ej: 5m, 1h)\n"
+                    f"`{p}unmute (@usuario) [motivo]` — Quita silencio\n"
+                    f"`{p}softban (@usuario) (duración) [motivo]` — Ban temporal\n"
+                    f"`{p}ipban (@usuario) [motivo]` — Ban + veto IP\n"
+                    f"`{p}ipunban (@usuario)` — Desbanea IP\n"
+                    f"`{p}purge (cantidad)` — Borra mensajes + ✅\n"
+                    f"`{p}nuke [#canal]` — Nuke canal con confirmación\n"
+                    f"`{p}lock [#canal]` — Lockea canal\n"
+                    f"`{p}unlock [#canal]` — Desbloquea canal\n"
+                    f"`{p}rename (@usuario) (apodo)` — Cambia apodo\n"
+                    f"`{p}namereset (@usuario)` — Resetea apodo\n"
+                    f"`{p}warn (@usuario) (motivo)` — Advierte usuario\n"
+                    f"`{p}warnremove (@usuario) (número)` — Quita warn\n"
+                    f"`{p}warns (@usuario)` — Ver warns"
+                ), color=discord.Color.red()),
+                "roles": discord.Embed(title="👥 Roles", description=(
+                    f"`{p}roleadd (@usuario) (@rol)` — Otorga rol\n"
+                    f"`{p}roleremove (@usuario) (@rol)` — Quita rol\n"
+                    f"`{p}rolehuman (@rol)` — Rol a todos humanos\n"
+                    f"`{p}roleall (@rol)` — Rol a todos (humanos+bots)\n"
+                    f"`{p}rolebot (@rol)` — Rol solo a bots"
+                ), color=discord.Color.blue()),
+                "niveles": discord.Embed(title="📊 Niveles / XP", description=(
+                    f"`{p}rank (@usuario)` — Rango con barra de progreso\n"
+                    f"`{p}level/nivel (@usuario)` — Info de nivel\n"
+                    f"`{p}leaderboard/lb/ranking [página]` — Ranking paginado\n"
+                    f"`{p}level-config enabled (true/false)` — Activar/desactivar\n"
+                    f"`{p}level-config xp (min) (max)` — Rango XP por mensaje\n"
+                    f"`{p}level-config cooldown (segundos)` — Anti-spam\n"
+                    f"`{p}level-config channel (#canal)` — Canal anuncios\n"
+                    f"`{p}level-config message (texto)` — Mensaje level-up\n"
+                    f"`{p}level-config announce (true/false)` — Anuncios on/off\n"
+                    f"`{p}set-level-role (nivel) (@rol)` — Rol por nivel\n"
+                    f"`{p}remove-level-role (nivel)` — Quita recompensa\n"
+                    f"`{p}set-xp (@usuario) (cantidad)` — Establece XP\n"
+                    f"`{p}set-level (@usuario) (nivel)` — Establece nivel\n"
+                    f"`{p}add-xp (@usuario) (cantidad)` — Añade XP\n"
+                    f"`{p}remove-xp (@usuario) (cantidad)` — Quita XP\n"
+                    f"`{p}reset-level (@usuario)` — Resetea XP/nivel"
+                ), color=discord.Color.gold()),
+                "sorteos": discord.Embed(title="🎉 Sorteos y utilidades", description=(
+                    f"`{p}gcreate (nombre) (duración) (ganadores)` — Crear sorteo\n"
+                    f"`{p}glist` — Lista sorteos\n"
+                    f"`{p}gdelete (número)` — Eliminar sorteo\n"
+                    f"`{p}greroll (número)` — Re-rollear ganadores\n"
+                    f"`{p}avatar (@usuario)` — Avatar 4K\n"
+                    f"`{p}banner (@usuario)` — Banner 4K\n"
+                    f"`{p}remindme (duración) (mensaje) (MD: sí/no)` — Recordatorio"
+                ), color=discord.Color.purple()),
+                "canales": discord.Embed(title="🔗 Canales y links", description=(
+                    f"`{p}linkban (#canal)` — Prohíbe enlaces\n"
+                    f"`{p}linkunban (#canal)` — Permite enlaces\n"
+                    f"`{p}linkbanlist` — Lista canales sin links\n"
+                    f"`{p}logchannel (#canal)` — Canal de logs\n"
+                    f"`{p}logunchannel (#canal)` — Quita canal logs\n"
+                    f"`{p}logschannels` — Lista canales logs\n"
+                    f"`{p}honeypot (#canal)` — Crea honeypot (ban)\n"
+                    f"`{p}honeypots` — Lista honeypots\n"
+                    f"`{p}honeypotset (#canal) ban|kick|mute [duración]` — Config honeypot"
+                ), color=discord.Color.teal()),
+                "config": discord.Embed(title="⚙️ Configuración", description=(
+                    f"`{p}setprefix (carácter)` — Añade prefijo (máx 5 chars)\n"
+                    f"`{p}prefix` — Ver prefijos activos\n"
+                    f"`{p}prefixremove (carácter)` — Quita prefijo\n"
+                    f"`{p}sync` — Sincroniza slash commands (owner)\n"
+                    f"`{p}help [comando]` — Esta ayuda"
+                ), color=discord.Color.dark_gray()),
+            }
+            
+            embed = embeds[category]
+            embed.set_footer(text=f"Prefijo: {p} • Usa {p}help <comando> para más detalles")
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    view = HelpView()
+    await ctx.send(embed=embed, view=view)
 
 
 @bot.command(name="setprefix")
@@ -3544,6 +3879,7 @@ async def slash_help(interaction: discord.Interaction):
     )
     embed.add_field(name="🛡️ Moderación", value="`ban` `kick` `unban` `mute` `unmute` `softban`/`soft ban` `ipban` `ipunban`\n`purge` `nuke` `lock` `unlock` `rename` `namereset` `warn`/`warn add` `warnremove`/`warn remove` `warns`/`warn list`", inline=False)
     embed.add_field(name="👥 Roles", value="`roleadd`/`role add` `roleremove`/`role remove` `rolehuman`/`role human` `roleall`/`role all` `rolebot`/`role bot`", inline=False)
+    embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
     embed.add_field(name="🎉 Sorteos y utilidades", value="`gcreate`/`giveaway create` `glist`/`giveaway list` `gdelete`/`giveaway delete` `greroll`/`giveaway reroll` `avatar` `banner` `remindme`/`remind`", inline=False)
     embed.add_field(name="🔗 Canales y links", value="`linkban`/`link ban` `linkunban`/`link unban` `linkbanlist`/`link list` `logchannel`/`log channel` `logunchannel`/`log unchannel` `logschannels`/`log channels`", inline=False)
     embed.add_field(name="⚙️ Configuración", value=f"`setprefix`/`/setprefix` `prefix` `prefixremove` `sync` `help`", inline=False)
@@ -3684,6 +4020,619 @@ async def slash_honeypot_config(interaction: discord.Interaction, canal: discord
 
 
 bot.tree.add_command(honeypot_group)
+
+
+async def _send_rank(ctx_or_interaction, target: discord.Member):
+    """Función compartida para enviar el rank (prefix y slash)."""
+    if target.bot:
+        return await _send(ctx_or_interaction, "❌ Los bots no tienen nivel.", ephemeral=True)
+    user_data = get_user_xp(ctx_or_interaction.guild.id, target.id)
+    xp_in_level, xp_needed, progress = get_xp_progress(user_data)
+    rank = get_user_rank(ctx_or_interaction.guild.id, target.id)
+    total_users = len(get_guild_leaderboard(ctx_or_interaction.guild.id))
+    bar = create_progress_bar(progress, 20)
+    xp_total_next = xp_for_level(user_data["level"] + 1)
+    
+    embed = discord.Embed(title=f"📊 Rango de {target.display_name}", color=target.color or discord.Color.blurple())
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="📈 Nivel", value=f"**{user_data['level']}**", inline=True)
+    embed.add_field(name="⭐ XP Total", value=f"**{user_data['xp']:,}**", inline=True)
+    embed.add_field(name="🏆 Posición", value=f"**#{rank}** de {total_users}", inline=True)
+    embed.add_field(name="", value="", inline=False)
+    embed.add_field(
+        name=f"Progreso hacia nivel {user_data['level'] + 1}",
+        value=f"`{bar}` {progress:.1f}%\n**{xp_in_level:,} / {xp_needed:,} XP**",
+        inline=False
+    )
+    embed.set_footer(text=f"XP en este nivel: {xp_in_level:,} / {xp_needed:,} | XP total para siguiente nivel: {xp_for_level(user_data['level'] + 1):,}")
+    await _send(ctx_or_interaction, embed=embed)
+
+
+async def _send_levels(ctx_or_interaction, target: discord.Member):
+    """Función compartida para levels."""
+    if target.bot:
+        return await _send(ctx_or_interaction, "❌ Los bots no tienen nivel.", ephemeral=True)
+    user_data = get_user_xp(ctx_or_interaction.guild.id, target.id)
+    xp_in_level, xp_needed, progress = get_xp_progress(user_data)
+    rank = get_user_rank(ctx_or_interaction.guild.id, target.id)
+    total_users = len(get_guild_leaderboard(ctx_or_interaction.guild.id))
+    
+    embed = discord.Embed(title=f"📊 Nivel de {target.display_name}", color=target.color or discord.Color.blurple())
+    embed.add_field(name="Nivel actual", value=f"**{user_data['level']}**", inline=True)
+    embed.add_field(name="XP actual", value=f"**{user_data['xp']:,}**", inline=True)
+    embed.add_field(name="XP para siguiente nivel", value=f"**{xp_needed:,}**", inline=True)
+    embed.add_field(name="Progreso", value=f"{progress:.1f}%", inline=True)
+    embed.add_field(name="Posición en ranking", value=f"#{rank} de {total_users}", inline=True)
+    await _send(ctx_or_interaction, embed=embed, ephemeral=True)
+
+
+async def _send_leaderboard(ctx_or_interaction, page: int = 1):
+    leaderboard = get_guild_leaderboard(ctx_or_interaction.guild.id)
+    if not leaderboard:
+        return await _send(ctx_or_interaction, "ℹ️ No hay datos de XP en este servidor.", ephemeral=True)
+    
+    view = LeaderboardView(ctx_or_interaction.guild, leaderboard)
+    page = max(1, min(page, view.max_page + 1))
+    view.current_page = page - 1
+    view.update_buttons()
+    await _send(ctx_or_interaction, embed=view.get_embed(), view=view)
+
+
+def _send(ctx_or_interaction, content=None, embed=None, view=None, ephemeral=False):
+    """Helper unificado para enviar mensajes (funciona con Context e Interaction)."""
+    async def _inner():
+        if isinstance(ctx_or_interaction, discord.Interaction):
+            if ctx_or_interaction.response.is_done():
+                await ctx_or_interaction.followup.send(content=content, embed=embed, view=view, ephemeral=ephemeral)
+            else:
+                await ctx_or_interaction.response.send_message(content=content, embed=embed, view=view, ephemeral=ephemeral)
+        else:
+            if ephemeral:
+                try:
+                    await ctx_or_interaction.send(content=content, embed=embed, view=view, delete_after=10)
+                except Exception:
+                    pass
+            else:
+                await ctx_or_interaction.send(content=content, embed=embed, view=view)
+    return _inner()
+
+
+# ============================================================
+#  PREFIX: .level (Sistema de Niveles/XP)
+# ============================================================
+
+@bot.command(name="rank", help="Muestra el rango y nivel de un usuario. Uso: .rank (@usuario)")
+async def prefix_rank(ctx, *, usuario: discord.Member = None):
+    """Muestra el rango y nivel de un usuario. Uso: .rank (@usuario)"""
+    target = usuario or ctx.author
+    await _send_rank(ctx, target)
+
+
+@bot.command(name="level", aliases=["nivel"], help="Muestra información del nivel. Uso: .level (@usuario)")
+async def prefix_level(ctx, *, usuario: discord.Member = None):
+    """Muestra información del sistema de niveles. Uso: .level (@usuario)"""
+    target = usuario or ctx.author
+    await _send_levels(ctx, target)
+
+
+@bot.command(name="leaderboard", aliases=["lb", "ranking"], help="Muestra el ranking. Uso: .leaderboard [página]")
+async def prefix_leaderboard(ctx, pagina: int = 1):
+    """Muestra el ranking de usuarios con más XP. Uso: .leaderboard [página]"""
+    await _send_leaderboard(ctx, pagina)
+
+
+# ============================================================
+#  PREFIX: .level-admin (Administración del sistema de niveles)
+# ============================================================
+
+@bot.command(name="level-config", help="Configura el sistema de niveles. Uso: .level-config (opción) (valor)")
+@commands.has_permissions(manage_guild=True)
+async def prefix_level_config(
+    ctx,
+    opcion: str = None,
+    valor1: str = None,
+    valor2: str = None
+):
+    """Configura el sistema de niveles.
+    Uso: .level-config (opción) (valor)
+    Opciones: enabled (true/false), xp (min max), cooldown (segundos), channel (#canal), message (texto), announce (true/false)
+    """
+    if opcion is None:
+        return await ctx.send("❌ Uso: `.level-config (opción) (valor)`\nOpciones: `enabled (true/false)`, `xp (min max)`, `cooldown (segundos)`, `channel (#canal)`, `message (texto)`, `announce (true/false)`")
+    
+    gid = str(ctx.guild.id)
+    config = get_xp_config(ctx.guild.id)
+    opcion = opcion.lower()
+    
+    if opcion == "enabled":
+        if valor1 is None or valor1.lower() not in ("true", "false"):
+            return await ctx.send("❌ Uso: `.level-config enabled (true/false)`")
+        config["enabled"] = valor1.lower() == "true"
+    elif opcion == "xp":
+        if valor1 is None or valor2 is None:
+            return await ctx.send("❌ Uso: `.level-config xp (XP mínimo) (XP máximo)`")
+        try:
+            xp_min = int(valor1)
+            xp_max = int(valor2)
+        except ValueError:
+            return await ctx.send("❌ Los valores deben ser números enteros.")
+        if xp_min < 0 or xp_max < 0:
+            return await ctx.send("❌ El XP no puede ser negativo.")
+        if xp_min > xp_max:
+            return await ctx.send("❌ El XP mínimo no puede ser mayor que el máximo.")
+        config["xp_min"] = xp_min
+        config["xp_max"] = xp_max
+    elif opcion == "cooldown":
+        if valor1 is None:
+            return await ctx.send("❌ Uso: `.level-config cooldown (segundos)`")
+        try:
+            cooldown = int(valor1)
+        except ValueError:
+            return await ctx.send("❌ El cooldown debe ser un número entero.")
+        if cooldown < 0:
+            return await ctx.send("❌ El cooldown no puede ser negativo.")
+        config["cooldown"] = cooldown
+    elif opcion in ("channel", "canal"):
+        if valor1 is None:
+            return await ctx.send("❌ Uso: `.level-config channel (#canal)`")
+        # Intentar parsear mención de canal
+        m = re.match(r"<#(\d+)>", valor1)
+        if m:
+            canal_id = int(m.group(1))
+        else:
+            try:
+                canal_id = int(valor1)
+            except ValueError:
+                return await ctx.send("❌ Canal inválido. Menciona el canal o usa su ID.")
+        canal = ctx.guild.get_channel(canal_id)
+        if canal is None:
+            return await ctx.send("❌ Canal no encontrado.")
+        config["levelup_channel"] = canal.id
+    elif opcion in ("message", "mensaje"):
+        if valor1 is None:
+            return await ctx.send("❌ Uso: `.level-config message (texto)`\nVariables: {user}, {level}, {xp}, {server}")
+        # Unir todos los argumentos restantes como mensaje
+        mensaje = " ".join([valor1] + ([valor2] if valor2 else []))
+        config["levelup_msg"] = mensaje
+    elif opcion in ("announce", "anuncios"):
+        if valor1 is None or valor1.lower() not in ("true", "false"):
+            return await ctx.send("❌ Uso: `.level-config announce (true/false)`")
+        config["levelup_enabled"] = valor1.lower() == "true"
+    else:
+        return await ctx.send("❌ Opción inválida. Opciones: `enabled`, `xp`, `cooldown`, `channel`, `message`, `announce`")
+    
+    xp_config_db[str(ctx.guild.id)] = config
+    guardar_xp()
+    
+    embed = discord.Embed(title="⚙️ Configuración de niveles actualizada", color=discord.Color.green())
+    embed.add_field(name="Estado", value="✅ Activado" if config["enabled"] else "❌ Desactivado", inline=True)
+    embed.add_field(name="XP por mensaje", value=f"{config['xp_min']} - {config['xp_max']}", inline=True)
+    embed.add_field(name="Cooldown", value=f"{config['cooldown']}s", inline=True)
+    embed.add_field(name="Canal anuncios", value=f"<#{config['levelup_channel']}>" if config["levelup_channel"] else "Canal actual", inline=True)
+    embed.add_field(name="Anuncios", value="✅ Activados" if config["levelup_enabled"] else "❌ Desactivados", inline=True)
+    if config["levelup_msg"]:
+        embed.add_field(name="Mensaje level up", value=config["levelup_msg"], inline=False)
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="set-level-role", help="Asigna un rol al alcanzar un nivel. Uso: .set-level-role (nivel) (@rol)")
+@commands.has_permissions(manage_guild=True)
+async def prefix_set_level_role(ctx, nivel: int, rol: discord.Role):
+    """Asigna un rol al alcanzar un nivel. Uso: .set-level-role (nivel) (@rol)"""
+    if nivel < 1:
+        return await ctx.send("❌ El nivel debe ser al menos 1.")
+    if rol.position >= ctx.guild.me.top_role.position:
+        return await ctx.send("❌ No puedo asignar ese rol (está por encima de mi rol).")
+    gid = str(ctx.guild.id)
+    level_roles_db.setdefault(gid, {})
+    level_roles_db[gid][str(nivel)] = str(rol.id)
+    guardar_level_roles()
+    await ctx.send(f"✅ Rol {rol.mention} asignado para el nivel {nivel}.")
+
+
+@bot.command(name="remove-level-role", help="Elimina una recompensa de rol por nivel. Uso: .remove-level-role (nivel)")
+@commands.has_permissions(manage_guild=True)
+async def prefix_remove_level_role(ctx, nivel: int):
+    """Elimina una recompensa de rol por nivel. Uso: .remove-level-role (nivel)"""
+    gid = str(ctx.guild.id)
+    if gid not in level_roles_db or str(nivel) not in level_roles_db[gid]:
+        return await ctx.send("❌ No hay recompensa configurada para ese nivel.")
+    del level_roles_db[gid][str(nivel)]
+    if not level_roles_db[gid]:
+        del level_roles_db[gid]
+    guardar_level_roles()
+    await ctx.send(f"✅ Recompensa de nivel {nivel} eliminada.")
+
+
+@bot.command(name="set-xp", help="Establece el XP de un usuario. Uso: .set-xp (@usuario) (cantidad)")
+@commands.has_permissions(manage_guild=True)
+async def prefix_set_xp(ctx, usuario: discord.Member, xp: int):
+    """Establece el XP de un usuario manualmente. Uso: .set-xp (@usuario) (cantidad)"""
+    if xp < 0:
+        return await ctx.send("❌ El XP no puede ser negativo.")
+    if usuario.bot:
+        return await ctx.send("❌ No se puede modificar XP de bots.")
+    user_data = get_user_xp(ctx.guild.id, usuario.id)
+    user_data["xp"] = xp
+    user_data["level"] = level_from_xp(xp)
+    guardar_xp()
+    await ctx.send(f"✅ XP de {usuario.mention} establecido a {xp:,} (Nivel {user_data['level']}).")
+
+
+@bot.command(name="set-level", help="Establece el nivel de un usuario. Uso: .set-level (@usuario) (nivel)")
+@commands.has_permissions(manage_guild=True)
+async def prefix_set_level(ctx, usuario: discord.Member, nivel: int):
+    """Establece el nivel de un usuario manualmente. Uso: .set-level (@usuario) (nivel)"""
+    if nivel < 0:
+        return await ctx.send("❌ El nivel no puede ser negativo.")
+    if usuario.bot:
+        return await ctx.send("❌ No se puede modificar nivel de bots.")
+    user_data = get_user_xp(ctx.guild.id, usuario.id)
+    user_data["level"] = nivel
+    user_data["xp"] = xp_for_level(nivel)
+    guardar_xp()
+    await ctx.send(f"✅ Nivel de {usuario.mention} establecido a {nivel} (XP: {user_data['xp']:,}).")
+
+
+@bot.command(name="add-xp", help="Añade XP a un usuario. Uso: .add-xp (@usuario) (cantidad)")
+@commands.has_permissions(manage_guild=True)
+async def prefix_add_xp(ctx, usuario: discord.Member, cantidad: int):
+    """Añade XP a un usuario. Uso: .add-xp (@usuario) (cantidad)"""
+    if cantidad <= 0:
+        return await ctx.send("❌ La cantidad debe ser positiva.")
+    if usuario.bot:
+        return await ctx.send("❌ No se puede añadir XP a bots.")
+    user_data = get_user_xp(ctx.guild.id, usuario.id)
+    old_level = user_data["level"]
+    user_data["xp"] += cantidad
+    new_level = level_from_xp(user_data["xp"])
+    user_data["level"] = new_level
+    guardar_xp()
+    msg = f"✅ Añadidos {cantidad:,} XP a {usuario.mention}. Total: {user_data['xp']:,} (Nivel {new_level})"
+    if new_level > old_level:
+        msg += f"\n🎉 ¡Subió de nivel {old_level} a {new_level}!"
+    await ctx.send(msg)
+
+
+@bot.command(name="remove-xp", help="Quita XP a un usuario. Uso: .remove-xp (@usuario) (cantidad)")
+@commands.has_permissions(manage_guild=True)
+async def prefix_remove_xp(ctx, usuario: discord.Member, cantidad: int):
+    """Quita XP a un usuario. Uso: .remove-xp (@usuario) (cantidad)"""
+    if cantidad <= 0:
+        return await ctx.send("❌ La cantidad debe ser positiva.")
+    if usuario.bot:
+        return await ctx.send("❌ No se puede quitar XP a bots.")
+    user_data = get_user_xp(ctx.guild.id, usuario.id)
+    user_data["xp"] = max(0, user_data["xp"] - cantidad)
+    user_data["level"] = level_from_xp(user_data["xp"])
+    guardar_xp()
+    await ctx.send(f"✅ Quitados {cantidad:,} XP a {usuario.mention}. Total: {user_data['xp']:,} (Nivel {user_data['level']})")
+
+
+@bot.command(name="reset-level", help="Reinicia el XP y nivel de un usuario. Uso: .reset-level (@usuario)")
+@commands.has_permissions(manage_guild=True)
+async def prefix_reset_level(ctx, usuario: discord.Member):
+    """Reinicia el XP y nivel de un usuario. Uso: .reset-level (@usuario)"""
+    if usuario.bot:
+        return await ctx.send("❌ No se puede reiniciar nivel de bots.")
+    gid = str(ctx.guild.id)
+    uid = str(usuario.id)
+    if gid in xp_db and uid in xp_db[gid]:
+        del xp_db[gid][uid]
+        guardar_xp()
+        await ctx.send(f"✅ XP y nivel de {usuario.mention} reiniciados.")
+    else:
+        await ctx.send("ℹ️ Ese usuario no tiene datos de XP.")
+
+
+# ============================================================
+#  SLASH: /level (Sistema de Niveles/XP)
+# ============================================================
+
+level_group = app_commands.Group(name="level", description="Sistema de niveles y XP")
+
+
+@level_group.command(name="rank", description="Muestra el rango y nivel de un usuario")
+@app_commands.describe(usuario="Usuario a consultar (opcional, por defecto tú)")
+async def slash_rank(interaction: discord.Interaction, usuario: discord.Member = None):
+    target = usuario or interaction.user
+    if target.bot:
+        return await interaction.response.send_message("❌ Los bots no tienen nivel.", ephemeral=True)
+    gid = str(interaction.guild.id)
+    uid = str(target.id)
+    user_data = get_user_xp(interaction.guild.id, target.id)
+    xp_in_level, xp_needed, progress = get_xp_progress(user_data)
+    rank = get_user_rank(interaction.guild.id, target.id)
+    total_users = len(get_guild_leaderboard(interaction.guild.id))
+    
+    xp_current = user_data["xp"]
+    xp_total_next = xp_for_level(user_data["level"] + 1)
+    xp_current_level = xp_for_level(user_data["level"])
+    
+    bar = create_progress_bar(progress, 20)
+    
+    embed = discord.Embed(title=f"📊 Rango de {target.display_name}", color=target.color or discord.Color.blurple())
+    embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="📈 Nivel", value=f"**{user_data['level']}**", inline=True)
+    embed.add_field(name="⭐ XP Total", value=f"**{user_data['xp']:,}**", inline=True)
+    embed.add_field(name="🏆 Posición", value=f"**#{rank}** de {total_users}", inline=True)
+    embed.add_field(name="", value="", inline=False)
+    embed.add_field(
+        name=f"Progreso hacia nivel {user_data['level'] + 1}",
+        value=f"`{bar}` {progress:.1f}%\n**{xp_in_level:,} / {xp_needed:,} XP**",
+        inline=False
+    )
+    embed.set_footer(text=f"XP en este nivel: {xp_in_level:,} / {xp_needed:,} | XP total para siguiente nivel: {xp_total_next:,}")
+    await interaction.response.send_message(embed=embed)
+
+
+@level_group.command(name="levels", description="Muestra información del sistema de niveles")
+@app_commands.describe(usuario="Usuario a consultar (opcional, por defecto tú)")
+async def slash_levels(interaction: discord.Interaction, usuario: discord.Member = None):
+    target = usuario or interaction.user
+    if target.bot:
+        return await interaction.response.send_message("❌ Los bots no tienen nivel.", ephemeral=True)
+    user_data = get_user_xp(interaction.guild.id, target.id)
+    xp_in_level, xp_needed, progress = get_xp_progress(user_data)
+    rank = get_user_rank(interaction.guild.id, target.id)
+    total_users = len(get_guild_leaderboard(interaction.guild.id))
+    
+    embed = discord.Embed(title=f"📊 Nivel de {target.display_name}", color=target.color or discord.Color.blurple())
+    embed.add_field(name="Nivel actual", value=f"**{user_data['level']}**", inline=True)
+    embed.add_field(name="XP actual", value=f"**{user_data['xp']:,}**", inline=True)
+    embed.add_field(name="XP para siguiente nivel", value=f"**{xp_needed:,}**", inline=True)
+    embed.add_field(name="Progreso", value=f"{progress:.1f}%", inline=True)
+    embed.add_field(name="Posición en ranking", value=f"#{rank} de {total_users}", inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class LeaderboardView(discord.ui.View):
+    def __init__(self, guild: discord.Guild, leaderboard: list, per_page: int = 10):
+        super().__init__(timeout=60)
+        self.guild = guild
+        self.leaderboard = leaderboard
+        self.per_page = per_page
+        self.current_page = 0
+        self.max_page = (len(leaderboard) - 1) // per_page
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.prev.disabled = self.current_page == 0
+        self.next.disabled = self.current_page >= self.max_page
+
+    def get_embed(self):
+        start = self.current_page * self.per_page
+        end = start + self.per_page
+        page_data = self.leaderboard[start:end]
+        
+        embed = discord.Embed(
+            title=f"🏆 Ranking de {self.guild.name}",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        if not page_data:
+            embed.description = "No hay datos."
+            return embed
+        
+        lines = []
+        for i, (uid, xp, level) in enumerate(page_data, start + 1):
+            member = self.guild.get_member(uid)
+            name = member.display_name if member else f"Usuario desconocido ({uid})"
+            lines.append(f"`#{i}` {name} — **Nivel {level}** — `{xp:,} XP`")
+        
+        embed.description = "\n".join(lines)
+        embed.set_footer(text=f"Página {self.current_page + 1} / {self.max_page + 1} • {len(self.leaderboard)} usuarios")
+        return embed
+
+    @discord.ui.button(label="◀️ Anterior", style=discord.ButtonStyle.secondary, custom_id="lb_prev")
+    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Siguiente ▶️", style=discord.ButtonStyle.secondary, custom_id="lb_next")
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page < self.max_page:
+            self.current_page += 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+
+@level_group.command(name="leaderboard", description="Muestra el ranking de usuarios con más XP")
+@app_commands.describe(pagina="Página inicial (opcional)")
+async def slash_leaderboard(interaction: discord.Interaction, pagina: int = 1):
+    leaderboard = get_guild_leaderboard(interaction.guild.id)
+    if not leaderboard:
+        return await interaction.response.send_message("ℹ️ No hay datos de XP en este servidor.", ephemeral=True)
+    
+    view = LeaderboardView(interaction.guild, leaderboard)
+    pagina = max(1, min(pagina, view.max_page + 1))
+    view.current_page = pagina - 1
+    view.update_buttons()
+    await interaction.response.send_message(embed=view.get_embed(), view=view)
+
+
+# ============================================================
+#  SLASH: /level-admin (Administración del sistema de niveles)
+# ============================================================
+
+level_admin_group = app_commands.Group(name="level-admin", description="Administración del sistema de niveles")
+
+
+@level_admin_group.command(name="config", description="Configura el sistema de niveles")
+@app_commands.describe(
+    enabled="Activar/desactivar sistema",
+    xp_min="XP mínimo por mensaje",
+    xp_max="XP máximo por mensaje",
+    cooldown="Cooldown en segundos",
+    canal="Canal para anuncios de nivel",
+    mensaje="Mensaje de level up (usa {user}, {level}, {xp}, {server})",
+    anuncios="Activar/desactivar anuncios de level up"
+)
+@app_commands.default_permissions(manage_guild=True)
+async def slash_level_config(
+    interaction: discord.Interaction,
+    enabled: bool = None,
+    xp_min: int = None,
+    xp_max: int = None,
+    cooldown: int = None,
+    canal: discord.TextChannel = None,
+    mensaje: str = None,
+    anuncios: bool = None
+):
+    gid = str(interaction.guild.id)
+    config = get_xp_config(interaction.guild.id)
+    
+    if enabled is not None:
+        config["enabled"] = enabled
+    if xp_min is not None:
+        if xp_min < 0:
+            return await interaction.response.send_message("❌ El XP mínimo no puede ser negativo.", ephemeral=True)
+        config["xp_min"] = xp_min
+    if xp_max is not None:
+        if xp_max < 0:
+            return await interaction.response.send_message("❌ El XP máximo no puede ser negativo.", ephemeral=True)
+        config["xp_max"] = xp_max
+    if xp_min is not None and xp_max is not None and config["xp_min"] > config["xp_max"]:
+        return await interaction.response.send_message("❌ El XP mínimo no puede ser mayor que el máximo.", ephemeral=True)
+    if cooldown is not None:
+        if cooldown < 0:
+            return await interaction.response.send_message("❌ El cooldown no puede ser negativo.", ephemeral=True)
+        config["cooldown"] = cooldown
+    if canal is not None:
+        config["levelup_channel"] = canal.id
+    if mensaje is not None:
+        config["levelup_msg"] = mensaje
+    if anuncios is not None:
+        config["levelup_enabled"] = anuncios
+    
+    xp_config_db[str(interaction.guild.id)] = config
+    guardar_xp()
+    
+    embed = discord.Embed(title="⚙️ Configuración de niveles actualizada", color=discord.Color.green())
+    embed.add_field(name="Estado", value="✅ Activado" if config["enabled"] else "❌ Desactivado", inline=True)
+    embed.add_field(name="XP por mensaje", value=f"{config['xp_min']} - {config['xp_max']}", inline=True)
+    embed.add_field(name="Cooldown", value=f"{config['cooldown']}s", inline=True)
+    embed.add_field(name="Canal anuncios", value=f"<#{config['levelup_channel']}>" if config["levelup_channel"] else "Canal actual", inline=True)
+    embed.add_field(name="Anuncios", value="✅ Activados" if config["levelup_enabled"] else "❌ Desactivados", inline=True)
+    if config["levelup_msg"]:
+        embed.add_field(name="Mensaje level up", value=config["levelup_msg"], inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@level_admin_group.command(name="set-role", description="Asigna un rol al alcanzar un nivel")
+@app_commands.describe(nivel="Nivel requerido", rol="Rol a otorgar")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_set_level_role(interaction: discord.Interaction, nivel: int, rol: discord.Role):
+    if nivel < 1:
+        return await interaction.response.send_message("❌ El nivel debe ser al menos 1.", ephemeral=True)
+    if rol.position >= interaction.guild.me.top_role.position:
+        return await interaction.response.send_message("❌ No puedo asignar ese rol (está por encima de mi rol).", ephemeral=True)
+    gid = str(interaction.guild.id)
+    level_roles_db.setdefault(gid, {})
+    level_roles_db[gid][str(nivel)] = str(rol.id)
+    guardar_level_roles()
+    await interaction.response.send_message(f"✅ Rol {rol.mention} asignado para el nivel {nivel}.", ephemeral=True)
+
+
+@level_admin_group.command(name="remove-role", description="Elimina una recompensa de rol por nivel")
+@app_commands.describe(nivel="Nivel del que quitar la recompensa")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_remove_level_role(interaction: discord.Interaction, nivel: int):
+    gid = str(interaction.guild.id)
+    if gid not in level_roles_db or str(nivel) not in level_roles_db[gid]:
+        return await interaction.response.send_message("❌ No hay recompensa configurada para ese nivel.", ephemeral=True)
+    del level_roles_db[gid][str(nivel)]
+    if not level_roles_db[gid]:
+        del level_roles_db[gid]
+    guardar_level_roles()
+    await interaction.response.send_message(f"✅ Recompensa de nivel {nivel} eliminada.", ephemeral=True)
+
+
+@level_admin_group.command(name="set-xp", description="Establece el XP de un usuario manualmente")
+@app_commands.describe(usuario="Usuario", xp="Cantidad de XP")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_set_xp(interaction: discord.Interaction, usuario: discord.Member, xp: int):
+    if xp < 0:
+        return await interaction.response.send_message("❌ El XP no puede ser negativo.", ephemeral=True)
+    if usuario.bot:
+        return await interaction.response.send_message("❌ No se puede modificar XP de bots.", ephemeral=True)
+    user_data = get_user_xp(interaction.guild.id, usuario.id)
+    user_data["xp"] = xp
+    user_data["level"] = level_from_xp(xp)
+    guardar_xp()
+    await interaction.response.send_message(f"✅ XP de {usuario.mention} establecido a {xp:,} (Nivel {user_data['level']}).", ephemeral=True)
+
+
+@level_admin_group.command(name="set-level", description="Establece el nivel de un usuario manualmente")
+@app_commands.describe(usuario="Usuario", nivel="Nivel a establecer")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_set_level(interaction: discord.Interaction, usuario: discord.Member, nivel: int):
+    if nivel < 0:
+        return await interaction.response.send_message("❌ El nivel no puede ser negativo.", ephemeral=True)
+    if usuario.bot:
+        return await interaction.response.send_message("❌ No se puede modificar nivel de bots.", ephemeral=True)
+    user_data = get_user_xp(interaction.guild.id, usuario.id)
+    user_data["level"] = nivel
+    user_data["xp"] = xp_for_level(nivel)
+    guardar_xp()
+    await interaction.response.send_message(f"✅ Nivel de {usuario.mention} establecido a {nivel} (XP: {user_data['xp']:,}).", ephemeral=True)
+
+
+@level_admin_group.command(name="add-xp", description="Añade XP a un usuario")
+@app_commands.describe(usuario="Usuario", cantidad="Cantidad de XP a añadir")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_add_xp(interaction: discord.Interaction, usuario: discord.Member, cantidad: int):
+    if cantidad <= 0:
+        return await interaction.response.send_message("❌ La cantidad debe ser positiva.", ephemeral=True)
+    if usuario.bot:
+        return await interaction.response.send_message("❌ No se puede añadir XP a bots.", ephemeral=True)
+    user_data = get_user_xp(interaction.guild.id, usuario.id)
+    old_level = user_data["level"]
+    user_data["xp"] += cantidad
+    new_level = level_from_xp(user_data["xp"])
+    user_data["level"] = new_level
+    guardar_xp()
+    msg = f"✅ Añadidos {cantidad:,} XP a {usuario.mention}. Total: {user_data['xp']:,} (Nivel {new_level})"
+    if new_level > old_level:
+        msg += f"\n🎉 ¡Subió de nivel {old_level} a {new_level}!"
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+@level_admin_group.command(name="remove-xp", description="Quita XP a un usuario")
+@app_commands.describe(usuario="Usuario", cantidad="Cantidad de XP a quitar")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_remove_xp(interaction: discord.Interaction, usuario: discord.Member, cantidad: int):
+    if cantidad <= 0:
+        return await interaction.response.send_message("❌ La cantidad debe ser positiva.", ephemeral=True)
+    if usuario.bot:
+        return await interaction.response.send_message("❌ No se puede quitar XP a bots.", ephemeral=True)
+    user_data = get_user_xp(interaction.guild.id, usuario.id)
+    user_data["xp"] = max(0, user_data["xp"] - cantidad)
+    user_data["level"] = level_from_xp(user_data["xp"])
+    guardar_xp()
+    await interaction.response.send_message(f"✅ Quitados {cantidad:,} XP a {usuario.mention}. Total: {user_data['xp']:,} (Nivel {user_data['level']})", ephemeral=True)
+
+
+@level_admin_group.command(name="reset", description="Reinicia el XP y nivel de un usuario")
+@app_commands.describe(usuario="Usuario a reiniciar")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_reset_level(interaction: discord.Interaction, usuario: discord.Member):
+    if usuario.bot:
+        return await interaction.response.send_message("❌ No se puede reiniciar nivel de bots.", ephemeral=True)
+    gid = str(interaction.guild.id)
+    uid = str(usuario.id)
+    if gid in xp_db and uid in xp_db[gid]:
+        del xp_db[gid][uid]
+        guardar_xp()
+        await interaction.response.send_message(f"✅ XP y nivel de {usuario.mention} reiniciados.", ephemeral=True)
+    else:
+        await interaction.response.send_message("ℹ️ Ese usuario no tiene datos de XP.", ephemeral=True)
+
+
+bot.tree.add_command(level_group)
+bot.tree.add_command(level_admin_group)
 
 
 if __name__ == "__main__":
