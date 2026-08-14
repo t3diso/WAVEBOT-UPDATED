@@ -743,6 +743,7 @@ async def on_ready():
     cargar_honeypots()
     cargar_xp()
     cargar_level_roles()
+    await bot.change_presence(status=discord.Status.online, activity=discord.Game(name=".help | created by ukodev"))
     print(f"Conectado como {bot.user} (ID: {bot.user.id})")
     print(f"Servidores: {len(bot.guilds)}")
     # Intentar sync global primero.
@@ -2498,22 +2499,38 @@ async def ipban_error(ctx, error):
 @bot.command(name="ipunban")
 @commands.has_permissions(ban_members=True)
 @commands.bot_has_permissions(ban_members=True)
-async def ipunban(ctx, usuario_arg: str):
-    """Levanta el IP-ban (desbanea al usuario). Uso: .ipunban <id|@|nombre>"""
-    usuario, _, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        # Permitir también buscar por nombre en la lista de baneados.
-        try:
-            bans = await ctx.guild.bans()
-            for entry in bans:
-                if entry.user.name.lower() == usuario_arg.lower() or str(entry.user.id) == usuario_arg:
-                    usuario = entry.user
-                    err = None
-                    break
-        except discord.HTTPException:
-            pass
+async def ipunban(ctx, *, args: str = ""):
+    """
+    Levanta el IP-ban (desbanea al usuario) por ID, @mención, nombre, o respondiendo a su mensaje.
+    Uso: .ipunban <id|@|nombre>
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .ipunban
+    """
+    usuario_repl, _ = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario = usuario_repl
+    else:
+        usuario_arg = args.strip()
+        if not usuario_arg:
+            return await ctx.send(
+                "❌ Debes indicar un usuario (ID, @mención o nombre) o responder a su mensaje.\n"
+                "Uso correcto: `.ipunban <id|@|nombre>`"
+            )
+        usuario, _, err = await resolver_usuario(ctx.guild, usuario_arg)
         if err:
-            return await ctx.send(err)
+            # Permitir también buscar por nombre en la lista de baneados.
+            try:
+                bans = await ctx.guild.bans()
+                for entry in bans:
+                    if entry.user.name.lower() == usuario_arg.lower() or str(entry.user.id) == usuario_arg:
+                        usuario = entry.user
+                        err = None
+                        break
+            except discord.HTTPException:
+                pass
+            if err:
+                return await ctx.send(err)
+
     try:
         await ctx.guild.unban(usuario, reason=f"IP-UNBAN por {ctx.author} (ID {ctx.author.id})")
     except discord.NotFound:
@@ -2534,21 +2551,9 @@ async def ipunban_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ No tienes permiso para banear.")
     elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("❌ Uso correcto: `.ipunban <id_usuario>`")
+        await ctx.send("❌ Uso correcto: `.ipunban <id_usuario>` o responde al mensaje del usuario.")
     elif isinstance(error, commands.BadArgument):
-        await ctx.send("❌ La ID debe ser un número entero.")
-    elif isinstance(error, commands.BotMissingPermissions):
-        await ctx.send("❌ Me falta el permiso Ban Members.")
-
-
-@ipunban.error
-async def ipunban_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ No tienes permiso para banear.")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("❌ Uso correcto: `.ipunban <id_usuario>`")
-    elif isinstance(error, commands.BadArgument):
-        await ctx.send("❌ La ID debe ser un número entero.")
+        await ctx.send("❌ La ID debe ser un número entero, una mención o un nombre válido.")
     elif isinstance(error, commands.BotMissingPermissions):
         await ctx.send("❌ Me falta el permiso Ban Members.")
 
@@ -2673,17 +2678,35 @@ async def _tarea_softban_unban(guild_id: int, user_id: int, segundos: int, moder
 @bot.command(name="softban")
 @commands.has_permissions(ban_members=True)
 @commands.bot_has_permissions(ban_members=True)
-async def softban(ctx, usuario_arg: str, duracion: str, *, motivo: str = "No especificado"):
-    """Banea temporalmente a un usuario. Uso: .softban <id/@/nombre> <duracion> [motivo]"""
+async def softban(ctx, *, args: str = ""):
+    """
+    Banea temporalmente a un usuario.
+    Uso normal: .softban <id|@|nombre> <duracion> [motivo]
+    Si respondes al mensaje del usuario: .softban <duracion> [motivo]
+    """
+    tokens = args.split(maxsplit=2)
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        if not tokens:
+            return await ctx.send("❌ Debes indicar una duración.\nUso: `.softban <duración> [motivo]` (respondiendo al mensaje)")
+        usuario, miembro = usuario_repl, miembro_repl
+        duracion = tokens[0]
+        motivo = tokens[1] if len(tokens) > 1 else "No especificado"
+    else:
+        if len(tokens) < 2:
+            return await ctx.send("❌ Debes indicar un usuario y una duración, o responder al mensaje del usuario.\nUso correcto: `.softban <id|@|nombre> <duración> [motivo]`")
+        usuario_arg, duracion = tokens[0], tokens[1]
+        motivo = tokens[2] if len(tokens) > 2 else "No especificado"
+        usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
+        if err:
+            return await ctx.send(err)
+
     segundos, err = parsear_duracion(duracion)
     if err:
         return await ctx.send(f"❌ {err}")
     if segundos > 86400 * 7:
         return await ctx.send("❌ La duración máxima de un softban es de 7 días.")
-
-    usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
 
     if miembro is not None:
         if miembro.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
@@ -2715,7 +2738,7 @@ async def softban_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ Necesitas el permiso Ban Members.")
     elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("❌ Uso correcto: `.softban <id|@|nombre> <duración> [motivo]`\nEj: `.softban 123456 1h Spam`")
+        await ctx.send("❌ Uso correcto: `.softban <id|@|nombre> <duración> [motivo]` o, respondiendo, `.softban <duración> [motivo]`")
     elif isinstance(error, commands.BotMissingPermissions):
         await ctx.send("❌ Me falta el permiso Ban Members.")
 
@@ -4565,10 +4588,30 @@ async def prefix_remove_level_role(ctx, nivel: int):
     await ctx.send(f"✅ Recompensa de nivel {nivel} eliminada.")
 
 
-@bot.command(name="set-xp", help="Establece el XP de un usuario. Uso: .set-xp (@usuario) (cantidad)")
+@bot.command(name="set-xp", help="Establece el XP de un usuario. Uso: .set-xp (@usuario) (cantidad) o responde al usuario")
 @commands.has_permissions(manage_guild=True)
-async def prefix_set_xp(ctx, usuario: discord.Member, xp: int):
-    """Establece el XP de un usuario manualmente. Uso: .set-xp (@usuario) (cantidad)"""
+async def prefix_set_xp(ctx, *, args: str = ""):
+    """Establece el XP de un usuario manualmente. Respondiendo: `.set-xp (cantidad)`."""
+    tokens = args.split()
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+    if usuario_repl is not None:
+        if not tokens:
+            return await ctx.send("❌ Debes indicar la cantidad de XP. Uso: `.set-xp (cantidad)` respondiendo al usuario.")
+        usuario = miembro_repl or usuario_repl
+        try:
+            xp = int(tokens[0])
+        except ValueError:
+            return await ctx.send("❌ La cantidad de XP debe ser un número entero.")
+    else:
+        if len(tokens) < 2:
+            return await ctx.send("❌ Uso correcto: `.set-xp (@usuario) (cantidad)` o responde al usuario.")
+        usuario, _, err = await resolver_usuario(ctx.guild, tokens[0])
+        if err:
+            return await ctx.send(err)
+        try:
+            xp = int(tokens[1])
+        except ValueError:
+            return await ctx.send("❌ La cantidad de XP debe ser un número entero.")
     if xp < 0:
         return await ctx.send("❌ El XP no puede ser negativo.")
     if usuario.bot:
@@ -4580,10 +4623,30 @@ async def prefix_set_xp(ctx, usuario: discord.Member, xp: int):
     await ctx.send(f"✅ XP de {usuario.mention} establecido a {xp:,} (Nivel {user_data['level']}).")
 
 
-@bot.command(name="set-level", help="Establece el nivel de un usuario. Uso: .set-level (@usuario) (nivel)")
+@bot.command(name="set-level", help="Establece el nivel de un usuario. Uso: .set-level (@usuario) (nivel) o responde al usuario")
 @commands.has_permissions(manage_guild=True)
-async def prefix_set_level(ctx, usuario: discord.Member, nivel: int):
-    """Establece el nivel de un usuario manualmente. Uso: .set-level (@usuario) (nivel)"""
+async def prefix_set_level(ctx, *, args: str = ""):
+    """Establece el nivel de un usuario manualmente. Respondiendo: `.set-level (nivel)`."""
+    tokens = args.split()
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+    if usuario_repl is not None:
+        if not tokens:
+            return await ctx.send("❌ Debes indicar el nivel. Uso: `.set-level (nivel)` respondiendo al usuario.")
+        usuario = miembro_repl or usuario_repl
+        try:
+            nivel = int(tokens[0])
+        except ValueError:
+            return await ctx.send("❌ El nivel debe ser un número entero.")
+    else:
+        if len(tokens) < 2:
+            return await ctx.send("❌ Uso correcto: `.set-level (@usuario) (nivel)` o responde al usuario.")
+        usuario, _, err = await resolver_usuario(ctx.guild, tokens[0])
+        if err:
+            return await ctx.send(err)
+        try:
+            nivel = int(tokens[1])
+        except ValueError:
+            return await ctx.send("❌ El nivel debe ser un número entero.")
     if nivel < 0:
         return await ctx.send("❌ El nivel no puede ser negativo.")
     if usuario.bot:
@@ -4595,10 +4658,30 @@ async def prefix_set_level(ctx, usuario: discord.Member, nivel: int):
     await ctx.send(f"✅ Nivel de {usuario.mention} establecido a {nivel} (XP: {user_data['xp']:,}).")
 
 
-@bot.command(name="add-xp", help="Añade XP a un usuario. Uso: .add-xp (@usuario) (cantidad)")
+@bot.command(name="add-xp", help="Añade XP a un usuario. Uso: .add-xp (@usuario) (cantidad) o responde al usuario")
 @commands.has_permissions(manage_guild=True)
-async def prefix_add_xp(ctx, usuario: discord.Member, cantidad: int):
-    """Añade XP a un usuario. Uso: .add-xp (@usuario) (cantidad)"""
+async def prefix_add_xp(ctx, *, args: str = ""):
+    """Añade XP a un usuario. Respondiendo: `.add-xp (cantidad)`."""
+    tokens = args.split()
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+    if usuario_repl is not None:
+        if not tokens:
+            return await ctx.send("❌ Debes indicar la cantidad. Uso: `.add-xp (cantidad)` respondiendo al usuario.")
+        usuario = miembro_repl or usuario_repl
+        try:
+            cantidad = int(tokens[0])
+        except ValueError:
+            return await ctx.send("❌ La cantidad debe ser un número entero.")
+    else:
+        if len(tokens) < 2:
+            return await ctx.send("❌ Uso correcto: `.add-xp (@usuario) (cantidad)` o responde al usuario.")
+        usuario, _, err = await resolver_usuario(ctx.guild, tokens[0])
+        if err:
+            return await ctx.send(err)
+        try:
+            cantidad = int(tokens[1])
+        except ValueError:
+            return await ctx.send("❌ La cantidad debe ser un número entero.")
     if cantidad <= 0:
         return await ctx.send("❌ La cantidad debe ser positiva.")
     if usuario.bot:
@@ -4615,10 +4698,30 @@ async def prefix_add_xp(ctx, usuario: discord.Member, cantidad: int):
     await ctx.send(msg)
 
 
-@bot.command(name="remove-xp", help="Quita XP a un usuario. Uso: .remove-xp (@usuario) (cantidad)")
+@bot.command(name="remove-xp", help="Quita XP a un usuario. Uso: .remove-xp (@usuario) (cantidad) o responde al usuario")
 @commands.has_permissions(manage_guild=True)
-async def prefix_remove_xp(ctx, usuario: discord.Member, cantidad: int):
-    """Quita XP a un usuario. Uso: .remove-xp (@usuario) (cantidad)"""
+async def prefix_remove_xp(ctx, *, args: str = ""):
+    """Quita XP a un usuario. Respondiendo: `.remove-xp (cantidad)`."""
+    tokens = args.split()
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+    if usuario_repl is not None:
+        if not tokens:
+            return await ctx.send("❌ Debes indicar la cantidad. Uso: `.remove-xp (cantidad)` respondiendo al usuario.")
+        usuario = miembro_repl or usuario_repl
+        try:
+            cantidad = int(tokens[0])
+        except ValueError:
+            return await ctx.send("❌ La cantidad debe ser un número entero.")
+    else:
+        if len(tokens) < 2:
+            return await ctx.send("❌ Uso correcto: `.remove-xp (@usuario) (cantidad)` o responde al usuario.")
+        usuario, _, err = await resolver_usuario(ctx.guild, tokens[0])
+        if err:
+            return await ctx.send(err)
+        try:
+            cantidad = int(tokens[1])
+        except ValueError:
+            return await ctx.send("❌ La cantidad debe ser un número entero.")
     if cantidad <= 0:
         return await ctx.send("❌ La cantidad debe ser positiva.")
     if usuario.bot:
@@ -4630,10 +4733,22 @@ async def prefix_remove_xp(ctx, usuario: discord.Member, cantidad: int):
     await ctx.send(f"✅ Quitados {cantidad:,} XP a {usuario.mention}. Total: {user_data['xp']:,} (Nivel {user_data['level']})")
 
 
-@bot.command(name="reset-level", help="Reinicia el XP y nivel de un usuario. Uso: .reset-level (@usuario)")
+@bot.command(name="reset-level", help="Reinicia el XP y nivel de un usuario. Uso: .reset-level (@usuario) o responde al usuario")
 @commands.has_permissions(manage_guild=True)
-async def prefix_reset_level(ctx, usuario: discord.Member):
-    """Reinicia el XP y nivel de un usuario. Uso: .reset-level (@usuario)"""
+async def prefix_reset_level(ctx, *, args: str = ""):
+    """Reinicia el XP y nivel de un usuario. Puedes responder a su mensaje y usar `.reset-level`."""
+    tokens = args.split()
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+    if usuario_repl is not None:
+        if tokens:
+            return await ctx.send("❌ `.reset-level` no necesita argumentos al responder a un usuario.")
+        usuario = miembro_repl or usuario_repl
+    else:
+        if not tokens:
+            return await ctx.send("❌ Uso correcto: `.reset-level (@usuario)` o responde al usuario.")
+        usuario, _, err = await resolver_usuario(ctx.guild, tokens[0])
+        if err:
+            return await ctx.send(err)
     if usuario.bot:
         return await ctx.send("❌ No se puede reiniciar nivel de bots.")
     gid = str(ctx.guild.id)
