@@ -1012,11 +1012,30 @@ async def mute_error(ctx, error):
 @bot.command(name="unmute")
 @commands.has_permissions(moderate_members=True)
 @commands.bot_has_permissions(moderate_members=True)
-async def unmute(ctx, usuario_arg: str, *, motivo: str = "No especificado"):
-    """Quita el timeout a un miembro. Uso: .unmute <id|@|nombre> [motivo]"""
-    usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
+async def unmute(ctx, *, args: str = ""):
+    """
+    Quita el timeout a un miembro por ID, @mención, nombre, o respondiendo a su mensaje.
+    Uso: .unmute <id|@|nombre> [motivo]
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .unmute [motivo]
+    """
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario, miembro = usuario_repl, miembro_repl
+        motivo = args.strip() or "No especificado"
+    else:
+        tokens = args.split(maxsplit=1)
+        if not tokens:
+            return await ctx.send(
+                "❌ Debes indicar un usuario (ID, @mención o nombre) o responder a su mensaje.\n"
+                "Uso correcto: `.unmute <id|@|nombre> [motivo]`"
+            )
+        usuario_arg = tokens[0]
+        motivo = tokens[1] if len(tokens) > 1 else "No especificado"
+        usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
+        if err:
+            return await ctx.send(err)
+
     if miembro is None:
         return await ctx.send("❌ Ese usuario no está en este servidor.")
     if not miembro.is_timed_out():
@@ -1031,24 +1050,41 @@ async def unmute(ctx, usuario_arg: str, *, motivo: str = "No especificado"):
 @bot.command(name="unban")
 @commands.has_permissions(ban_members=True)
 @commands.bot_has_permissions(ban_members=True)
-async def unban(ctx, usuario_arg: str, *, motivo: str = "No especificado"):
-    """Levanta el ban de un usuario por ID, @mención o nombre. Uso: .unban <id|@|nombre> [motivo]"""
-    # Nota: unban por nombre requiere que la caché del bot tenga el usuario; lo más fiable es ID/@.
-    usuario, _, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        # Si vino un nombre y no está en caché, intentamos buscar en la lista de baneados.
-        m = None
-        try:
-            bans = await ctx.guild.bans()
-            for entry in bans:
-                if entry.user.name.lower() == usuario_arg.lower():
-                    usuario = entry.user
-                    err = None
-                    break
-        except discord.HTTPException:
-            pass
+async def unban(ctx, *, args: str = ""):
+    """
+    Levanta el ban de un usuario por ID, @mención, nombre, o respondiendo a su mensaje.
+    Uso: .unban <id|@|nombre> [motivo]
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .unban [motivo]
+    """
+    usuario_repl, _ = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario = usuario_repl
+        motivo = args.strip() or "No especificado"
+    else:
+        tokens = args.split(maxsplit=1)
+        if not tokens:
+            return await ctx.send(
+                "❌ Debes indicar un usuario (ID, @mención o nombre) o responder a su mensaje.\n"
+                "Uso correcto: `.unban <id|@|nombre> [motivo]`"
+            )
+        usuario_arg = tokens[0]
+        motivo = tokens[1] if len(tokens) > 1 else "No especificado"
+        # Nota: unban por nombre requiere que la caché del bot tenga el usuario; lo más fiable es ID/@.
+        usuario, _, err = await resolver_usuario(ctx.guild, usuario_arg)
         if err:
-            return await ctx.send(err)
+            # Si vino un nombre y no está en caché, intentamos buscar en la lista de baneados.
+            try:
+                bans = await ctx.guild.bans()
+                for entry in bans:
+                    if entry.user.name.lower() == usuario_arg.lower():
+                        usuario = entry.user
+                        err = None
+                        break
+            except discord.HTTPException:
+                pass
+            if err:
+                return await ctx.send(err)
     try:
         await ctx.guild.unban(usuario, reason=f"{ctx.author} (ID {ctx.author.id}): {motivo}")
     except discord.NotFound:
