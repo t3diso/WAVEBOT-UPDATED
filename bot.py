@@ -1098,14 +1098,32 @@ async def unban(ctx, *, args: str = ""):
 
 @bot.command(name="warn")
 @commands.has_permissions(moderate_members=True)
-async def warn(ctx, usuario_arg: str, *, motivo: str):
-    """Advierte a un usuario. Uso: .warn <id|@|nombre> <motivo> (motivo obligatorio)"""
-    if not motivo or motivo.strip() == "":
-        return await ctx.send("❌ Debes indicar un motivo. Uso: `.warn <id|@|nombre> <motivo>`")
+async def warn(ctx, *, args: str = ""):
+    """
+    Advierte a un usuario. Uso: .warn <id|@|nombre> <motivo> (motivo obligatorio)
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .warn <motivo>
+    """
+    usuario_repl, _ = await resolver_objetivo_replica(ctx)
 
-    usuario, _, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
+    if usuario_repl is not None:
+        usuario = usuario_repl
+        motivo = args.strip()
+        if not motivo:
+            return await ctx.send("❌ Debes indicar un motivo. Uso: `.warn <motivo>` (respondiendo al mensaje)")
+    else:
+        tokens = args.split(maxsplit=1)
+        if not tokens:
+            return await ctx.send(
+                "❌ Debes indicar un usuario (ID, @mención o nombre) o responder a su mensaje.\n"
+                "Uso correcto: `.warn <id|@|nombre> <motivo>`"
+            )
+        usuario_arg = tokens[0]
+        motivo = tokens[1].strip() if len(tokens) > 1 else ""
+        if not motivo:
+            return await ctx.send("❌ Debes indicar un motivo. Uso: `.warn <id|@|nombre> <motivo>`")
+        usuario, _, err = await resolver_usuario(ctx.guild, usuario_arg)
+        if err:
+            return await ctx.send(err)
 
     clave = str(usuario.id)
     lista = warns_db.setdefault(clave, [])
@@ -1150,11 +1168,37 @@ async def warn_error(ctx, error):
 
 @bot.command(name="warnremove")
 @commands.has_permissions(moderate_members=True)
-async def warnremove(ctx, usuario_arg: str, numero: int):
-    """Elimina un warn por su número. Uso: .warnremove <id|@|nombre> <número>"""
-    usuario, _, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
+async def warnremove(ctx, *, args: str = ""):
+    """
+    Elimina un warn por su número. Uso: .warnremove <id|@|nombre> <número>
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .warnremove <número>
+    """
+    usuario_repl, _ = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario = usuario_repl
+        resto = args.split()
+        if not resto:
+            return await ctx.send("❌ Debes indicar el número de warn. Uso: `.warnremove <número>` (respondiendo al mensaje)")
+        try:
+            numero = int(resto[0])
+        except ValueError:
+            return await ctx.send("❌ El número debe ser un entero.")
+    else:
+        tokens = args.split()
+        if len(tokens) < 2:
+            return await ctx.send(
+                "❌ Debes indicar un usuario y un número, o responder al mensaje del usuario.\n"
+                "Uso correcto: `.warnremove <id|@|nombre> <número>`"
+            )
+        usuario_arg, numero_str = tokens[0], tokens[1]
+        try:
+            numero = int(numero_str)
+        except ValueError:
+            return await ctx.send("❌ El número debe ser un entero.")
+        usuario, _, err = await resolver_usuario(ctx.guild, usuario_arg)
+        if err:
+            return await ctx.send(err)
     clave = str(usuario.id)
     lista = warns_db.get(clave, [])
     if not lista:
@@ -1199,11 +1243,25 @@ async def warnremove_error(ctx, error):
 
 @bot.command(name="warns")
 @commands.has_permissions(moderate_members=True)
-async def warns(ctx, usuario_arg: str):
-    """Muestra todos los warns de un usuario con motivo y fecha. Uso: .warns <id|@|nombre>"""
-    usuario, _, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
+async def warns(ctx, *, args: str = ""):
+    """
+    Muestra todos los warns de un usuario con motivo y fecha. Uso: .warns <id|@|nombre>
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .warns
+    """
+    usuario_repl, _ = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario = usuario_repl
+    else:
+        tokens = args.split()
+        if not tokens:
+            return await ctx.send(
+                "❌ Debes indicar un usuario (ID, @mención o nombre) o responder a su mensaje.\n"
+                "Uso correcto: `.warns <id|@|nombre>`"
+            )
+        usuario, _, err = await resolver_usuario(ctx.guild, tokens[0])
+        if err:
+            return await ctx.send(err)
     user_id = usuario.id
     clave = str(user_id)
     lista = warns_db.get(clave, [])
@@ -1390,11 +1448,35 @@ async def linkbanlist(ctx):
 @bot.command(name="roleadd")
 @commands.has_permissions(manage_roles=True)
 @commands.bot_has_permissions(manage_roles=True)
-async def roleadd(ctx, usuario_arg: str, rol: discord.Role):
-    """Otorga un rol a un usuario. Uso: .roleadd <id|@|nombre> @rol"""
-    usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
+async def roleadd(ctx, *, args: str = ""):
+    """
+    Otorga un rol a un usuario. Uso: .roleadd <id|@|nombre> @rol
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .roleadd @rol
+    """
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+    tokens = args.split()
+
+    if usuario_repl is not None:
+        usuario, miembro = usuario_repl, miembro_repl
+        if not tokens:
+            return await ctx.send("❌ Debes indicar un rol. Uso: `.roleadd @rol` (respondiendo al mensaje)")
+        rol_arg = tokens[0]
+    else:
+        if len(tokens) < 2:
+            return await ctx.send(
+                "❌ Debes indicar un usuario y un rol, o responder al mensaje del usuario.\n"
+                "Uso correcto: `.roleadd <id|@|nombre> @rol`"
+            )
+        usuario_arg, rol_arg = tokens[0], tokens[1]
+        usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
+        if err:
+            return await ctx.send(err)
+
+    try:
+        rol = await commands.RoleConverter().convert(ctx, rol_arg)
+    except commands.RoleNotFound:
+        return await ctx.send("❌ No encontré ese rol. Menciónalo con @rol, usa su ID o su nombre exacto.")
+
     if miembro is None:
         return await ctx.send("❌ Ese usuario no está en este servidor.")
 
@@ -1435,11 +1517,35 @@ async def roleadd_error(ctx, error):
 @bot.command(name="roleremove")
 @commands.has_permissions(manage_roles=True)
 @commands.bot_has_permissions(manage_roles=True)
-async def roleremove(ctx, usuario_arg: str, rol: discord.Role):
-    """Quita un rol a un usuario. Uso: .roleremove <id|@|nombre> @rol"""
-    usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
+async def roleremove(ctx, *, args: str = ""):
+    """
+    Quita un rol a un usuario. Uso: .roleremove <id|@|nombre> @rol
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .roleremove @rol
+    """
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+    tokens = args.split()
+
+    if usuario_repl is not None:
+        usuario, miembro = usuario_repl, miembro_repl
+        if not tokens:
+            return await ctx.send("❌ Debes indicar un rol. Uso: `.roleremove @rol` (respondiendo al mensaje)")
+        rol_arg = tokens[0]
+    else:
+        if len(tokens) < 2:
+            return await ctx.send(
+                "❌ Debes indicar un usuario y un rol, o responder al mensaje del usuario.\n"
+                "Uso correcto: `.roleremove <id|@|nombre> @rol`"
+            )
+        usuario_arg, rol_arg = tokens[0], tokens[1]
+        usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
+        if err:
+            return await ctx.send(err)
+
+    try:
+        rol = await commands.RoleConverter().convert(ctx, rol_arg)
+    except commands.RoleNotFound:
+        return await ctx.send("❌ No encontré ese rol. Menciónalo con @rol, usa su ID o su nombre exacto.")
+
     if miembro is None:
         return await ctx.send("❌ Ese usuario no está en este servidor.")
 
@@ -1463,12 +1569,34 @@ async def roleremove(ctx, usuario_arg: str, rol: discord.Role):
     await ctx.send(f"✅ Rol {rol.mention} quitado a {miembro.mention}.")
 
 
+@roleremove.error
+async def roleremove_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Roles.")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me falta el permiso Manage Roles.")
+
+
 @bot.command(name="avatar")
-async def avatar(ctx, usuario_arg: str):
-    """Muestra el avatar completo de un usuario. Uso: .avatar <id|@|nombre>"""
-    usuario, _, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
+async def avatar(ctx, *, args: str = ""):
+    """
+    Muestra el avatar completo de un usuario. Uso: .avatar <id|@|nombre>
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .avatar
+    """
+    usuario_repl, _ = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario = usuario_repl
+    else:
+        tokens = args.split()
+        if not tokens:
+            return await ctx.send(
+                "❌ Debes indicar un usuario (ID, @mención o nombre) o responder a su mensaje.\n"
+                "Uso correcto: `.avatar <id|@|nombre>`"
+            )
+        usuario, _, err = await resolver_usuario(ctx.guild, tokens[0])
+        if err:
+            return await ctx.send(err)
 
     avatar_url = usuario.display_avatar.with_size(4096).url
     embed = discord.Embed(
@@ -1487,11 +1615,25 @@ async def avatar_error(ctx, error):
 
 
 @bot.command(name="banner")
-async def banner(ctx, usuario_arg: str):
-    """Muestra el banner completo de un usuario. Uso: .banner <id|@|nombre>"""
-    usuario, _, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
+async def banner(ctx, *, args: str = ""):
+    """
+    Muestra el banner completo de un usuario. Uso: .banner <id|@|nombre>
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .banner
+    """
+    usuario_repl, _ = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario = usuario_repl
+    else:
+        tokens = args.split()
+        if not tokens:
+            return await ctx.send(
+                "❌ Debes indicar un usuario (ID, @mención o nombre) o responder a su mensaje.\n"
+                "Uso correcto: `.banner <id|@|nombre>`"
+            )
+        usuario, _, err = await resolver_usuario(ctx.guild, tokens[0])
+        if err:
+            return await ctx.send(err)
 
     banner_obj = usuario.banner
     if banner_obj is None:
@@ -2168,17 +2310,33 @@ async def unlock_error(ctx, error):
 @bot.command(name="rename")
 @commands.has_permissions(manage_nicknames=True)
 @commands.bot_has_permissions(manage_nicknames=True)
-async def rename(ctx, usuario_arg: str, *, apodo: str):
-    """Cambia el apodo de un miembro. Uso: .rename <id|@|nombre> <nuevo apodo>"""
-    apodo = apodo.strip()
+async def rename(ctx, *, args: str = ""):
+    """
+    Cambia el apodo de un miembro. Uso: .rename <id|@|nombre> <nuevo apodo>
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .rename <apodo>
+    """
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario, miembro = usuario_repl, miembro_repl
+        apodo = args.strip()
+    else:
+        tokens = args.split(maxsplit=1)
+        if len(tokens) < 2 or not tokens[1].strip():
+            return await ctx.send(
+                "❌ Debes indicar un usuario y un apodo, o responder al mensaje del usuario.\n"
+                "Uso correcto: `.rename <id|@|nombre> <apodo>`"
+            )
+        usuario_arg, apodo = tokens[0], tokens[1].strip()
+        usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
+        if err:
+            return await ctx.send(err)
+
     if not apodo:
         return await ctx.send("❌ Debes indicar un apodo. Uso: `.rename <id|@|nombre> <apodo>`")
     if len(apodo) > 32:
         return await ctx.send("❌ El apodo no puede superar los 32 caracteres.")
 
-    usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
     if miembro is None:
         return await ctx.send(f"❌ Ese usuario no está en este servidor.")
     if miembro.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
@@ -2213,11 +2371,25 @@ async def rename_error(ctx, error):
 @bot.command(name="namereset")
 @commands.has_permissions(manage_nicknames=True)
 @commands.bot_has_permissions(manage_nicknames=True)
-async def namereset(ctx, usuario_arg: str):
-    """Restablece el apodo de un miembro al original. Uso: .namereset <id|@|nombre>"""
-    usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
+async def namereset(ctx, *, args: str = ""):
+    """
+    Restablece el apodo de un miembro al original. Uso: .namereset <id|@|nombre>
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .namereset
+    """
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario, miembro = usuario_repl, miembro_repl
+    else:
+        tokens = args.split()
+        if not tokens:
+            return await ctx.send(
+                "❌ Debes indicar un usuario (ID, @mención o nombre) o responder a su mensaje.\n"
+                "Uso correcto: `.namereset <id|@|nombre>`"
+            )
+        usuario, miembro, err = await resolver_usuario(ctx.guild, tokens[0])
+        if err:
+            return await ctx.send(err)
     if miembro is None:
         return await ctx.send(f"❌ Ese usuario no está en este servidor.")
     if miembro.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
@@ -2259,14 +2431,29 @@ async def namereset_error(ctx, error):
 @bot.command(name="ipban")
 @commands.has_permissions(ban_members=True)
 @commands.bot_has_permissions(ban_members=True)
-async def ipban(ctx, usuario_arg: str, *, motivo: str = "No especificado"):
+async def ipban(ctx, *, args: str = ""):
     """
     Banea por IP equivalente: banea al usuario + veto vía audit log.
     Uso: .ipban <id|@|nombre> [motivo]
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .ipban [motivo]
     """
-    usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario, miembro = usuario_repl, miembro_repl
+        motivo = args.strip() or "No especificado"
+    else:
+        tokens = args.split(maxsplit=1)
+        if not tokens:
+            return await ctx.send(
+                "❌ Debes indicar un usuario (ID, @mención o nombre) o responder a su mensaje.\n"
+                "Uso correcto: `.ipban <id|@|nombre> [motivo]`"
+            )
+        usuario_arg = tokens[0]
+        motivo = tokens[1] if len(tokens) > 1 else "No especificado"
+        usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
+        if err:
+            return await ctx.send(err)
 
     if miembro is not None:
         if miembro.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
