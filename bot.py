@@ -152,6 +152,31 @@ async def resolver_usuario(guild: discord.Guild, texto: str):
     return usuario, miembro, None
 
 
+async def resolver_objetivo_replica(ctx):
+    """
+    Si el mensaje del comando es una respuesta (reply) a otro mensaje, devuelve
+    (usuario, miembro) del autor de ese mensaje. Si no es una respuesta o no se
+    puede resolver, devuelve (None, None).
+    """
+    ref = ctx.message.reference
+    if ref is None:
+        return None, None
+
+    resuelto = ref.resolved
+    if resuelto is None or isinstance(resuelto, discord.DeletedReferencedMessage):
+        try:
+            resuelto = await ctx.channel.fetch_message(ref.message_id)
+        except (discord.NotFound, discord.HTTPException):
+            return None, None
+
+    autor = resuelto.author
+    if autor is None:
+        return None, None
+
+    miembro = ctx.guild.get_member(autor.id) if ctx.guild is not None else None
+    return autor, miembro
+
+
 def cargar_linkban():
     global linkban_canal
     if os.path.exists(LINKS_BANEADOS_PATH):
@@ -754,11 +779,29 @@ async def sync_manual(ctx):
 @bot.command(name="ban")
 @commands.has_permissions(ban_members=True)
 @commands.bot_has_permissions(ban_members=True)
-async def ban(ctx, usuario_arg: str, *, motivo: str = "No especificado"):
-    """Banea a un usuario por ID, @mención o nombre de usuario. Uso: .ban <id|@|nombre> [motivo]"""
-    usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
+async def ban(ctx, *, args: str = ""):
+    """
+    Banea a un usuario por ID, @mención, nombre, o respondiendo a su mensaje.
+    Uso: .ban <id|@|nombre> [motivo]
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .ban [motivo]
+    """
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario, miembro = usuario_repl, miembro_repl
+        motivo = args.strip() or "No especificado"
+    else:
+        tokens = args.split(maxsplit=1)
+        if not tokens:
+            return await ctx.send(
+                "❌ Debes indicar un usuario (ID, @mención o nombre) o responder a su mensaje.\n"
+                "Uso correcto: `.ban <id|@|nombre> [motivo]`"
+            )
+        usuario_arg = tokens[0]
+        motivo = tokens[1] if len(tokens) > 1 else "No especificado"
+        usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
+        if err:
+            return await ctx.send(err)
 
     if miembro is not None:
         if miembro.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
@@ -789,10 +832,6 @@ async def ban(ctx, usuario_arg: str, *, motivo: str = "No especificado"):
 async def ban_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ No tienes permiso para banear miembros.")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("❌ Uso correcto: `.ban <id_usuario> [motivo]`")
-    elif isinstance(error, commands.BadArgument):
-        await ctx.send("❌ La ID debe ser un número entero.")
     elif isinstance(error, commands.BotMissingPermissions):
         await ctx.send("❌ Me faltan permisos (Ban members) para ejecutar este comando.")
 
@@ -800,11 +839,30 @@ async def ban_error(ctx, error):
 @bot.command(name="kick")
 @commands.has_permissions(kick_members=True)
 @commands.bot_has_permissions(kick_members=True)
-async def kick(ctx, usuario_arg: str, *, motivo: str = "No especificado"):
-    """Expulsa a un miembro por ID, @mención o nombre. Uso: .kick <id|@|nombre> [motivo]"""
-    usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
+async def kick(ctx, *, args: str = ""):
+    """
+    Expulsa a un miembro por ID, @mención, nombre, o respondiendo a su mensaje.
+    Uso: .kick <id|@|nombre> [motivo]
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario: .kick [motivo]
+    """
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario, miembro = usuario_repl, miembro_repl
+        motivo = args.strip() or "No especificado"
+    else:
+        tokens = args.split(maxsplit=1)
+        if not tokens:
+            return await ctx.send(
+                "❌ Debes indicar un usuario (ID, @mención o nombre) o responder a su mensaje.\n"
+                "Uso correcto: `.kick <id|@|nombre> [motivo]`"
+            )
+        usuario_arg = tokens[0]
+        motivo = tokens[1] if len(tokens) > 1 else "No especificado"
+        usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
+        if err:
+            return await ctx.send(err)
+
     if miembro is None:
         return await ctx.send("❌ Ese usuario no está en este servidor, no puedo expulsarlo.")
 
@@ -836,30 +894,53 @@ async def kick(ctx, usuario_arg: str, *, motivo: str = "No especificado"):
 async def kick_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ No tienes permiso para expulsar miembros.")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("❌ Uso correcto: `.kick <id_usuario> [motivo]`")
-    elif isinstance(error, commands.BadArgument):
-        await ctx.send("❌ La ID debe ser un número entero.")
     elif isinstance(error, commands.BotMissingPermissions):
         await ctx.send("❌ Me faltan permisos (Kick members) para ejecutar este comando.")
+
+
+DURACION_MUTE_DEFECTO = "5m"
 
 
 @bot.command(name="mute")
 @commands.has_permissions(moderate_members=True)
 @commands.bot_has_permissions(moderate_members=True)
-async def mute(ctx, usuario_arg: str, duracion: str, *, motivo: str = "No especificado"):
+async def mute(ctx, *, args: str = ""):
     """
-    Silencia (timeout) a un miembro por ID, @mención o nombre.
-    Uso: .mute <id|@|nombre> <duración> [motivo]
+    Silencia (timeout) a un miembro por ID, @mención, nombre, o respondiendo a su mensaje.
+    Uso: .mute [id|@|nombre] [duración] [motivo]
+    Si respondes al mensaje del usuario, no hace falta indicar el usuario.
+    Si no indicas duración, se usan 5 minutos por defecto.
     La duración usa h/m/s. Ejemplos: 5h, 30m, 10s, 1h30m, 2h15m30s.
     """
+    tokens = args.split()
+
+    usuario_repl, miembro_repl = await resolver_objetivo_replica(ctx)
+
+    if usuario_repl is not None:
+        usuario, miembro = usuario_repl, miembro_repl
+    else:
+        if not tokens:
+            return await ctx.send(
+                "❌ Debes indicar un usuario (ID, @mención o nombre) o responder a su mensaje.\n"
+                "Uso correcto: `.mute [usuario] [duración] [motivo]`"
+            )
+        usuario_arg = tokens.pop(0)
+        usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
+        if err:
+            return await ctx.send(err)
+
+    duracion = DURACION_MUTE_DEFECTO
+    if tokens:
+        _, err_duracion = parsear_duracion(tokens[0])
+        if err_duracion is None:
+            duracion = tokens.pop(0)
+
+    motivo = " ".join(tokens).strip() or "No especificado"
+
     segundos, err = parsear_duracion(duracion)
     if err:
         return await ctx.send(f"❌ {err}")
 
-    usuario, miembro, err = await resolver_usuario(ctx.guild, usuario_arg)
-    if err:
-        return await ctx.send(err)
     if miembro is None:
         return await ctx.send(f"❌ Ese usuario no está en este servidor, no puedo silenciarlo.")
 
@@ -924,10 +1005,6 @@ async def _quitar_timeout_automatico(guild_id, user_id, segundos, moderador):
 async def mute_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ No tienes permiso para silenciar miembros (Timeout members).")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("❌ Uso correcto: `.mute <id_usuario> <duración> [motivo]`\nEj: `.mute 123456789 5h Spam`")
-    elif isinstance(error, commands.BadArgument):
-        await ctx.send("❌ La ID debe ser un número entero.")
     elif isinstance(error, commands.BotMissingPermissions):
         await ctx.send("❌ Me faltan permisos (Timeout members) para ejecutar este comando.")
 
