@@ -43,6 +43,10 @@ XP_COOLDOWNS = {}  # guild_id (str) -> {user_id (str): timestamp}
 level_roles_db = {}  # guild_id (str) -> {level (str): role_id (str)}
 LEVEL_ROLES_PATH = "level_roles.json"
 
+# Autoroles: guild_id -> {"human": [role_id,...], "bot": [role_id,...], "all": [role_id,...]}
+autoroles_db = {}  # guild_id (str) -> {"human": [str], "bot": [str], "all": [str]}
+AUTOROLES_PATH = "autoroles.json"
+
 PREFIXES_PATH = "prefixes.json"
 prefixes_db = {}     # guild_id (str) -> list[str] de prefijos válidos
 REMINDERS_PATH = "reminders.json"
@@ -290,6 +294,92 @@ def guardar_level_roles():
             json.dump(level_roles_db, f, indent=2, ensure_ascii=False)
     except OSError as e:
         print(f"Error guardando level_roles.json: {e}")
+
+
+def cargar_autoroles():
+    global autoroles_db
+    if os.path.exists(AUTOROLES_PATH):
+        try:
+            with open(AUTOROLES_PATH, "r", encoding="utf-8") as f:
+                autoroles_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            autoroles_db = {}
+    else:
+        autoroles_db = {}
+    total = sum(len(cfg.get("human", [])) + len(cfg.get("bot", [])) + len(cfg.get("all", [])) for cfg in autoroles_db.values())
+    print(f"Autoroles cargados: {total} en {len(autoroles_db)} servidores.")
+
+
+def guardar_autoroles():
+    try:
+        with open(AUTOROLES_PATH, "w", encoding="utf-8") as f:
+            json.dump(autoroles_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando autoroles.json: {e}")
+
+
+def _autorole_check_permisos(autor: discord.Member, guild: discord.Guild, rol: discord.Role):
+    """Valida que el autor y el bot puedan gestionar el rol como autorol. Devuelve un mensaje de error o None."""
+    if not autor.guild_permissions.manage_roles:
+        return "❌ No tienes permiso para gestionar roles (Manage Roles)."
+    if rol.is_default():
+        return "❌ No puedes usar el rol `@everyone` como autorol."
+    if rol.position >= autor.top_role.position and autor != guild.owner:
+        return "❌ No puedes gestionar un autorol igual o superior a tu rol más alto."
+    if guild.me.top_role.position <= rol.position:
+        return "❌ Ese rol está por encima de mi rol más alto, no puedo gestionarlo."
+    if rol.managed:
+        return "❌ Ese rol está gestionado por una integración/bot y no se puede usar como autorol."
+    return None
+
+
+def _toggle_autorole(guild: discord.Guild, rol: discord.Role, categoria: str):
+    """Añade el rol a la categoría de autoroles si no estaba, o lo quita si ya estaba. Devuelve 'añadido' o 'quitado'."""
+    gid = str(guild.id)
+    config = autoroles_db.setdefault(gid, {"human": [], "bot": [], "all": []})
+    config.setdefault(categoria, [])
+    rid = str(rol.id)
+    if rid in config[categoria]:
+        config[categoria].remove(rid)
+        accion = "quitado"
+    else:
+        config[categoria].append(rid)
+        accion = "añadido"
+    if not config.get("human") and not config.get("bot") and not config.get("all"):
+        del autoroles_db[gid]
+    guardar_autoroles()
+    return accion
+
+
+def _construir_embed_autorolelist(guild: discord.Guild) -> discord.Embed:
+    gid = str(guild.id)
+    config = autoroles_db.get(gid, {})
+
+    def _lineas(categoria):
+        ids = config.get(categoria, [])
+        if not ids:
+            return "*Ninguno.*"
+        lineas = []
+        for rid in ids:
+            rol = guild.get_role(int(rid))
+            if rol is None:
+                lineas.append(f"• `{rid}` *(rol ya no existe)*")
+            else:
+                lineas.append(f"• {rol.mention}")
+        return "\n".join(lineas)
+
+    embed = discord.Embed(
+        title="📋 Autoroles configurados",
+        description="Roles que se asignan automáticamente al unirse alguien al servidor.",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="🙋 Humanos", value=_lineas("human"), inline=False)
+    embed.add_field(name="🤖 Bots", value=_lineas("bot"), inline=False)
+    embed.add_field(name="🌐 Generales (todos)", value=_lineas("all"), inline=False)
+    total = sum(len(config.get(c, [])) for c in ("human", "bot", "all"))
+    embed.set_footer(text=f"Total: {total} autorol(es) configurado(s)")
+    return embed
 
 
 async def check_level_roles(guild: discord.Guild, member: discord.Member, new_level: int):
@@ -743,6 +833,7 @@ async def on_ready():
     cargar_honeypots()
     cargar_xp()
     cargar_level_roles()
+    cargar_autoroles()
     await bot.change_presence(status=discord.Status.online, activity=discord.Game(name=".help | created by ukodev"))
     print(f"Conectado como {bot.user} (ID: {bot.user.id})")
     print(f"Servidores: {len(bot.guilds)}")
@@ -1807,6 +1898,96 @@ async def rolebot_error(ctx, error):
         await ctx.send("❌ No encontré ese rol. Menciónalo con @rol.")
     elif isinstance(error, commands.BotMissingPermissions):
         await ctx.send("❌ Me falta el permiso Manage Roles.")
+
+
+# ============================================================
+#  AUTOROLE (comandos prefix)
+# ============================================================
+
+@bot.command(name="autorolehuman")
+@commands.has_permissions(manage_roles=True)
+@commands.bot_has_permissions(manage_roles=True)
+async def autorolehuman(ctx, rol: discord.Role):
+    """Añade o quita un autorol para miembros humanos. Uso: .autorolehuman @rol"""
+    error = _autorole_check_permisos(ctx.author, ctx.guild, rol)
+    if error:
+        return await ctx.send(error)
+    accion = _toggle_autorole(ctx.guild, rol, "human")
+    await ctx.send(f"✅ Rol {rol.mention} **{accion}** como autorol para **miembros humanos**.")
+
+
+@autorolehuman.error
+async def autorolehuman_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Roles.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.autorolehuman @rol`")
+    elif isinstance(error, commands.RoleNotFound):
+        await ctx.send("❌ No encontré ese rol. Menciónalo con @rol.")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me falta el permiso Manage Roles.")
+
+
+@bot.command(name="autorolebot")
+@commands.has_permissions(manage_roles=True)
+@commands.bot_has_permissions(manage_roles=True)
+async def autorolebot(ctx, rol: discord.Role):
+    """Añade o quita un autorol para bots. Uso: .autorolebot @rol"""
+    error = _autorole_check_permisos(ctx.author, ctx.guild, rol)
+    if error:
+        return await ctx.send(error)
+    accion = _toggle_autorole(ctx.guild, rol, "bot")
+    await ctx.send(f"✅ Rol {rol.mention} **{accion}** como autorol para **bots**.")
+
+
+@autorolebot.error
+async def autorolebot_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Roles.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.autorolebot @rol`")
+    elif isinstance(error, commands.RoleNotFound):
+        await ctx.send("❌ No encontré ese rol. Menciónalo con @rol.")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me falta el permiso Manage Roles.")
+
+
+@bot.command(name="autorole")
+@commands.has_permissions(manage_roles=True)
+@commands.bot_has_permissions(manage_roles=True)
+async def autorole(ctx, rol: discord.Role):
+    """Añade o quita un autorol para TODOS los miembros (humanos y bots). Uso: .autorole @rol"""
+    error = _autorole_check_permisos(ctx.author, ctx.guild, rol)
+    if error:
+        return await ctx.send(error)
+    accion = _toggle_autorole(ctx.guild, rol, "all")
+    await ctx.send(f"✅ Rol {rol.mention} **{accion}** como autorol para **todos los miembros**.")
+
+
+@autorole.error
+async def autorole_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Roles.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("❌ Uso correcto: `.autorole @rol`")
+    elif isinstance(error, commands.RoleNotFound):
+        await ctx.send("❌ No encontré ese rol. Menciónalo con @rol.")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me falta el permiso Manage Roles.")
+
+
+@bot.command(name="autorolelist", aliases=["autoroleslist"])
+@commands.has_permissions(manage_roles=True)
+async def autorolelist(ctx):
+    """Lista los autoroles configurados en el servidor, separados por categoría."""
+    embed = _construir_embed_autorolelist(ctx.guild)
+    await ctx.send(embed=embed)
+
+
+@autorolelist.error
+async def autorolelist_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Roles.")
 
 
 # ============================================================
@@ -2893,7 +3074,7 @@ async def ayuda(ctx, *, comando: str = None):
             placeholder="Selecciona una categoría...",
             options=[
                 discord.SelectOption(label="Moderación", value="mod", description="Ban, kick, mute, warn, purge, nuke, etc."),
-                discord.SelectOption(label="Roles", value="roles", description="Roleadd, roleremove, rolehuman, etc."),
+                discord.SelectOption(label="Roles", value="roles", description="Roleadd, roleremove, rolehuman, autorole, etc."),
                 discord.SelectOption(label="Niveles / XP", value="niveles", description="Rank, level, leaderboard, level-config, etc."),
                 discord.SelectOption(label="Sorteos y utilidades", value="sorteos", description="Giveaways, avatar, banner, remindme, etc."),
                 discord.SelectOption(label="Canales y links", value="canales", description="Linkban, logchannel, honeypot, etc."),
@@ -2933,7 +3114,11 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}roleremove (@usuario) (@rol)` :: Quita rol\n"
                     f"`{p}rolehuman (@rol)` :: Rol a todos humanos\n"
                     f"`{p}roleall (@rol)` :: Rol a todos (humanos+bots)\n"
-                    f"`{p}rolebot (@rol)` :: Rol solo a bots"
+                    f"`{p}rolebot (@rol)` :: Rol solo a bots\n"
+                    f"`{p}autorolehuman (@rol)` :: Autorol on/off para humanos\n"
+                    f"`{p}autorolebot (@rol)` :: Autorol on/off para bots\n"
+                    f"`{p}autorole (@rol)` :: Autorol on/off para todos\n"
+                    f"`{p}autorolelist` :: Lista autoroles activos"
                 ), color=discord.Color.blue()),
                 "niveles": discord.Embed(title="Niveles / XP", description=(
                     f"`{p}rank (@usuario)` :: Rango con barra de progreso\n"
@@ -3053,6 +3238,35 @@ async def prefixremove_error(ctx, error):
         await ctx.send("❌ Necesitas el permiso Manage Server.")
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send("❌ Uso correcto: `.prefixremove <carácter>`")
+
+
+# ============================================================
+#  AUTOROLE (evento al unirse un miembro)
+# ============================================================
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """Asigna automáticamente los autoroles configurados cuando alguien se une al servidor."""
+    gid = str(member.guild.id)
+    config = autoroles_db.get(gid)
+    if not config:
+        return
+
+    categorias = ["all", "bot" if member.bot else "human"]
+    roles_a_dar = []
+    for categoria in categorias:
+        for rid in config.get(categoria, []):
+            rol = member.guild.get_role(int(rid))
+            if rol is not None and rol not in member.roles:
+                roles_a_dar.append(rol)
+
+    if not roles_a_dar:
+        return
+
+    try:
+        await member.add_roles(*roles_a_dar, reason="Autorole al unirse al servidor")
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
 
 # ============================================================
@@ -3647,6 +3861,64 @@ bot.tree.add_command(role_group)
 
 
 # ============================================================
+#  GRUPO: /autorole ...
+# ============================================================
+
+autorole_group = app_commands.Group(name="autorole", description="Gestión de autoroles (roles automáticos al unirse)")
+
+
+@autorole_group.command(name="human", description="Añade o quita un autorol para miembros humanos")
+@app_commands.describe(rol="Rol a alternar como autorol de humanos")
+@app_commands.default_permissions(manage_roles=True)
+async def slash_autorole_human(interaction: discord.Interaction, rol: discord.Role):
+    if not interaction.user.guild_permissions.manage_roles:
+        return await interaction.response.send_message("❌ No tienes permiso para gestionar roles.", ephemeral=True)
+    error = _autorole_check_permisos(interaction.user, interaction.guild, rol)
+    if error:
+        return await interaction.response.send_message(error, ephemeral=True)
+    accion = _toggle_autorole(interaction.guild, rol, "human")
+    await interaction.response.send_message(f"✅ Rol {rol.mention} **{accion}** como autorol para **miembros humanos**.")
+
+
+@autorole_group.command(name="bot", description="Añade o quita un autorol para bots")
+@app_commands.describe(rol="Rol a alternar como autorol de bots")
+@app_commands.default_permissions(manage_roles=True)
+async def slash_autorole_bot(interaction: discord.Interaction, rol: discord.Role):
+    if not interaction.user.guild_permissions.manage_roles:
+        return await interaction.response.send_message("❌ No tienes permiso para gestionar roles.", ephemeral=True)
+    error = _autorole_check_permisos(interaction.user, interaction.guild, rol)
+    if error:
+        return await interaction.response.send_message(error, ephemeral=True)
+    accion = _toggle_autorole(interaction.guild, rol, "bot")
+    await interaction.response.send_message(f"✅ Rol {rol.mention} **{accion}** como autorol para **bots**.")
+
+
+@autorole_group.command(name="general", description="Añade o quita un autorol para TODOS los miembros (humanos y bots)")
+@app_commands.describe(rol="Rol a alternar como autorol general")
+@app_commands.default_permissions(manage_roles=True)
+async def slash_autorole_general(interaction: discord.Interaction, rol: discord.Role):
+    if not interaction.user.guild_permissions.manage_roles:
+        return await interaction.response.send_message("❌ No tienes permiso para gestionar roles.", ephemeral=True)
+    error = _autorole_check_permisos(interaction.user, interaction.guild, rol)
+    if error:
+        return await interaction.response.send_message(error, ephemeral=True)
+    accion = _toggle_autorole(interaction.guild, rol, "all")
+    await interaction.response.send_message(f"✅ Rol {rol.mention} **{accion}** como autorol para **todos los miembros**.")
+
+
+@autorole_group.command(name="list", description="Lista los autoroles configurados en el servidor")
+@app_commands.default_permissions(manage_roles=True)
+async def slash_autorole_list(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_roles:
+        return await interaction.response.send_message("❌ No tienes permiso para gestionar roles.", ephemeral=True)
+    embed = _construir_embed_autorolelist(interaction.guild)
+    await interaction.response.send_message(embed=embed)
+
+
+bot.tree.add_command(autorole_group)
+
+
+# ============================================================
 #  GRUPO: /link ...
 # ============================================================
 
@@ -4222,7 +4494,7 @@ async def slash_help(interaction: discord.Interaction):
         timestamp=discord.utils.utcnow(),
     )
     embed.add_field(name="🛡️ Moderación", value="`ban` `kick` `unban` `mute` `unmute` `softban`/`soft ban` `ipban` `ipunban`\n`purge` `nuke` `lock` `unlock` `rename` `namereset` `warn`/`warn add` `warnremove`/`warn remove` `warns`/`warn list`", inline=False)
-    embed.add_field(name="👥 Roles", value="`roleadd`/`role add` `roleremove`/`role remove` `rolehuman`/`role human` `roleall`/`role all` `rolebot`/`role bot`", inline=False)
+    embed.add_field(name="👥 Roles", value="`roleadd`/`role add` `roleremove`/`role remove` `rolehuman`/`role human` `roleall`/`role all` `rolebot`/`role bot`\n`autorolehuman`/`autorole human` `autorolebot`/`autorole bot` `autorole`/`autorole general` `autorolelist`/`autorole list`", inline=False)
     embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
     embed.add_field(name="🎉 Sorteos y utilidades", value="`gcreate`/`giveaway create` `glist`/`giveaway list` `gdelete`/`giveaway delete` `greroll`/`giveaway reroll` `avatar` `banner` `remindme`/`remind`", inline=False)
     embed.add_field(name="🔗 Canales y links", value="`linkban`/`link ban` `linkunban`/`link unban` `linkbanlist`/`link list` `logchannel`/`log channel` `logunchannel`/`log unchannel` `logschannels`/`log channels`", inline=False)
