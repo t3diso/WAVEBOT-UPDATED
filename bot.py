@@ -2860,7 +2860,7 @@ async def ayuda(ctx, *, comando: str = None):
         cmd = bot.get_command(comando.lower())
         if cmd is None:
             return await ctx.send(f"❌ No existe el comando `{comando}`.")
-        embed = discord.Embed(title=f"📖 Ayuda: {cmd.name}", color=discord.Color.blurple())
+        embed = discord.Embed(title=f"Ayuda: {cmd.name}", color=discord.Color.blurple())
         embed.add_field(name="Descripción", value=cmd.help or "Sin descripción.", inline=False)
         embed.add_field(name="Uso", value=f"`{prefijo}{cmd.signature}`", inline=False)
         if cmd.aliases:
@@ -2869,34 +2869,34 @@ async def ayuda(ctx, *, comando: str = None):
 
     # Embed inicial con selector
     embed = discord.Embed(
-        title="📖 Lista de comandos",
+        title="Lista de comandos",
         description=f"Prefijo actual: `{prefijo}`\nSelecciona una categoría en el menú desplegable para ver sus comandos.\n\nTambién puedes usar slash commands `/` y mencionar al bot.",
         color=discord.Color.blurple(),
         timestamp=discord.utils.utcnow(),
     )
-    embed.add_field(name="📋 Categorías disponibles", value=(
-        "🛡️ **Moderación** — ban, kick, mute, warn, purge, nuke, etc.\n"
-        "👥 **Roles** — roleadd, roleremove, rolehuman, roleall, rolebot\n"
-        "📊 **Niveles / XP** — rank, level, leaderboard, level-config, set-level-role, etc.\n"
-        "🎉 **Sorteos y utilidades** — gcreate, glist, gdelete, greroll, avatar, banner, remindme\n"
-        "🔗 **Canales y links** — linkban, linkunban, linkbanlist, logchannel, logunchannel, logschannels\n"
-        "⚙️ **Configuración** — setprefix, prefix, prefixremove, sync, help"
+    embed.add_field(name="Categorías", value=(
+        f"`{prefijo}help mod` :: Moderación\n"
+        f"`{prefijo}help roles` :: Roles\n"
+        f"`{prefijo}help niveles` :: Niveles / XP\n"
+        f"`{prefijo}help sorteos` :: Sorteos y utilidades\n"
+        f"`{prefijo}help canales` :: Canales y links\n"
+        f"`{prefijo}help config` :: Configuración"
     ), inline=False)
-    embed.set_footer(text="Usa .help <comando> para ver el detalle de un comando específico. • Selecciona una categoría abajo 👇")
+    embed.set_footer(text=f"Usa {prefijo}help <comando> para ver el detalle de un comando específico. Selecciona una categoría abajo")
 
     class HelpView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=60)
 
         @discord.ui.select(
-            placeholder="📂 Selecciona una categoría...",
+            placeholder="Selecciona una categoría...",
             options=[
-                discord.SelectOption(label="🛡️ Moderación", value="mod", emoji="🛡️", description="Ban, kick, mute, warn, purge, nuke, etc."),
-                discord.SelectOption(label="👥 Roles", value="roles", emoji="👥", description="Roleadd, roleremove, rolehuman, etc."),
-                discord.SelectOption(label="📊 Niveles / XP", value="niveles", emoji="📊", description="Rank, level, leaderboard, level-config, etc."),
-                discord.SelectOption(label="🎉 Sorteos y utilidades", value="sorteos", emoji="🎉", description="Giveaways, avatar, banner, remindme, etc."),
-                discord.SelectOption(label="🔗 Canales y links", value="canales", emoji="🔗", description="Linkban, logchannel, honeypot, etc."),
-                discord.SelectOption(label="⚙️ Configuración", value="config", emoji="⚙️", description="Setprefix, prefix, prefixremove, sync, etc."),
+                discord.SelectOption(label="Moderación", value="mod", description="Ban, kick, mute, warn, purge, nuke, etc."),
+                discord.SelectOption(label="Roles", value="roles", description="Roleadd, roleremove, rolehuman, etc."),
+                discord.SelectOption(label="Niveles / XP", value="niveles", description="Rank, level, leaderboard, level-config, etc."),
+                discord.SelectOption(label="Sorteos y utilidades", value="sorteos", description="Giveaways, avatar, banner, remindme, etc."),
+                discord.SelectOption(label="Canales y links", value="canales", description="Linkban, logchannel, honeypot, etc."),
+                discord.SelectOption(label="Configuración", value="config", description="Setprefix, prefix, prefixremove, sync, etc."),
             ],
             min_values=1,
             max_values=1,
@@ -2909,7 +2909,7 @@ async def ayuda(ctx, *, comando: str = None):
             p = prefijo
             
             embeds = {
-                "mod": discord.Embed(title="🛡️ Moderación", description=(
+                "mod": discord.Embed(title="Moderación", description=(
                     f"`{p}ban (@usuario) [motivo]` — Banea usuario\n"
                     f"`{p}kick (@usuario) [motivo]` — Expulsa usuario\n"
                     f"`{p}unban (id) [motivo]` — Desbanea usuario\n"
@@ -2928,14 +2928,14 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}warnremove (@usuario) (número)` — Quita warn\n"
                     f"`{p}warns (@usuario)` — Ver warns"
                 ), color=discord.Color.red()),
-                "roles": discord.Embed(title="👥 Roles", description=(
+                "roles": discord.Embed(title="Roles", description=(
                     f"`{p}roleadd (@usuario) (@rol)` — Otorga rol\n"
                     f"`{p}roleremove (@usuario) (@rol)` — Quita rol\n"
                     f"`{p}rolehuman (@rol)` — Rol a todos humanos\n"
                     f"`{p}roleall (@rol)` — Rol a todos (humanos+bots)\n"
                     f"`{p}rolebot (@rol)` — Rol solo a bots"
                 ), color=discord.Color.blue()),
-                "niveles": discord.Embed(title="📊 Niveles / XP", description=(
+                "niveles": discord.Embed(title="Niveles / XP", description=(
                     f"`{p}rank (@usuario)` — Rango con barra de progreso\n"
                     f"`{p}level/nivel (@usuario)` — Info de nivel\n"
                     f"`{p}leaderboard/lb/ranking [página]` — Ranking paginado\n"
@@ -2953,7 +2953,7 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}remove-xp (@usuario) (cantidad)` — Quita XP\n"
                     f"`{p}reset-level (@usuario)` — Resetea XP/nivel"
                 ), color=discord.Color.gold()),
-                "sorteos": discord.Embed(title="🎉 Sorteos y utilidades", description=(
+                "sorteos": discord.Embed(title="Sorteos y utilidades", description=(
                     f"`{p}gcreate (nombre) (duración) (ganadores)` — Crear sorteo\n"
                     f"`{p}glist` — Lista sorteos\n"
                     f"`{p}gdelete (número)` — Eliminar sorteo\n"
@@ -2962,7 +2962,7 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}banner (@usuario)` — Banner 4K\n"
                     f"`{p}remindme (duración) (mensaje) (MD: sí/no)` — Recordatorio"
                 ), color=discord.Color.purple()),
-                "canales": discord.Embed(title="🔗 Canales y links", description=(
+                "canales": discord.Embed(title="Canales y links", description=(
                     f"`{p}linkban (#canal)` — Prohíbe enlaces\n"
                     f"`{p}linkunban (#canal)` — Permite enlaces\n"
                     f"`{p}linkbanlist` — Lista canales sin links\n"
@@ -2973,7 +2973,7 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}honeypots` — Lista honeypots\n"
                     f"`{p}honeypotset (#canal) ban|kick|mute [duración]` — Config honeypot"
                 ), color=discord.Color.teal()),
-                "config": discord.Embed(title="⚙️ Configuración", description=(
+                "config": discord.Embed(title="Configuración", description=(
                     f"`{p}setprefix (carácter)` — Añade prefijo (máx 5 chars)\n"
                     f"`{p}prefix` — Ver prefijos activos\n"
                     f"`{p}prefixremove (carácter)` — Quita prefijo\n"
