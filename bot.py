@@ -51,6 +51,11 @@ PREFIXES_PATH = "prefixes.json"
 prefixes_db = {}     # guild_id (str) -> list[str] de prefijos válidos
 REMINDERS_PATH = "reminders.json"
 reminders_db = {}    # id -> {user_id, channel_id, msg_id, msg, fin, md}
+
+# Starboard
+STARBOARD_PATH = "starboard.json"
+starboard_db = {}   # guild_id (str) -> {"enabled": bool, "channel_id": int|None, "threshold": int, "posted": {msg_id: star_msg_id}}
+
 DEFAULT_PREFIX = "."
 
 MENTION_REGEX = re.compile(r"^<@!?(?P<id>\d+)>\s*$")
@@ -617,6 +622,27 @@ def guardar_reminders():
         print(f"Error guardando reminders.json: {e}")
 
 
+def cargar_starboard():
+    global starboard_db
+    if os.path.exists(STARBOARD_PATH):
+        try:
+            with open(STARBOARD_PATH, "r", encoding="utf-8") as f:
+                starboard_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            starboard_db = {}
+    else:
+        starboard_db = {}
+    print(f"Starboard configs cargados: {len(starboard_db)} servidores.")
+
+
+def guardar_starboard():
+    try:
+        with open(STARBOARD_PATH, "w", encoding="utf-8") as f:
+            json.dump(starboard_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando starboard.json: {e}")
+
+
 async def enviar_logs(guild: discord.Guild, embed: discord.Embed):
     """Envía un embed de logs a todos los canales configurados en el servidor."""
     for canal_id in list(logs_channels):
@@ -823,6 +849,72 @@ async def on_message_delete(message: discord.Message):
 
 
 @bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    # Starboard handling for ⭐
+    if payload.emoji.name != "⭐":
+        return
+    guild = bot.get_guild(payload.guild_id)
+    if not guild:
+        return
+    config = starboard_db.get(str(guild.id))
+    if not config or not config.get("enabled"):
+        return
+    channel_id = config.get("channel_id")
+    threshold = config.get("threshold", 5)
+    if not channel_id:
+        return
+    star_channel = guild.get_channel(channel_id)
+    if not star_channel:
+        return
+    # Ignore reactions in starboard channel itself
+    if payload.channel_id == channel_id:
+        return
+    # Fetch message
+    channel = guild.get_channel(payload.channel_id)
+    if not channel:
+        return
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except discord.NotFound:
+        return
+    except discord.HTTPException:
+        return
+    # Count ⭐ reactions
+    star_reaction = None
+    for reaction in message.reactions:
+        if str(reaction.emoji) == "⭐":
+            star_reaction = reaction
+            break
+    if not star_reaction:
+        return
+    if star_reaction.count < threshold:
+        return
+    # Check if already posted
+    posted = config.get("posted", {})
+    if str(message.id) in posted:
+        return
+    # Create embed for starboard
+    embed = discord.Embed(
+        description=message.content[:4096] if message.content else "*(sin texto)*",
+        color=message.author.color or discord.Color.gold(),
+        timestamp=message.created_at,
+    )
+    embed.set_author(name=str(message.author), icon_url=message.author.display_avatar.url)
+    embed.add_field(name="Canal", value=message.channel.mention, inline=True)
+    embed.add_field(name="⭐", value=str(star_reaction.count), inline=True)
+    embed.set_footer(text=f"ID: {message.id}")
+    if message.attachments:
+        embed.set_image(url=message.attachments[0].url)
+    try:
+        star_msg = await star_channel.send(embed=embed)
+        posted[str(message.id)] = star_msg.id
+        config["posted"] = posted
+        guardar_starboard()
+    except discord.HTTPException:
+        pass
+
+
+@bot.event
 async def on_ready():
     cargar_linkban()
     cargar_warns()
@@ -834,6 +926,7 @@ async def on_ready():
     cargar_xp()
     cargar_level_roles()
     cargar_autoroles()
+    cargar_starboard()
     await bot.change_presence(status=discord.Status.online, activity=discord.Game(name=".help | created by ukodev"))
     print(f"Conectado como {bot.user} (ID: {bot.user.id})")
     print(f"Servidores: {len(bot.guilds)}")
@@ -3156,7 +3249,11 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}logschannels` :: Lista canales logs\n"
                     f"`{p}honeypot (#canal)` :: Crea honeypot (ban)\n"
                     f"`{p}honeypots` :: Lista honeypots\n"
-                    f"`{p}honeypotset (#canal) ban|kick|mute [duración]` :: Config honeypot"
+                    f"`{p}honeypotset (#canal) ban|kick|mute [duración]` :: Config honeypot\n"
+                    f"`{p}starboard` :: Ver config del starboard\n"
+                    f"`{p}starreactions <número>` :: Cambia estrellas necesarias\n"
+                    f"`{p}starenable` :: Activa starboard (elige canal)\n"
+                    f"`{p}stardisable` :: Desactiva starboard"
                 ), color=discord.Color.teal()),
                 "config": discord.Embed(title="Configuración", description=(
                     f"`{p}setprefix (carácter)` :: Añade prefijo (máx 5 chars)\n"
@@ -5033,6 +5130,82 @@ async def prefix_reset_level(ctx, *, args: str = ""):
         await ctx.send("ℹ️ Ese usuario no tiene datos de XP.")
 
 
+# ===================== STARBOARD PREFIX COMMANDS =====================
+
+@bot.command(name="starboard", help="Muestra la configuración actual del starboard")
+async def starboard_config_cmd(ctx):
+    gid = str(ctx.guild.id)
+    config = starboard_db.get(gid, {})
+    enabled = config.get("enabled", False)
+    channel_id = config.get("channel_id")
+    threshold = config.get("threshold", 5)
+    canal = ctx.guild.get_channel(channel_id) if channel_id else None
+    embed = discord.Embed(title="⭐ Configuración del Starboard", color=discord.Color.gold())
+    embed.add_field(name="Estado", value="✅ Activado" if enabled else "❌ Desactivado", inline=True)
+    embed.add_field(name="Canal", value=canal.mention if canal else "No establecido", inline=True)
+    embed.add_field(name="Reacciones necesarias", value=str(threshold), inline=True)
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="starreactions", aliases=["starreacciones"], help="Cambia la cantidad de estrellas necesarias. Uso: .starreactions <número>")
+@commands.has_permissions(manage_guild=True)
+async def starreactions_cmd(ctx, cantidad: int):
+    if cantidad < 1:
+        return await ctx.send("❌ El número debe ser al menos 1.")
+    gid = str(ctx.guild.id)
+    config = starboard_db.setdefault(gid, {"enabled": False, "channel_id": None, "threshold": 5, "posted": {}})
+    config["threshold"] = cantidad
+    guardar_starboard()
+    await ctx.send(f"✅ Estrellas requeridas establecidas a **{cantidad}**.")
+
+
+class StarboardChannelSelect(discord.ui.Select):
+    def __init__(self, guild: discord.Guild):
+        options = [
+            discord.SelectOption(label=c.name, value=str(c.id), description=f"ID: {c.id}")
+            for c in guild.text_channels
+        ][:25]  # Discord limit 25 options
+        super().__init__(placeholder="Selecciona el canal para el starboard...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user != self.view.author:
+            return await interaction.response.send_message("❌ Solo quien ejecutó el comando puede seleccionar.", ephemeral=True)
+        channel_id = int(self.values[0])
+        gid = str(interaction.guild.id)
+        config = starboard_db.setdefault(gid, {"enabled": False, "channel_id": None, "threshold": 5, "posted": {}})
+        config["channel_id"] = channel_id
+        config["enabled"] = True
+        guardar_starboard()
+        channel = interaction.guild.get_channel(channel_id)
+        await interaction.response.edit_message(content=f"✅ Starboard activado en {channel.mention}.", embed=None, view=None)
+
+
+class StarboardEnableView(discord.ui.View):
+    def __init__(self, author: discord.User, guild: discord.Guild):
+        super().__init__(timeout=60)
+        self.author = author
+        self.add_item(StarboardChannelSelect(guild))
+
+
+@bot.command(name="starenable", help="Activa el starboard y pide elegir canal")
+@commands.has_permissions(manage_guild=True)
+async def starenable_cmd(ctx):
+    if not ctx.guild.text_channels:
+        return await ctx.send("❌ No hay canales de texto en este servidor.")
+    view = StarboardEnableView(ctx.author, ctx.guild)
+    await ctx.send("Selecciona el canal donde se enviarán los mensajes estrella:", view=view)
+
+
+@bot.command(name="stardisable", help="Desactiva el starboard")
+@commands.has_permissions(manage_guild=True)
+async def stardisable_cmd(ctx):
+    gid = str(ctx.guild.id)
+    if gid in starboard_db:
+        starboard_db[gid]["enabled"] = False
+        guardar_starboard()
+    await ctx.send("✅ Starboard desactivado.")
+
+
 # ============================================================
 #  SLASH: /level (Sistema de Niveles/XP)
 # ============================================================
@@ -5357,8 +5530,67 @@ async def slash_jumbo(interaction: discord.Interaction, emoji: str):
     await interaction.response.send_message(embed=embed)
 
 
+# ============================================================
+#  SLASH: /starboard
+# ============================================================
+
+starboard_group = app_commands.Group(name="starboard", description="Configuración del starboard")
+
+
+@starboard_group.command(name="config", description="Muestra la configuración actual del starboard")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_starboard_config(interaction: discord.Interaction):
+    gid = str(interaction.guild.id)
+    config = starboard_db.get(gid, {})
+    enabled = config.get("enabled", False)
+    channel_id = config.get("channel_id")
+    threshold = config.get("threshold", 5)
+    canal = interaction.guild.get_channel(channel_id) if channel_id else None
+    embed = discord.Embed(title="⭐ Configuración del Starboard", color=discord.Color.gold())
+    embed.add_field(name="Estado", value="✅ Activado" if enabled else "❌ Desactivado", inline=True)
+    embed.add_field(name="Canal", value=canal.mention if canal else "No establecido", inline=True)
+    embed.add_field(name="Reacciones necesarias", value=str(threshold), inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@starboard_group.command(name="reactions", description="Cambia la cantidad de estrellas necesarias")
+@app_commands.describe(cantidad="Número de ⭐ requeridas (mínimo 1)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_starboard_reactions(interaction: discord.Interaction, cantidad: int):
+    if cantidad < 1:
+        return await interaction.response.send_message("❌ El número debe ser al menos 1.", ephemeral=True)
+    gid = str(interaction.guild.id)
+    config = starboard_db.setdefault(gid, {"enabled": False, "channel_id": None, "threshold": 5, "posted": {}})
+    config["threshold"] = cantidad
+    guardar_starboard()
+    await interaction.response.send_message(f"✅ Estrellas requeridas establecidas a **{cantidad}**.", ephemeral=True)
+
+
+@starboard_group.command(name="enable", description="Activa el starboard en un canal")
+@app_commands.describe(canal="Canal donde se enviarán los mensajes estrella")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_starboard_enable(interaction: discord.Interaction, canal: discord.TextChannel):
+    gid = str(interaction.guild.id)
+    config = starboard_db.setdefault(gid, {"enabled": False, "channel_id": None, "threshold": 5, "posted": {}})
+    config["channel_id"] = canal.id
+    config["enabled"] = True
+    guardar_starboard()
+    await interaction.response.send_message(f"✅ Starboard activado en {canal.mention}.", ephemeral=True)
+
+
+@starboard_group.command(name="disable", description="Desactiva el starboard")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_starboard_disable(interaction: discord.Interaction):
+    gid = str(interaction.guild.id)
+    if gid in starboard_db:
+        starboard_db[gid]["enabled"] = False
+        guardar_starboard()
+    await interaction.response.send_message("✅ Starboard desactivado.", ephemeral=True)
+
+
 bot.tree.add_command(level_group)
 bot.tree.add_command(level_admin_group)
+bot.tree.add_command(starboard_group)
 
 
 if __name__ == "__main__":
