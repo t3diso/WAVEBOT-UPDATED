@@ -1,0 +1,10 @@
+# Secretos - NUNCA subir
+token.txt
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Datos en runtime del bot
+*.json.bak
