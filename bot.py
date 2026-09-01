@@ -927,6 +927,8 @@ async def on_ready():
     cargar_level_roles()
     cargar_autoroles()
     cargar_starboard()
+    cargar_economy()
+    cargar_shop()
     await bot.change_presence(status=discord.Status.online, activity=discord.Game(name=".help | created by ukodev"))
     print(f"Conectado como {bot.user} (ID: {bot.user.id})")
     print(f"Servidores: {len(bot.guilds)}")
@@ -3153,6 +3155,7 @@ async def ayuda(ctx, *, comando: str = None):
         f"`{p}help mod` :: Moderación\n"
         f"`{p}help roles` :: Roles\n"
         f"`{p}help niveles` :: Niveles / XP\n"
+        f"`{p}help economia` :: Economía\n"
         f"`{p}help sorteos` :: Sorteos y utilidades\n"
         f"`{p}help canales` :: Canales y links\n"
         f"`{p}help config` :: Configuración"
@@ -3169,6 +3172,7 @@ async def ayuda(ctx, *, comando: str = None):
                 discord.SelectOption(label="Moderación", value="mod", description="Ban, kick, mute, warn, purge, nuke, etc."),
                 discord.SelectOption(label="Roles", value="roles", description="Roleadd, roleremove, rolehuman, autorole, etc."),
                 discord.SelectOption(label="Niveles / XP", value="niveles", description="Rank, level, leaderboard, level-config, etc."),
+                discord.SelectOption(label="Economía", value="economia", description="Balance, work, crime, rob, tienda, juegos, etc."),
                 discord.SelectOption(label="Sorteos y utilidades", value="sorteos", description="Giveaways, avatar, banner, remindme, etc."),
                 discord.SelectOption(label="Canales y links", value="canales", description="Linkban, logchannel, honeypot, etc."),
                 discord.SelectOption(label="Configuración", value="config", description="Setprefix, prefix, prefixremove, sync, etc."),
@@ -3231,6 +3235,41 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}remove-xp (@usuario) (cantidad)` :: Quita XP\n"
                     f"`{p}reset-level (@usuario)` :: Resetea XP/nivel"
                 ), color=discord.Color.gold()),
+                "economia": discord.Embed(title="Economía", description=(
+                    f"`{p}balance/bal (@usuario)` :: Ver tu dinero\n"
+                    f"`{p}pay @usuario <monto|all>` :: Pagar a alguien\n"
+                    f"`{p}daily` :: Recompensa diaria\n"
+                    f"`{p}weekly` :: Recompensa semanal\n"
+                    f"`{p}monthly` :: Recompensa mensual\n"
+                    f"`{p}work` :: Trabaja (1h cooldown)\n"
+                    f"`{p}crime` :: Crimen: gana o cárcel 🚔\n"
+                    f"`{p}slut` :: Dinero fácil (arriesgado)\n"
+                    f"`{p}rob @usuario` :: Roba efectivo\n"
+                    f"`{p}deposit <monto|all>` :: Ingresar al banco\n"
+                    f"`{p}withdraw <monto|all>` :: Sacar del banco\n"
+                    f"`{p}shop` :: Ver tienda\n"
+                    f"`{p}shop add <item> <precio> [desc]` :: Añadir item (admin)\n"
+                    f"`{p}shop remove <item>` :: Quitar item (admin)\n"
+                    f"`{p}buy <item> [cantidad]` :: Comprar item\n"
+                    f"`{p}sell <item> [cantidad]` :: Vender item (50%)\n"
+                    f"`{p}inventory (@usuario)` :: Tu inventario\n"
+                    f"`{p}use <item>` :: Usar item\n"
+                    f"`{p}gift @usuario <item> [cantidad]` :: Regalar item\n"
+                    f"`{p}slots <monto|all>` :: Tragaperras\n"
+                    f"`{p}coinflip <cara|cruz> <monto|all>` :: Moneda (x1.95)\n"
+                    f"`{p}dice <1-6> <monto|all>` :: Dado (x5)\n"
+                    f"`{p}highlow <monto|all>` :: Mayor o menor (x1.9)\n"
+                    f"`{p}roulette <rojo|negro|verde> <monto|all>` :: Ruleta\n"
+                    f"`{p}blackjack <monto|all>` :: Blackjack (x2, natural x2.5)\n"
+                    f"`{p}baltop` :: Top de ricos\n"
+                    f"`{p}add-money @usuario <monto>` :: Dar dinero (admin)\n"
+                    f"`{p}remove-money @usuario <monto>` :: Quitar dinero (admin)\n"
+                    f"`{p}set-money @usuario <monto>` :: Fijar dinero (admin)\n"
+                    f"`{p}set-currency <símbolo>` :: Símbolo de moneda (admin)\n"
+                    f"`{p}set-start-balance <monto>` :: Balance inicial (admin)\n"
+                    f"`{p}economy-config` :: Ver configuración (admin)\n"
+                    f"`{p}reset-economy confirmar` :: Resetear economía (admin)"
+                ), color=discord.Color.green()),
                 "sorteos": discord.Embed(title="Sorteos y utilidades", description=(
                     f"`{p}gcreate (nombre) (duración) (ganadores)` :: Crear sorteo\n"
                     f"`{p}glist` :: Lista sorteos\n"
@@ -4593,6 +4632,7 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(name="🛡️ Moderación", value="`ban` `kick` `unban` `mute` `unmute` `softban`/`soft ban` `ipban` `ipunban`\n`purge` `nuke` `lock` `unlock` `rename` `namereset` `warn`/`warn add` `warnremove`/`warn remove` `warns`/`warn list`", inline=False)
     embed.add_field(name="👥 Roles", value="`roleadd`/`role add` `roleremove`/`role remove` `rolehuman`/`role human` `roleall`/`role all` `rolebot`/`role bot`\n`autorolehuman`/`autorole human` `autorolebot`/`autorole bot` `autorole`/`autorole general` `autorolelist`/`autorole list`", inline=False)
     embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
+    embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
     embed.add_field(name="🎉 Sorteos y utilidades", value="`gcreate`/`giveaway create` `glist`/`giveaway list` `gdelete`/`giveaway delete` `greroll`/`giveaway reroll` `avatar` `banner` `remindme`/`remind`", inline=False)
     embed.add_field(name="🔗 Canales y links", value="`linkban`/`link ban` `linkunban`/`link unban` `linkbanlist`/`link list` `logchannel`/`log channel` `logunchannel`/`log unchannel` `logschannels`/`log channels`", inline=False)
     embed.add_field(name="⚙️ Configuración", value=f"`setprefix`/`/setprefix` `prefix` `prefixremove` `sync` `help`", inline=False)
@@ -5591,6 +5631,1557 @@ async def slash_starboard_disable(interaction: discord.Interaction):
 bot.tree.add_command(level_group)
 bot.tree.add_command(level_admin_group)
 bot.tree.add_command(starboard_group)
+
+
+# ============================================================
+# 💰 SISTEMA DE ECONOMÍA (estilo UnbelievaBoat)
+# ============================================================
+
+ECONOMY_PATH = "economy.json"
+economy_db = {}      # guild_id -> {user_id: {cash, bank, inventory, ...}}
+econ_config_db = {}  # guild_id -> configuración de economía
+SHOP_PATH = "economy_shop.json"
+shop_db = {}         # guild_id -> {item: {"price": int, "description": str}}
+
+ECONOMY_COOLDOWNS = {
+    "daily": 24 * 3600,
+    "weekly": 7 * 24 * 3600,
+    "monthly": 30 * 24 * 3600,
+    "work": 3600,
+    "crime": 45 * 60,
+    "slut": 45 * 60,
+    "rob": 3600,
+}
+
+WORK_MENSAJES = [
+    "🍕 Repartiste pizzas toda la tarde",
+    "☕ Sobreviviste a un turno de camarero",
+    "📦 Vendiste cosas por internet",
+    "🚗 Hiciste algunos viajes de taxi",
+    "🎮 Hiciste un stream y te donaron",
+    "🐶 Paseaste los perros del vecindario",
+    "🍔 Freiste hamburguesas sin quemarte",
+    "🧹 Limpiaste el garaje de tu abuela",
+]
+
+CRIMEN_EXITOS = [
+    "🦹 Hackeaste una máquina de vending",
+    "🕵️ Vendiste gafas de sol muy sospechosas",
+    "💳 Clonaste la tarjeta de fidelidad de un supermercado",
+    "📱 Flipaste un teléfono que encontraste",
+    "💻 Estafaste a un príncipe nigeriano (pobre)",
+]
+
+SLUT_MENSAJES = [
+    "💋 Hiciste trabajos extraños. Nadie pregunta",
+    "🌹 Vendiste besos virtuales por NFT",
+    "🎭 Hiciste un favor que no se comenta en la cena familiar",
+    "💅 Cobraste por decir piropos en el chat",
+]
+
+
+def cargar_economy():
+    global economy_db, econ_config_db
+    if os.path.exists(ECONOMY_PATH):
+        try:
+            with open(ECONOMY_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            economy_db = data.get("users", {})
+            econ_config_db = data.get("config", {})
+        except (json.JSONDecodeError, OSError):
+            economy_db = {}
+            econ_config_db = {}
+    else:
+        economy_db = {}
+        econ_config_db = {}
+    print(f"Economía cargada: {sum(len(v) for v in economy_db.values())} usuarios en {len(economy_db)} servidores.")
+
+
+def guardar_economy():
+    try:
+        with open(ECONOMY_PATH, "w", encoding="utf-8") as f:
+            json.dump({"users": economy_db, "config": econ_config_db}, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando economy.json: {e}")
+
+
+def cargar_shop():
+    global shop_db
+    if os.path.exists(SHOP_PATH):
+        try:
+            with open(SHOP_PATH, "r", encoding="utf-8") as f:
+                shop_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            shop_db = {}
+    else:
+        shop_db = {}
+    print(f"Tienda cargada: {sum(len(v) for v in shop_db.values())} items en {len(shop_db)} servidores.")
+
+
+def guardar_shop():
+    try:
+        with open(SHOP_PATH, "w", encoding="utf-8") as f:
+            json.dump(shop_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando economy_shop.json: {e}")
+
+
+def get_econ_config(guild_id):
+    gid = str(guild_id)
+    defaults = {
+        "currency": "$",
+        "start_balance": 0,
+        "daily_min": 200, "daily_max": 400,
+        "weekly_min": 1000, "weekly_max": 2000,
+        "monthly_min": 4000, "monthly_max": 8000,
+        "work_min": 50, "work_max": 200,
+        "crime_min": 100, "crime_max": 500, "crime_fallo": 0.35,
+        "slut_min": 150, "slut_max": 400, "slut_fallo": 0.15,
+        "rob_min": 0.10, "rob_max": 0.25, "rob_fallo": 0.40,
+    }
+    if gid not in econ_config_db:
+        econ_config_db[gid] = defaults.copy()
+    else:
+        for k, v in defaults.items():
+            econ_config_db[gid].setdefault(k, v)
+    return econ_config_db[gid]
+
+
+def get_user_econ(guild_id, user_id):
+    gid, uid = str(guild_id), str(user_id)
+    cfg = get_econ_config(gid)
+    gdata = economy_db.setdefault(gid, {})
+    if uid not in gdata:
+        gdata[uid] = {
+            "cash": cfg["start_balance"], "bank": 0, "inventory": {}, "jailed_until": 0,
+            "last_daily": 0, "last_weekly": 0, "last_monthly": 0,
+            "last_work": 0, "last_crime": 0, "last_slut": 0, "last_rob": 0,
+        }
+    u = gdata[uid]
+    u.setdefault("inventory", {})
+    return u
+
+
+def fmt_dinero(n, cfg):
+    return f"{cfg['currency']}{n:,}"
+
+
+def econ_fmt_segundos(seg):
+    h = seg // 3600
+    m = (seg % 3600) // 60
+    s = seg % 60
+    partes = []
+    if h: partes.append(f"{h}h")
+    if m: partes.append(f"{m}m")
+    if s: partes.append(f"{s}s")
+    return " ".join(partes) or "0s"
+
+
+def econ_carcel_restante(u):
+    rest = u.get("jailed_until", 0) - time.time()
+    return int(rest) if rest > 0 else 0
+
+
+def econ_check_carcel(u, comando="este comando"):
+    rest = econ_carcel_restante(u)
+    if rest > 0:
+        return f"🚔 Estás en la cárcel. Podrás usar {comando} en {econ_fmt_segundos(rest)}."
+    return None
+
+
+def econ_cooldown(u, clave, segundos):
+    ahora = time.time()
+    rest = int(u.get(f"last_{clave}", 0) + segundos - ahora)
+    if rest > 0:
+        return False, rest
+    u[f"last_{clave}"] = ahora
+    return True, 0
+
+
+def parse_monto(texto, total):
+    t = (texto or "").strip().lower()
+    if not t:
+        return None, "Debes indicar un monto (número, `all` o `mitad`)."
+    if t in ("all", "todo", "max"):
+        monto = total
+    elif t in ("half", "mitad"):
+        monto = total // 2
+    else:
+        t2 = t.replace(",", "").replace("$", "")
+        if not t2.isdigit():
+            return None, f"`{texto}` no es un monto válido."
+        monto = int(t2)
+    if monto <= 0:
+        return None, "El monto debe ser mayor que 0."
+    if monto > total:
+        return None, f"No tienes suficiente dinero (máximo disponible: {total:,})."
+    return monto, None
+
+
+def _parse_entero(texto):
+    t = (texto or "").strip().replace(",", "")
+    if not t.isdigit():
+        return None
+    return int(t)
+
+
+def _mk_resp(content=None, embed=None):
+    kw = {}
+    if content:
+        kw["content"] = content
+    if embed is not None:
+        kw["embed"] = embed
+    return kw
+
+
+def _eco_balance(guild, miembro):
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, miembro.id)
+    total = u["cash"] + u["bank"]
+    e = discord.Embed(title=f"💰 Balance de {miembro.display_name}", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
+    e.set_thumbnail(url=miembro.display_avatar.url)
+    e.add_field(name="💵 Efectivo", value=fmt_dinero(u["cash"], cfg), inline=True)
+    e.add_field(name="🏦 Banco", value=fmt_dinero(u["bank"], cfg), inline=True)
+    e.add_field(name="💼 Total", value=fmt_dinero(total, cfg), inline=True)
+    carcel = econ_carcel_restante(u)
+    if carcel:
+        e.add_field(name="🚔 Estado", value=f"En la cárcel ({econ_fmt_segundos(carcel)} restantes)", inline=False)
+    return _mk_resp(embed=e)
+
+
+def _eco_periodico(guild, author, clave):
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, author.id)
+    ok, rest = econ_cooldown(u, clave, ECONOMY_COOLDOWNS[clave])
+    if not ok:
+        return _mk_resp(f"⏳ Ya reclamaste tu recompensa {clave}. Vuelve en {econ_fmt_segundos(rest)}.")
+    monto = random.randint(cfg[f"{clave}_min"], cfg[f"{clave}_max"])
+    u["cash"] += monto
+    guardar_economy()
+    e = discord.Embed(title=f"🎁 Recompensa {clave} reclamada", color=discord.Color.green(), timestamp=discord.utils.utcnow())
+    e.set_thumbnail(url=author.display_avatar.url)
+    e.add_field(name="Ganancia", value=fmt_dinero(monto, cfg), inline=True)
+    e.add_field(name="Efectivo", value=fmt_dinero(u["cash"], cfg), inline=True)
+    return _mk_resp(embed=e)
+
+
+def _eco_work(guild, author):
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, author.id)
+    carcel = econ_check_carcel(u, "work")
+    if carcel:
+        return _mk_resp(carcel)
+    ok, rest = econ_cooldown(u, "work", ECONOMY_COOLDOWNS["work"])
+    if not ok:
+        return _mk_resp(f"⏳ Estás agotado. Vuelve al trabajo en {econ_fmt_segundos(rest)}.")
+    monto = random.randint(cfg["work_min"], cfg["work_max"])
+    u["cash"] += monto
+    guardar_economy()
+    e = discord.Embed(title="💼 Jornada completada", description=random.choice(WORK_MENSAJES), color=discord.Color.green(), timestamp=discord.utils.utcnow())
+    e.add_field(name="Salario", value=fmt_dinero(monto, cfg), inline=True)
+    e.add_field(name="Efectivo", value=fmt_dinero(u["cash"], cfg), inline=True)
+    return _mk_resp(embed=e)
+
+
+def _eco_crime(guild, author):
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, author.id)
+    carcel = econ_check_carcel(u, "crime")
+    if carcel:
+        return _mk_resp(carcel)
+    ok, rest = econ_cooldown(u, "crime", ECONOMY_COOLDOWNS["crime"])
+    if not ok:
+        return _mk_resp(f"⏳ Debes mantener un perfil bajo. Vuelve a delinquir en {econ_fmt_segundos(rest)}.")
+    if random.random() < cfg["crime_fallo"]:
+        carcel_seg = random.randint(30, 90) * 60
+        u["jailed_until"] = time.time() + carcel_seg
+        multa = min(u["cash"], random.randint(50, 200))
+        u["cash"] -= multa
+        guardar_economy()
+        e = discord.Embed(title="🚔 Te pillaron", color=discord.Color.dark_red(), timestamp=discord.utils.utcnow())
+        e.add_field(name="Condena", value=f"Cárcel {econ_fmt_segundos(carcel_seg)}", inline=True)
+        e.add_field(name="Multa", value=fmt_dinero(multa, cfg), inline=True)
+    else:
+        monto = random.randint(cfg["crime_min"], cfg["crime_max"])
+        u["cash"] += monto
+        guardar_economy()
+        e = discord.Embed(title="🦹 Golpe exitoso", description=random.choice(CRIMEN_EXITOS), color=discord.Color.dark_green(), timestamp=discord.utils.utcnow())
+        e.add_field(name="Botín", value=fmt_dinero(monto, cfg), inline=True)
+        e.add_field(name="Efectivo", value=fmt_dinero(u["cash"], cfg), inline=True)
+    return _mk_resp(embed=e)
+
+
+def _eco_slut(guild, author):
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, author.id)
+    carcel = econ_check_carcel(u, "slut")
+    if carcel:
+        return _mk_resp(carcel)
+    ok, rest = econ_cooldown(u, "slut", ECONOMY_COOLDOWNS["slut"])
+    if not ok:
+        return _mk_resp(f"⏳ Necesitas descansar. Vuelve en {econ_fmt_segundos(rest)}.")
+    if random.random() < cfg["slut_fallo"]:
+        perdida = min(u["cash"], random.randint(50, 150))
+        u["cash"] -= perdida
+        guardar_economy()
+        e = discord.Embed(title="💀 Salió mal el negocio", color=discord.Color.dark_red(), timestamp=discord.utils.utcnow())
+        e.add_field(name="Perdiste", value=fmt_dinero(perdida, cfg), inline=True)
+    else:
+        monto = random.randint(cfg["slut_min"], cfg["slut_max"])
+        u["cash"] += monto
+        guardar_economy()
+        e = discord.Embed(title="💋 Negocio cerrado", description=random.choice(SLUT_MENSAJES), color=discord.Color.magenta(), timestamp=discord.utils.utcnow())
+        e.add_field(name="Ganancia", value=fmt_dinero(monto, cfg), inline=True)
+        e.add_field(name="Efectivo", value=fmt_dinero(u["cash"], cfg), inline=True)
+    return _mk_resp(embed=e)
+
+
+def _eco_rob(guild, author, victima):
+    if victima is None:
+        return _mk_resp("❌ Debes indicar a quién robar. Uso: `.rob @usuario`")
+    if victima.id == author.id:
+        return _mk_resp("❌ No puedes robarte a ti mismo.")
+    if victima.bot:
+        return _mk_resp("❌ Los bots no llevan efectivo. Son pobres de verdad.")
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, author.id)
+    carcel = econ_check_carcel(u, "rob")
+    if carcel:
+        return _mk_resp(carcel)
+    ok, rest = econ_cooldown(u, "rob", ECONOMY_COOLDOWNS["rob"])
+    if not ok:
+        return _mk_resp(f"⏳ Aún te están buscando de tu último robo. Vuelve en {econ_fmt_segundos(rest)}.")
+    v = get_user_econ(guild.id, victima.id)
+    if v["cash"] <= 0:
+        return _mk_resp(f"💸 {victima.display_name} no tiene efectivo. No hay nada que robar.")
+    if random.random() < cfg["rob_fallo"]:
+        carcel_seg = random.randint(30, 60) * 60
+        u["jailed_until"] = time.time() + carcel_seg
+        comp = min(u["cash"], random.randint(100, 300))
+        u["cash"] -= comp
+        v["cash"] += comp
+        guardar_economy()
+        e = discord.Embed(title="🚔 Te atraparon robando", color=discord.Color.dark_red(), timestamp=discord.utils.utcnow())
+        e.add_field(name="Condena", value=f"Cárcel {econ_fmt_segundos(carcel_seg)}", inline=True)
+        e.add_field(name="Compensación a la víctima", value=fmt_dinero(comp, cfg), inline=True)
+    else:
+        frac = random.uniform(cfg["rob_min"], cfg["rob_max"])
+        robado = max(1, int(v["cash"] * frac))
+        v["cash"] -= robado
+        u["cash"] += robado
+        guardar_economy()
+        e = discord.Embed(title="🏃 Robo exitoso", color=discord.Color.dark_green(), timestamp=discord.utils.utcnow())
+        e.add_field(name="Robaste a", value=victima.mention, inline=True)
+        e.add_field(name="Botín", value=fmt_dinero(robado, cfg), inline=True)
+        e.add_field(name="Efectivo", value=fmt_dinero(u["cash"], cfg), inline=False)
+    return _mk_resp(embed=e)
+
+
+def _eco_transferir(guild, autor, destino, monto_str):
+    if destino.id == autor.id:
+        return _mk_resp("❌ No puedes pagarte a ti mismo.")
+    if destino.bot:
+        return _mk_resp("❌ No puedes pagar a un bot.")
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, autor.id)
+    carcel = econ_check_carcel(u, "pay")
+    if carcel:
+        return _mk_resp(carcel)
+    monto, err = parse_monto(monto_str, u["cash"])
+    if err:
+        return _mk_resp(f"❌ {err}")
+    u["cash"] -= monto
+    d = get_user_econ(guild.id, destino.id)
+    d["cash"] += monto
+    guardar_economy()
+    e = discord.Embed(title="💸 Transferencia realizada", color=discord.Color.green(), timestamp=discord.utils.utcnow())
+    e.add_field(name="De", value=autor.mention, inline=True)
+    e.add_field(name="Para", value=destino.mention, inline=True)
+    e.add_field(name="Monto", value=fmt_dinero(monto, cfg), inline=True)
+    return _mk_resp(embed=e)
+
+
+def _eco_depositar(guild, autor, monto_str):
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, autor.id)
+    carcel = econ_check_carcel(u, "deposit")
+    if carcel:
+        return _mk_resp(carcel)
+    monto, err = parse_monto(monto_str, u["cash"])
+    if err:
+        return _mk_resp(f"❌ {err}")
+    u["cash"] -= monto
+    u["bank"] += monto
+    guardar_economy()
+    e = discord.Embed(title="🏦 Depósito realizado", color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+    e.add_field(name="Depositado", value=fmt_dinero(monto, cfg), inline=True)
+    e.add_field(name="Banco", value=fmt_dinero(u["bank"], cfg), inline=True)
+    return _mk_resp(embed=e)
+
+
+def _eco_retirar(guild, autor, monto_str):
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, autor.id)
+    carcel = econ_check_carcel(u, "withdraw")
+    if carcel:
+        return _mk_resp(carcel)
+    monto, err = parse_monto(monto_str, u["bank"])
+    if err:
+        return _mk_resp(f"❌ {err}")
+    u["bank"] -= monto
+    u["cash"] += monto
+    guardar_economy()
+    e = discord.Embed(title="🏧 Retiro realizado", color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+    e.add_field(name="Retirado", value=fmt_dinero(monto, cfg), inline=True)
+    e.add_field(name="Efectivo", value=fmt_dinero(u["cash"], cfg), inline=True)
+    return _mk_resp(embed=e)
+
+
+def _eco_shop_display(guild):
+    cfg = get_econ_config(guild.id)
+    items = shop_db.get(str(guild.id), {})
+    if not items:
+        return _mk_resp("🛒 La tienda está vacía. Un admin puede añadir items con `.shop add <item> <precio> [descripción]`.")
+    lineas = []
+    for nombre, info in items.items():
+        desc = info.get("description", "")
+        linea = f"• `{nombre}` — {fmt_dinero(info['price'], cfg)}"
+        if desc:
+            linea += f" — {desc}"
+        lineas.append(linea)
+    e = discord.Embed(title="🛒 Tienda del servidor", description="\n".join(lineas)[:4096], color=discord.Color.teal(), timestamp=discord.utils.utcnow())
+    e.set_footer(text="Compra con .buy <item> [cantidad] • Vende con .sell (50% del precio)")
+    return _mk_resp(embed=e)
+
+
+def _eco_shop_add(guild, item, precio, desc=""):
+    nombre = item.strip().lower()
+    if not nombre or " " in nombre:
+        return _mk_resp("❌ El nombre del item debe ser una sola palabra (sin espacios).")
+    if precio is None or precio <= 0:
+        return _mk_resp("❌ El precio debe ser un número mayor que 0.")
+    shop_db.setdefault(str(guild.id), {})[nombre] = {"price": precio, "description": desc}
+    guardar_shop()
+    return _mk_resp(f"✅ Item `{nombre}` añadido a la tienda por {precio:,}.")
+
+
+def _eco_shop_remove(guild, item):
+    nombre = item.strip().lower()
+    items = shop_db.get(str(guild.id), {})
+    if nombre not in items:
+        return _mk_resp(f"❌ El item `{nombre}` no está en la tienda.")
+    del items[nombre]
+    guardar_shop()
+    return _mk_resp(f"✅ Item `{nombre}` eliminado de la tienda.")
+
+
+def _eco_buy(guild, autor, item, cantidad):
+    if cantidad is None or cantidad <= 0:
+        return _mk_resp("❌ La cantidad debe ser mayor que 0.")
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, autor.id)
+    carcel = econ_check_carcel(u, "buy")
+    if carcel:
+        return _mk_resp(carcel)
+    nombre = item.strip().lower()
+    items = shop_db.get(str(guild.id), {})
+    if nombre not in items:
+        return _mk_resp(f"❌ El item `{nombre}` no está en la tienda.")
+    costo = items[nombre]["price"] * cantidad
+    if u["cash"] < costo:
+        return _mk_resp(f"❌ No tienes suficiente efectivo. Costo: {fmt_dinero(costo, cfg)}.")
+    u["cash"] -= costo
+    u["inventory"][nombre] = u["inventory"].get(nombre, 0) + cantidad
+    guardar_economy()
+    e = discord.Embed(title="🛍️ Compra realizada", color=discord.Color.teal(), timestamp=discord.utils.utcnow())
+    e.add_field(name="Item", value=f"`{nombre}` x{cantidad}", inline=True)
+    e.add_field(name="Costo", value=fmt_dinero(costo, cfg), inline=True)
+    e.add_field(name="Efectivo", value=fmt_dinero(u["cash"], cfg), inline=False)
+    return _mk_resp(embed=e)
+
+
+def _eco_sell(guild, autor, item, cantidad):
+    if cantidad is None or cantidad <= 0:
+        return _mk_resp("❌ La cantidad debe ser mayor que 0.")
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, autor.id)
+    carcel = econ_check_carcel(u, "sell")
+    if carcel:
+        return _mk_resp(carcel)
+    nombre = item.strip().lower()
+    tiene = u["inventory"].get(nombre, 0)
+    if tiene < cantidad:
+        return _mk_resp(f"❌ No tienes {cantidad} de `{nombre}` (tienes {tiene}).")
+    items = shop_db.get(str(guild.id), {})
+    precio_base = items.get(nombre, {}).get("price", 100)
+    venta = (precio_base // 2) * cantidad
+    u["inventory"][nombre] = tiene - cantidad
+    if u["inventory"][nombre] <= 0:
+        del u["inventory"][nombre]
+    u["cash"] += venta
+    guardar_economy()
+    e = discord.Embed(title="📤 Venta realizada", color=discord.Color.teal(), timestamp=discord.utils.utcnow())
+    e.add_field(name="Item", value=f"`{nombre}` x{cantidad}", inline=True)
+    e.add_field(name="Recibiste", value=fmt_dinero(venta, cfg), inline=True)
+    return _mk_resp(embed=e)
+
+
+def _eco_inventory(guild, miembro):
+    u = get_user_econ(guild.id, miembro.id)
+    inv = u.get("inventory", {})
+    if not inv:
+        return _mk_resp(f"🎒 {miembro.display_name} no tiene items.")
+    lineas = [f"• `{nombre}` x{cantidad}" for nombre, cantidad in inv.items()]
+    e = discord.Embed(title=f"🎒 Inventario de {miembro.display_name}", description="\n".join(lineas)[:4096], color=discord.Color.dark_teal(), timestamp=discord.utils.utcnow())
+    e.set_footer(text=f"Usa items con .use <item> • {len(inv)} tipo(s) de item")
+    return _mk_resp(embed=e)
+
+
+def _eco_use(guild, autor, item):
+    if not item:
+        return _mk_resp("❌ Debes indicar un item. Uso: `.use <item>`")
+    nombre = item.strip().lower()
+    u = get_user_econ(guild.id, autor.id)
+    tiene = u["inventory"].get(nombre, 0)
+    if tiene <= 0:
+        return _mk_resp(f"❌ No tienes `{nombre}` en tu inventario.")
+    u["inventory"][nombre] = tiene - 1
+    if u["inventory"][nombre] <= 0:
+        del u["inventory"][nombre]
+    guardar_economy()
+    mensajes = [
+        f"Usaste `{nombre}`. Se sintió bien. 🌟",
+        f"Usaste `{nombre}`. Nada espectacular pero ok. 🤷",
+        f"Usaste `{nombre}` en una situación cuestionable. 😳",
+        f"`{nombre}` usado con éxito. Nadie preguntó nada. 🤐",
+    ]
+    return _mk_resp(random.choice(mensajes))
+
+
+def _eco_gift(guild, autor, destino, item, cantidad):
+    if destino is None:
+        return _mk_resp("❌ Debes indicar a quién regalar. Uso: `.gift @usuario <item> [cantidad]`")
+    if destino.id == autor.id:
+        return _mk_resp("❌ No puedes regalarte a ti mismo.")
+    if destino.bot:
+        return _mk_resp("❌ Los bots no aprecian los regalos.")
+    if cantidad is None or cantidad <= 0:
+        return _mk_resp("❌ La cantidad debe ser mayor que 0.")
+    u = get_user_econ(guild.id, autor.id)
+    carcel = econ_check_carcel(u, "gift")
+    if carcel:
+        return _mk_resp(carcel)
+    nombre = item.strip().lower()
+    tiene = u["inventory"].get(nombre, 0)
+    if tiene < cantidad:
+        return _mk_resp(f"❌ No tienes {cantidad} de `{nombre}` (tienes {tiene}).")
+    u["inventory"][nombre] = tiene - cantidad
+    if u["inventory"][nombre] <= 0:
+        del u["inventory"][nombre]
+    d = get_user_econ(guild.id, destino.id)
+    d["inventory"][nombre] = d["inventory"].get(nombre, 0) + cantidad
+    guardar_economy()
+    e = discord.Embed(title="🎁 Regalo entregado", color=discord.Color.magenta(), timestamp=discord.utils.utcnow())
+    e.add_field(name="De", value=autor.mention, inline=True)
+    e.add_field(name="Para", value=destino.mention, inline=True)
+    e.add_field(name="Item", value=f"`{nombre}` x{cantidad}", inline=True)
+    return _mk_resp(embed=e)
+
+
+# ---------- 🎰 Juegos ----------
+
+SLOTS_EMOJIS = ["🍒", "🍋", "🍇", "🔔", "⭐", "💎"]
+SLOTS_MULT = {"💎": 10, "⭐": 6, "🔔": 4, "🍇": 3, "🍋": 2, "🍒": 2}
+RULETA_ROJOS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34}
+
+
+def _eco_slots(guild, autor, monto_str):
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, autor.id)
+    carcel = econ_check_carcel(u, "slots")
+    if carcel:
+        return _mk_resp(carcel)
+    monto, err = parse_monto(monto_str, u["cash"])
+    if err:
+        return _mk_resp(f"❌ {err}")
+    u["cash"] -= monto
+    r = [random.choice(SLOTS_EMOJIS) for _ in range(3)]
+    if r[0] == r[1] == r[2]:
+        premio = monto * SLOTS_MULT[r[0]]
+        resultado = f"🎉 ¡TRES {r[0]} IGUALES! Premio x{SLOTS_MULT[r[0]]}"
+        color = discord.Color.green()
+    elif r[0] == r[1] or r[1] == r[2] or r[0] == r[2]:
+        premio = monto + monto // 2
+        resultado = "✨ ¡Dos iguales! Premio x1.5"
+        color = discord.Color.gold()
+    else:
+        premio = 0
+        resultado = "💀 Sin suerte..."
+        color = discord.Color.dark_red()
+    u["cash"] += premio
+    guardar_economy()
+    e = discord.Embed(title="🎰 Tragaperras", description=f"┃ {r[0]} ┃ {r[1]} ┃ {r[2]} ┃", color=color, timestamp=discord.utils.utcnow())
+    e.add_field(name="Apuesta", value=fmt_dinero(monto, cfg), inline=True)
+    e.add_field(name="Premio", value=fmt_dinero(premio, cfg), inline=True)
+    e.add_field(name="Efectivo", value=fmt_dinero(u["cash"], cfg), inline=False)
+    e.add_field(name="Resultado", value=resultado, inline=False)
+    return _mk_resp(embed=e)
+
+
+def _eco_coinflip(guild, autor, eleccion, monto_str):
+    if eleccion not in ("cara", "cruz"):
+        return _mk_resp("❌ Debes elegir `cara` o `cruz`. Uso: `.coinflip <cara|cruz> <monto|all>`")
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, autor.id)
+    carcel = econ_check_carcel(u, "coinflip")
+    if carcel:
+        return _mk_resp(carcel)
+    monto, err = parse_monto(monto_str, u["cash"])
+    if err:
+        return _mk_resp(f"❌ {err}")
+    u["cash"] -= monto
+    resultado_txt = random.choice(["cara", "cruz"])
+    if resultado_txt == eleccion:
+        premio = int(monto * 1.95)
+        texto = f"🎉 ¡{resultado_txt.capitalize()}! Ganas {fmt_dinero(premio, cfg)}."
+        color = discord.Color.green()
+    else:
+        premio = 0
+        texto = f"💀 Salió {resultado_txt}. Pierdes tu apuesta."
+        color = discord.Color.dark_red()
+    u["cash"] += premio
+    guardar_economy()
+    e = discord.Embed(title="🪙 Lanzamiento de moneda", description=f"Resultó: **{resultado_txt.capitalize()}**", color=color, timestamp=discord.utils.utcnow())
+    e.add_field(name="Elegiste", value=eleccion.capitalize(), inline=True)
+    e.add_field(name="Apuesta", value=fmt_dinero(monto, cfg), inline=True)
+    e.add_field(name="Resultado", value=texto, inline=False)
+    return _mk_resp(embed=e)
+
+
+def _eco_dice(guild, autor, numero, monto_str):
+    if numero is None or not (1 <= numero <= 6):
+        return _mk_resp("❌ Debes elegir un número del 1 al 6. Uso: `.dice <1-6> <monto|all>`")
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, autor.id)
+    carcel = econ_check_carcel(u, "dice")
+    if carcel:
+        return _mk_resp(carcel)
+    monto, err = parse_monto(monto_str, u["cash"])
+    if err:
+        return _mk_resp(f"❌ {err}")
+    u["cash"] -= monto
+    tirada = random.randint(1, 6)
+    if tirada == numero:
+        premio = monto * 5
+        texto = f"🎉 ¡{tirada}! Acertaste. Ganas {fmt_dinero(premio, cfg)} (x5)."
+        color = discord.Color.green()
+    else:
+        premio = 0
+        texto = f"💀 Salió {tirada}. Fallaste."
+        color = discord.Color.dark_red()
+    u["cash"] += premio
+    guardar_economy()
+    e = discord.Embed(title="🎲 Dado", description=f"Tirada: **{tirada}**", color=color, timestamp=discord.utils.utcnow())
+    e.add_field(name="Elegiste", value=str(numero), inline=True)
+    e.add_field(name="Apuesta", value=fmt_dinero(monto, cfg), inline=True)
+    e.add_field(name="Resultado", value=texto, inline=False)
+    return _mk_resp(embed=e)
+
+
+def _eco_roulette(guild, autor, apuesta, monto_str):
+    if apuesta not in ("rojo", "negro", "verde"):
+        return _mk_resp("❌ Debes apostar a `rojo`, `negro` o `verde`. Uso: `.roulette <rojo|negro|verde> <monto|all>`")
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, autor.id)
+    carcel = econ_check_carcel(u, "roulette")
+    if carcel:
+        return _mk_resp(carcel)
+    monto, err = parse_monto(monto_str, u["cash"])
+    if err:
+        return _mk_resp(f"❌ {err}")
+    u["cash"] -= monto
+    n = random.randint(0, 36)
+    if n == 0:
+        color_salido = "verde"
+    elif n in RULETA_ROJOS:
+        color_salido = "rojo"
+    else:
+        color_salido = "negro"
+    if color_salido == apuesta:
+        mult = 14 if apuesta == "verde" else 2
+        premio = monto * mult
+        texto = f"🎉 ¡{color_salido.capitalize()} ({n})! Ganas {fmt_dinero(premio, cfg)} (x{mult})."
+        color = discord.Color.green() if apuesta != "verde" else discord.Color.dark_green()
+    else:
+        premio = 0
+        texto = f"💀 Salió {color_salido} ({n}). Pierdes tu apuesta."
+        color = discord.Color.dark_red()
+    u["cash"] += premio
+    guardar_economy()
+    emoji = "🔴" if color_salido == "rojo" else ("⚫" if color_salido == "negro" else "🟢")
+    e = discord.Embed(title="🎡 Ruleta", description=f"{emoji} Salió: **{color_salido.capitalize()} ({n})**", color=color, timestamp=discord.utils.utcnow())
+    e.add_field(name="Apuestaste a", value=apuesta.capitalize(), inline=True)
+    e.add_field(name="Monto", value=fmt_dinero(monto, cfg), inline=True)
+    e.add_field(name="Resultado", value=texto, inline=False)
+    return _mk_resp(embed=e)
+
+
+# ---------- 🃏 Blackjack y Mayor/Menor (interactivos con botones) ----------
+
+def _bj_carta():
+    return random.choice(["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"])
+
+
+def _bj_valor(mano):
+    total = 0
+    ases = 0
+    for c in mano:
+        if c == "A":
+            total += 11
+            ases += 1
+        elif c in ("J", "Q", "K"):
+            total += 10
+        else:
+            total += int(c)
+    while total > 21 and ases > 0:
+        total -= 10
+        ases -= 1
+    return total
+
+
+def _bj_mano_str(mano):
+    return " ".join(mano)
+
+
+def _hl_carta_str(n):
+    return {1: "A", 11: "J", 12: "Q", 13: "K"}.get(n, str(n))
+
+
+class BlackjackView(discord.ui.View):
+    def __init__(self, guild, user, monto):
+        super().__init__(timeout=120)
+        self.guild = guild
+        self.user = user
+        self.monto = monto
+        self.cfg = get_econ_config(guild.id)
+        self.mano = [_bj_carta(), _bj_carta()]
+        self.crupier = [_bj_carta(), _bj_carta()]
+        self.msg = None
+        self.terminado = False
+
+    def _embed(self, ocultar=True, resultado=None):
+        pc = _bj_valor(self.mano)
+        cc = _bj_valor(self.crupier)
+        if ocultar:
+            crup = f"{self.crupier[0]} 🂠 (?)"
+        else:
+            crup = f"{_bj_mano_str(self.crupier)} ({cc})"
+        e = discord.Embed(title="🃏 Blackjack", color=discord.Color.green(), timestamp=discord.utils.utcnow())
+        e.add_field(name=f"Tu mano ({pc})", value=_bj_mano_str(self.mano), inline=False)
+        e.add_field(name="Crupier", value=crup, inline=False)
+        e.add_field(name="Apuesta", value=fmt_dinero(self.monto, self.cfg), inline=True)
+        if resultado:
+            e.add_field(name="Resultado", value=resultado, inline=False)
+        return e
+
+    def _settle(self):
+        u = get_user_econ(self.guild.id, self.user.id)
+        pc = _bj_valor(self.mano)
+        cc = _bj_valor(self.crupier)
+        if pc > 21:
+            return f"💥 Te pasaste de 21. Pierdes {fmt_dinero(self.monto, self.cfg)}.", discord.Color.dark_red()
+        if cc > 21 or pc > cc:
+            premio = self.monto * 2
+            u["cash"] += premio
+            guardar_economy()
+            return f"🎉 ¡Ganas {fmt_dinero(premio, self.cfg)}!", discord.Color.green()
+        if pc == cc:
+            u["cash"] += self.monto
+            guardar_economy()
+            return "🤝 Empate. Recuperas tu apuesta.", discord.Color.gold()
+        return f"💀 El crupier gana. Pierdes {fmt_dinero(self.monto, self.cfg)}.", discord.Color.dark_red()
+
+    async def _finalizar(self, interaction, texto, color):
+        self.terminado = True
+        self.stop()
+        embed = self._embed(ocultar=False, resultado=texto)
+        embed.color = color
+        if interaction is not None:
+            await interaction.response.edit_message(embed=embed, view=None)
+        elif self.msg is not None:
+            try:
+                await self.msg.edit(embed=embed, view=None)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="📥 Pedir", style=discord.ButtonStyle.green)
+    async def pedir(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("❌ No es tu partida.", ephemeral=True)
+        self.mano.append(_bj_carta())
+        if _bj_valor(self.mano) > 21:
+            texto, color = self._settle()
+            await self._finalizar(interaction, texto, color)
+        else:
+            await interaction.response.edit_message(embed=self._embed(), view=self)
+
+    @discord.ui.button(label="✋ Plantarse", style=discord.ButtonStyle.red)
+    async def plantarse(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("❌ No es tu partida.", ephemeral=True)
+        while _bj_valor(self.crupier) < 17:
+            self.crupier.append(_bj_carta())
+        texto, color = self._settle()
+        await self._finalizar(interaction, texto, color)
+
+    async def on_timeout(self):
+        if self.terminado:
+            return
+        while _bj_valor(self.crupier) < 17:
+            self.crupier.append(_bj_carta())
+        texto, color = self._settle()
+        await self._finalizar(None, texto, color)
+
+
+class HighlowView(discord.ui.View):
+    def __init__(self, guild, user, monto):
+        super().__init__(timeout=60)
+        self.guild = guild
+        self.user = user
+        self.monto = monto
+        self.cfg = get_econ_config(guild.id)
+        self.carta = random.randint(1, 13)
+        self.msg = None
+        self.terminado = False
+
+    def _embed(self, resultado=None, nueva=None, color=discord.Color.gold()):
+        e = discord.Embed(title="🃏 Mayor o Menor", color=color, timestamp=discord.utils.utcnow())
+        e.add_field(name="Carta actual", value=f"**{_hl_carta_str(self.carta)}**", inline=True)
+        if nueva is not None:
+            e.add_field(name="Nueva carta", value=f"**{_hl_carta_str(nueva)}**", inline=True)
+        e.add_field(name="Apuesta", value=fmt_dinero(self.monto, self.cfg), inline=True)
+        if resultado:
+            e.add_field(name="Resultado", value=resultado, inline=False)
+        else:
+            e.add_field(name="¿La siguiente será mayor o menor?", value="Paga x1.9 • Igual = empate", inline=False)
+        return e
+
+    def _resolver(self, eleccion):
+        self.terminado = True
+        self.stop()
+        nueva = random.randint(1, 13)
+        u = get_user_econ(self.guild.id, self.user.id)
+        if nueva == self.carta:
+            u["cash"] += self.monto
+            texto = "🤝 Igual. Recuperas tu apuesta."
+            color = discord.Color.gold()
+        elif (nueva > self.carta) == (eleccion == "mayor"):
+            premio = int(self.monto * 1.9)
+            u["cash"] += premio
+            texto = f"🎉 ¡Correcto! Ganas {fmt_dinero(premio, self.cfg)}."
+            color = discord.Color.green()
+        else:
+            texto = f"💀 Fallaste. Pierdes {fmt_dinero(self.monto, self.cfg)}."
+            color = discord.Color.dark_red()
+        guardar_economy()
+        return nueva, texto, color
+
+    async def _boton(self, interaction, eleccion):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("❌ No es tu partida.", ephemeral=True)
+        nueva, texto, color = self._resolver(eleccion)
+        await interaction.response.edit_message(embed=self._embed(resultado=texto, nueva=nueva, color=color), view=None)
+
+    @discord.ui.button(label="⬆️ Mayor", style=discord.ButtonStyle.green)
+    async def mayor(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._boton(interaction, "mayor")
+
+    @discord.ui.button(label="⬇️ Menor", style=discord.ButtonStyle.red)
+    async def menor(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._boton(interaction, "menor")
+
+    async def on_timeout(self):
+        if self.terminado:
+            return
+        self.terminado = True
+        self.stop()
+        u = get_user_econ(self.guild.id, self.user.id)
+        u["cash"] += self.monto
+        guardar_economy()
+        if self.msg is not None:
+            try:
+                await self.msg.edit(embed=self._embed(resultado="⌛ Tiempo agotado. Se te devolvió la apuesta.", color=discord.Color.dark_grey()), view=None)
+            except discord.HTTPException:
+                pass
+
+
+def _eco_blackjack_start(guild, user, monto_str):
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, user.id)
+    carcel = econ_check_carcel(u, "blackjack")
+    if carcel:
+        return ("msg", _mk_resp(carcel))
+    monto, err = parse_monto(monto_str, u["cash"])
+    if err:
+        return ("msg", _mk_resp(f"❌ {err}"))
+    u["cash"] -= monto
+    view = BlackjackView(guild, user, monto)
+    if _bj_valor(view.mano) == 21:
+        premio = int(monto * 2.5)
+        u["cash"] += premio
+        guardar_economy()
+        e = discord.Embed(title="🃏 Blackjack", description="¡BLACKJACK NATURAL! 🎉", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
+        e.add_field(name="Tu mano (21)", value=_bj_mano_str(view.mano), inline=False)
+        e.add_field(name="Premio", value=fmt_dinero(premio, cfg), inline=True)
+        return ("msg", {"embed": e})
+    guardar_economy()
+    return ("view", (view._embed(), view))
+
+
+def _eco_highlow_start(guild, user, monto_str):
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, user.id)
+    carcel = econ_check_carcel(u, "highlow")
+    if carcel:
+        return ("msg", _mk_resp(carcel))
+    monto, err = parse_monto(monto_str, u["cash"])
+    if err:
+        return ("msg", _mk_resp(f"❌ {err}"))
+    u["cash"] -= monto
+    guardar_economy()
+    view = HighlowView(guild, user, monto)
+    return ("view", (view._embed(), view))
+
+
+# ---------- 🏆 Ranking y admin ----------
+
+def _eco_baltop(guild):
+    cfg = get_econ_config(guild.id)
+    gdata = economy_db.get(str(guild.id), {})
+    usuarios = [(int(uid), u["cash"] + u["bank"]) for uid, u in gdata.items()]
+    usuarios.sort(key=lambda x: -x[1])
+    if not usuarios:
+        return _mk_resp("📭 Todavía nadie tiene dinero en este servidor.")
+    medals = ["🥇", "🥈", "🥉"]
+    lineas = []
+    for i, (uid, total) in enumerate(usuarios[:10]):
+        prefijo = medals[i] if i < 3 else f"**{i + 1}.**"
+        lineas.append(f"{prefijo} <@{uid}> — {fmt_dinero(total, cfg)}")
+    e = discord.Embed(title="🏆 Top de ricos", description="\n".join(lineas), color=discord.Color.gold(), timestamp=discord.utils.utcnow())
+    e.set_footer(text="Se ordena por dinero total (efectivo + banco)")
+    return _mk_resp(embed=e)
+
+
+def _eco_admin_money(guild, accion, miembro, monto_str):
+    monto = _parse_entero(monto_str)
+    if monto is None:
+        return _mk_resp("❌ Monto inválido.")
+    cfg = get_econ_config(guild.id)
+    u = get_user_econ(guild.id, miembro.id)
+    if accion == "add":
+        u["cash"] += monto
+    elif accion == "remove":
+        if u["cash"] < monto:
+            return _mk_resp(f"❌ {miembro.display_name} solo tiene {fmt_dinero(u['cash'], cfg)} en efectivo.")
+        u["cash"] -= monto
+    else:
+        u["cash"] = monto
+    guardar_economy()
+    verbos = {"add": "Añadido", "remove": "Quitado", "set": "Fijado"}
+    e = discord.Embed(title="💰 Balance modificado", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
+    e.add_field(name="Usuario", value=f"{miembro} (`{miembro.id}`)", inline=False)
+    e.add_field(name=verbos[accion], value=fmt_dinero(monto, cfg), inline=True)
+    e.add_field(name="Nuevo efectivo", value=fmt_dinero(u["cash"], cfg), inline=True)
+    return _mk_resp(embed=e)
+
+
+def _eco_set_currency(guild, simbolo):
+    s = (simbolo or "").strip()
+    if not s or len(s) > 10:
+        return _mk_resp("❌ El símbolo debe tener entre 1 y 10 caracteres.")
+    cfg = get_econ_config(guild.id)
+    cfg["currency"] = s
+    guardar_economy()
+    return _mk_resp(f"✅ Moneda cambiada a `{s}`.")
+
+
+def _eco_set_start_balance(guild, monto_str):
+    monto = _parse_entero(monto_str)
+    if monto is None or monto < 0:
+        return _mk_resp("❌ El balance inicial debe ser un número mayor o igual a 0.")
+    cfg = get_econ_config(guild.id)
+    cfg["start_balance"] = monto
+    guardar_economy()
+    return _mk_resp(f"✅ Balance inicial fijado en {monto:,} (solo aplica a usuarios nuevos).")
+
+
+def _eco_reset(guild):
+    gid = str(guild.id)
+    if gid in economy_db:
+        del economy_db[gid]
+    guardar_economy()
+    return _mk_resp("✅ Economía del servidor reseteada. Todos empiezan de cero.")
+
+
+def _eco_config_view(guild):
+    cfg = get_econ_config(guild.id)
+    e = discord.Embed(title="⚙️ Configuración de economía", color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+    for k, v in cfg.items():
+        e.add_field(name=k, value=str(v), inline=True)
+    e.set_footer(text="Cambiable con .set-currency, .set-start-balance, etc.")
+    return _mk_resp(embed=e)
+
+
+# ============================================================
+# 💰 COMANDOS DE ECONOMÍA — prefijo (.)
+# ============================================================
+
+@bot.command(name="balance", aliases=["bal", "money", "dinero"])
+@commands.guild_only()
+async def eco_balance(ctx, miembro: discord.Member = None):
+    """Muestra el balance (efectivo, banco y total). Uso: .balance [@usuario]"""
+    await ctx.send(**_eco_balance(ctx.guild, miembro or ctx.author))
+
+
+@bot.command(name="pay", aliases=["give", "pagar", "dar"])
+@commands.guild_only()
+async def eco_pay(ctx, miembro: discord.Member = None, *, monto: str = ""):
+    """Transfiere dinero a otro usuario. Uso: .pay @usuario <monto|all|mitad>"""
+    if miembro is None:
+        return await ctx.send("❌ Debes indicar un usuario. Uso: `.pay @usuario <monto|all>`")
+    await ctx.send(**_eco_transferir(ctx.guild, ctx.author, miembro, monto))
+
+
+@bot.command(name="daily", aliases=["diario"])
+@commands.guild_only()
+async def eco_daily(ctx):
+    """Claim tu recompensa diaria. Uso: .daily"""
+    await ctx.send(**_eco_periodico(ctx.guild, ctx.author, "daily"))
+
+
+@bot.command(name="weekly", aliases=["semanal"])
+@commands.guild_only()
+async def eco_weekly(ctx):
+    """Claim tu recompensa semanal. Uso: .weekly"""
+    await ctx.send(**_eco_periodico(ctx.guild, ctx.author, "weekly"))
+
+
+@bot.command(name="monthly", aliases=["mensual"])
+@commands.guild_only()
+async def eco_monthly(ctx):
+    """Claim tu recompensa mensual. Uso: .monthly"""
+    await ctx.send(**_eco_periodico(ctx.guild, ctx.author, "monthly"))
+
+
+@bot.command(name="work", aliases=["trabajar"])
+@commands.guild_only()
+async def eco_work(ctx):
+    """Trabaja para ganar dinero (cooldown 1h). Uso: .work"""
+    await ctx.send(**_eco_work(ctx.guild, ctx.author))
+
+
+@bot.command(name="crime", aliases=["crimen", "delito"])
+@commands.guild_only()
+async def eco_crime(ctx):
+    """Comete un crimen: gana dinero o acaba en la cárcel. Uso: .crime"""
+    await ctx.send(**_eco_crime(ctx.guild, ctx.author))
+
+
+@bot.command(name="slut")
+@commands.guild_only()
+async def eco_slut(ctx):
+    """Gana dinero con trabajos extraños (arriesgado). Uso: .slut"""
+    await ctx.send(**_eco_slut(ctx.guild, ctx.author))
+
+
+@bot.command(name="rob", aliases=["robar", "steal"])
+@commands.guild_only()
+async def eco_rob(ctx, miembro: discord.Member = None):
+    """Roba efectivo a otro usuario. Uso: .rob @usuario"""
+    if miembro is None:
+        return await ctx.send("❌ Debes indicar a quién robar. Uso: `.rob @usuario`")
+    await ctx.send(**_eco_rob(ctx.guild, ctx.author, miembro))
+
+
+@bot.command(name="deposit", aliases=["dep", "ingresar"])
+@commands.guild_only()
+async def eco_deposit(ctx, *, monto: str = ""):
+    """Deposita efectivo en el banco. Uso: .deposit <monto|all|mitad>"""
+    await ctx.send(**_eco_depositar(ctx.guild, ctx.author, monto))
+
+
+@bot.command(name="withdraw", aliases=["with", "retirar"])
+@commands.guild_only()
+async def eco_withdraw(ctx, *, monto: str = ""):
+    """Retira dinero del banco. Uso: .withdraw <monto|all|mitad>"""
+    await ctx.send(**_eco_retirar(ctx.guild, ctx.author, monto))
+
+
+@bot.command(name="shop", aliases=["tienda"])
+@commands.guild_only()
+async def eco_shop(ctx, *, args: str = ""):
+    """Muestra la tienda. Admins: .shop add <item> <precio> [desc] | .shop remove <item>"""
+    tokens = args.split()
+    if tokens and tokens[0].lower() in ("add", "añadir"):
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send("❌ Necesitas el permiso Manage Server.")
+        if len(tokens) < 3:
+            return await ctx.send("❌ Uso: `.shop add <item> <precio> [descripción]`")
+        precio = _parse_entero(tokens[2])
+        desc = " ".join(tokens[3:]).strip()
+        await ctx.send(**_eco_shop_add(ctx.guild, tokens[1], precio, desc))
+    elif tokens and tokens[0].lower() in ("remove", "eliminar", "rm"):
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send("❌ Necesitas el permiso Manage Server.")
+        if len(tokens) < 2:
+            return await ctx.send("❌ Uso: `.shop remove <item>`")
+        await ctx.send(**_eco_shop_remove(ctx.guild, tokens[1]))
+    else:
+        await ctx.send(**_eco_shop_display(ctx.guild))
+
+
+@bot.command(name="buy", aliases=["comprar"])
+@commands.guild_only()
+async def eco_buy(ctx, item: str = "", cantidad: str = "1"):
+    """Compra un item de la tienda. Uso: .buy <item> [cantidad]"""
+    if not item:
+        return await ctx.send("❌ Debes indicar un item. Uso: `.buy <item> [cantidad]`")
+    await ctx.send(**_eco_buy(ctx.guild, ctx.author, item, _parse_entero(cantidad) or 1))
+
+
+@bot.command(name="sell", aliases=["vender"])
+@commands.guild_only()
+async def eco_sell(ctx, item: str = "", cantidad: str = "1"):
+    """Vende un item de tu inventario (50% del precio). Uso: .sell <item> [cantidad]"""
+    if not item:
+        return await ctx.send("❌ Debes indicar un item. Uso: `.sell <item> [cantidad]`")
+    await ctx.send(**_eco_sell(ctx.guild, ctx.author, item, _parse_entero(cantidad) or 1))
+
+
+@bot.command(name="inventory", aliases=["inv", "inventario"])
+@commands.guild_only()
+async def eco_inventory(ctx, miembro: discord.Member = None):
+    """Muestra tu inventario. Uso: .inventory [@usuario]"""
+    await ctx.send(**_eco_inventory(ctx.guild, miembro or ctx.author))
+
+
+@bot.command(name="use", aliases=["usar"])
+@commands.guild_only()
+async def eco_use(ctx, *, item: str = ""):
+    """Usa un item de tu inventario. Uso: .use <item>"""
+    await ctx.send(**_eco_use(ctx.guild, ctx.author, item))
+
+
+@bot.command(name="gift", aliases=["regalar"])
+@commands.guild_only()
+async def eco_gift(ctx, miembro: discord.Member = None, item: str = "", cantidad: str = "1"):
+    """Regala un item a otro usuario. Uso: .gift @usuario <item> [cantidad]"""
+    if miembro is None or not item:
+        return await ctx.send("❌ Uso: `.gift @usuario <item> [cantidad]`")
+    await ctx.send(**_eco_gift(ctx.guild, ctx.author, miembro, item, _parse_entero(cantidad) or 1))
+
+
+@bot.command(name="slots")
+@commands.guild_only()
+async def eco_slots(ctx, *, monto: str = ""):
+    """Juega a las tragaperras. Uso: .slots <monto|all>"""
+    await ctx.send(**_eco_slots(ctx.guild, ctx.author, monto))
+
+
+@bot.command(name="coinflip", aliases=["cf", "moneda"])
+@commands.guild_only()
+async def eco_coinflip(ctx, eleccion: str = "", *, monto: str = ""):
+    """Apuesta al lanzamiento de una moneda (x1.95). Uso: .coinflip <cara|cruz> <monto|all>"""
+    await ctx.send(**_eco_coinflip(ctx.guild, ctx.author, (eleccion or "").lower(), monto))
+
+
+@bot.command(name="dice", aliases=["dado"])
+@commands.guild_only()
+async def eco_dice(ctx, numero: str = "", *, monto: str = ""):
+    """Apuesta a un número del dado (paga x5). Uso: .dice <1-6> <monto|all>"""
+    await ctx.send(**_eco_dice(ctx.guild, ctx.author, _parse_entero(numero), monto))
+
+
+@bot.command(name="highlow", aliases=["hl", "altobajo"])
+@commands.guild_only()
+async def eco_highlow(ctx, *, monto: str = ""):
+    """Adivina si la carta es mayor o menor (x1.9). Uso: .highlow <monto|all>"""
+    res = _eco_highlow_start(ctx.guild, ctx.author, monto)
+    if res[0] == "msg":
+        return await ctx.send(**res[1])
+    embed, view = res[1]
+    view.msg = await ctx.send(embed=embed, view=view)
+
+
+@bot.command(name="roulette", aliases=["ruleta"])
+@commands.guild_only()
+async def eco_roulette(ctx, apuesta: str = "", *, monto: str = ""):
+    """Apuesta en la ruleta (rojo/negro x2, verde x14). Uso: .roulette <rojo|negro|verde> <monto|all>"""
+    await ctx.send(**_eco_roulette(ctx.guild, ctx.author, (apuesta or "").lower(), monto))
+
+
+@bot.command(name="blackjack", aliases=["bj", "21"])
+@commands.guild_only()
+async def eco_blackjack(ctx, *, monto: str = ""):
+    """Juega al Blackjack contra el crupier (x2, natural x2.5). Uso: .blackjack <monto|all>"""
+    res = _eco_blackjack_start(ctx.guild, ctx.author, monto)
+    if res[0] == "msg":
+        return await ctx.send(**res[1])
+    embed, view = res[1]
+    view.msg = await ctx.send(embed=embed, view=view)
+
+
+@bot.command(name="baltop", aliases=["moneyleaderboard", "ricos"])
+@commands.guild_only()
+async def eco_baltop(ctx):
+    """Muestra el top de usuarios más ricos. Uso: .baltop"""
+    await ctx.send(**_eco_baltop(ctx.guild))
+
+
+@bot.command(name="add-money")
+@commands.guild_only()
+@commands.has_permissions(manage_guild=True)
+async def eco_add_money(ctx, miembro: discord.Member = None, *, monto: str = ""):
+    """Añade dinero a un usuario. Uso: .add-money @usuario <monto>"""
+    if miembro is None:
+        return await ctx.send("❌ Uso: `.add-money @usuario <monto>`")
+    await ctx.send(**_eco_admin_money(ctx.guild, "add", miembro, monto))
+
+
+@bot.command(name="remove-money")
+@commands.guild_only()
+@commands.has_permissions(manage_guild=True)
+async def eco_remove_money(ctx, miembro: discord.Member = None, *, monto: str = ""):
+    """Quita dinero a un usuario. Uso: .remove-money @usuario <monto>"""
+    if miembro is None:
+        return await ctx.send("❌ Uso: `.remove-money @usuario <monto>`")
+    await ctx.send(**_eco_admin_money(ctx.guild, "remove", miembro, monto))
+
+
+@bot.command(name="set-money")
+@commands.guild_only()
+@commands.has_permissions(manage_guild=True)
+async def eco_set_money(ctx, miembro: discord.Member = None, *, monto: str = ""):
+    """Fija el efectivo de un usuario. Uso: .set-money @usuario <monto>"""
+    if miembro is None:
+        return await ctx.send("❌ Uso: `.set-money @usuario <monto>`")
+    await ctx.send(**_eco_admin_money(ctx.guild, "set", miembro, monto))
+
+
+@bot.command(name="set-currency")
+@commands.guild_only()
+@commands.has_permissions(manage_guild=True)
+async def eco_set_currency(ctx, *, simbolo: str = ""):
+    """Cambia el símbolo de la moneda. Uso: .set-currency <símbolo>"""
+    await ctx.send(**_eco_set_currency(ctx.guild, simbolo))
+
+
+@bot.command(name="set-start-balance")
+@commands.guild_only()
+@commands.has_permissions(manage_guild=True)
+async def eco_set_start_balance(ctx, *, monto: str = ""):
+    """Fija el balance inicial para usuarios nuevos. Uso: .set-start-balance <monto>"""
+    await ctx.send(**_eco_set_start_balance(ctx.guild, monto))
+
+
+@bot.command(name="economy-config", aliases=["econ-config"])
+@commands.guild_only()
+@commands.has_permissions(manage_guild=True)
+async def eco_config(ctx):
+    """Muestra la configuración de economía. Uso: .economy-config"""
+    await ctx.send(**_eco_config_view(ctx.guild))
+
+
+@bot.command(name="reset-economy")
+@commands.guild_only()
+@commands.has_permissions(manage_guild=True)
+async def eco_reset(ctx, *, confirmar: str = ""):
+    """Resetea TODA la economía del servidor. Uso: .reset-economy confirmar"""
+    if confirmar.lower() not in ("confirmar", "confirm", "si", "sí"):
+        return await ctx.send("⚠️ Esto BORRARÁ todo el dinero de todos los usuarios.\nEscribe `.reset-economy confirmar` para confirmar.")
+    await ctx.send(**_eco_reset(ctx.guild))
+
+
+# ============================================================
+# 💰 COMANDOS DE ECONOMÍA — slash (/)
+# ============================================================
+
+@bot.tree.command(name="balance", description="Muestra el balance (efectivo, banco y total)")
+@app_commands.guild_only()
+@app_commands.describe(miembro="Usuario cuyo balance quieres ver (opcional)")
+async def slash_balance(interaction: discord.Interaction, miembro: discord.Member = None):
+    await interaction.response.send_message(**_eco_balance(interaction.guild, miembro or interaction.user))
+
+
+@bot.tree.command(name="pay", description="Transfiere dinero a otro usuario")
+@app_commands.guild_only()
+@app_commands.describe(miembro="Destinatario", monto="Monto (número, 'all' o 'mitad')")
+async def slash_pay(interaction: discord.Interaction, miembro: discord.Member, monto: str):
+    await interaction.response.send_message(**_eco_transferir(interaction.guild, interaction.user, miembro, monto))
+
+
+@bot.tree.command(name="daily", description="Claim tu recompensa diaria")
+@app_commands.guild_only()
+async def slash_daily(interaction: discord.Interaction):
+    await interaction.response.send_message(**_eco_periodico(interaction.guild, interaction.user, "daily"))
+
+
+@bot.tree.command(name="weekly", description="Claim tu recompensa semanal")
+@app_commands.guild_only()
+async def slash_weekly(interaction: discord.Interaction):
+    await interaction.response.send_message(**_eco_periodico(interaction.guild, interaction.user, "weekly"))
+
+
+@bot.tree.command(name="monthly", description="Claim tu recompensa mensual")
+@app_commands.guild_only()
+async def slash_monthly(interaction: discord.Interaction):
+    await interaction.response.send_message(**_eco_periodico(interaction.guild, interaction.user, "monthly"))
+
+
+@bot.tree.command(name="work", description="Trabaja para ganar dinero (cooldown 1h)")
+@app_commands.guild_only()
+async def slash_work(interaction: discord.Interaction):
+    await interaction.response.send_message(**_eco_work(interaction.guild, interaction.user))
+
+
+@bot.tree.command(name="crime", description="Comete un crimen: gana dinero o acaba en la cárcel")
+@app_commands.guild_only()
+async def slash_crime(interaction: discord.Interaction):
+    await interaction.response.send_message(**_eco_crime(interaction.guild, interaction.user))
+
+
+@bot.tree.command(name="slut", description="Gana dinero con trabajos extraños (arriesgado)")
+@app_commands.guild_only()
+async def slash_slut(interaction: discord.Interaction):
+    await interaction.response.send_message(**_eco_slut(interaction.guild, interaction.user))
+
+
+@bot.tree.command(name="rob", description="Roba efectivo a otro usuario")
+@app_commands.guild_only()
+@app_commands.describe(miembro="A quién robar")
+async def slash_rob(interaction: discord.Interaction, miembro: discord.Member):
+    await interaction.response.send_message(**_eco_rob(interaction.guild, interaction.user, miembro))
+
+
+@bot.tree.command(name="deposit", description="Deposita efectivo en el banco")
+@app_commands.guild_only()
+@app_commands.describe(monto="Monto (número, 'all' o 'mitad')")
+async def slash_deposit(interaction: discord.Interaction, monto: str):
+    await interaction.response.send_message(**_eco_depositar(interaction.guild, interaction.user, monto))
+
+
+@bot.tree.command(name="withdraw", description="Retira dinero del banco")
+@app_commands.guild_only()
+@app_commands.describe(monto="Monto (número, 'all' o 'mitad')")
+async def slash_withdraw(interaction: discord.Interaction, monto: str):
+    await interaction.response.send_message(**_eco_retirar(interaction.guild, interaction.user, monto))
+
+
+@bot.tree.command(name="shop", description="Muestra la tienda del servidor")
+@app_commands.guild_only()
+async def slash_shop(interaction: discord.Interaction):
+    await interaction.response.send_message(**_eco_shop_display(interaction.guild))
+
+
+@bot.tree.command(name="shop-add", description="Añade un item a la tienda (admin)")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(item="Nombre del item (una palabra)", precio="Precio del item", descripcion="Descripción (opcional)")
+async def slash_shop_add(interaction: discord.Interaction, item: str, precio: int, descripcion: str = ""):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    await interaction.response.send_message(**_eco_shop_add(interaction.guild, item, precio, descripcion))
+
+
+@bot.tree.command(name="shop-remove", description="Quita un item de la tienda (admin)")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(item="Nombre del item a quitar")
+async def slash_shop_remove(interaction: discord.Interaction, item: str):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    await interaction.response.send_message(**_eco_shop_remove(interaction.guild, item))
+
+
+@bot.tree.command(name="buy", description="Compra un item de la tienda")
+@app_commands.guild_only()
+@app_commands.describe(item="Nombre del item", cantidad="Cantidad (por defecto 1)")
+async def slash_buy(interaction: discord.Interaction, item: str, cantidad: app_commands.Range[int, 1] = 1):
+    await interaction.response.send_message(**_eco_buy(interaction.guild, interaction.user, item, cantidad))
+
+
+@bot.tree.command(name="sell", description="Vende un item de tu inventario (50% del precio)")
+@app_commands.guild_only()
+@app_commands.describe(item="Nombre del item", cantidad="Cantidad (por defecto 1)")
+async def slash_sell(interaction: discord.Interaction, item: str, cantidad: app_commands.Range[int, 1] = 1):
+    await interaction.response.send_message(**_eco_sell(interaction.guild, interaction.user, item, cantidad))
+
+
+@bot.tree.command(name="inventory", description="Muestra tu inventario")
+@app_commands.guild_only()
+@app_commands.describe(miembro="Usuario cuyo inventario ver (opcional)")
+async def slash_inventory(interaction: discord.Interaction, miembro: discord.Member = None):
+    await interaction.response.send_message(**_eco_inventory(interaction.guild, miembro or interaction.user))
+
+
+@bot.tree.command(name="use", description="Usa un item de tu inventario")
+@app_commands.guild_only()
+@app_commands.describe(item="Nombre del item")
+async def slash_use(interaction: discord.Interaction, item: str):
+    await interaction.response.send_message(**_eco_use(interaction.guild, interaction.user, item))
+
+
+@bot.tree.command(name="gift", description="Regala un item a otro usuario")
+@app_commands.guild_only()
+@app_commands.describe(miembro="Destinatario", item="Nombre del item", cantidad="Cantidad (por defecto 1)")
+async def slash_gift(interaction: discord.Interaction, miembro: discord.Member, item: str, cantidad: app_commands.Range[int, 1] = 1):
+    await interaction.response.send_message(**_eco_gift(interaction.guild, interaction.user, miembro, item, cantidad))
+
+
+@bot.tree.command(name="slots", description="Juega a las tragaperras")
+@app_commands.guild_only()
+@app_commands.describe(monto="Cuánto apostar (número, 'all' o 'mitad')")
+async def slash_slots(interaction: discord.Interaction, monto: str):
+    await interaction.response.send_message(**_eco_slots(interaction.guild, interaction.user, monto))
+
+
+@bot.tree.command(name="coinflip", description="Apuesta al lanzamiento de una moneda (x1.95)")
+@app_commands.guild_only()
+@app_commands.choices(eleccion=[
+    app_commands.Choice(name="Cara", value="cara"),
+    app_commands.Choice(name="Cruz", value="cruz"),
+])
+@app_commands.describe(eleccion="Cara o cruz", monto="Cuánto apostar (número, 'all' o 'mitad')")
+async def slash_coinflip(interaction: discord.Interaction, eleccion: app_commands.Choice[str], monto: str):
+    await interaction.response.send_message(**_eco_coinflip(interaction.guild, interaction.user, eleccion.value, monto))
+
+
+@bot.tree.command(name="dice", description="Apuesta a un número del dado (paga x5)")
+@app_commands.guild_only()
+@app_commands.choices(numero=[
+    app_commands.Choice(name="1", value="1"),
+    app_commands.Choice(name="2", value="2"),
+    app_commands.Choice(name="3", value="3"),
+    app_commands.Choice(name="4", value="4"),
+    app_commands.Choice(name="5", value="5"),
+    app_commands.Choice(name="6", value="6"),
+])
+@app_commands.describe(numero="Número al que apuestas", monto="Cuánto apostar (número, 'all' o 'mitad')")
+async def slash_dice(interaction: discord.Interaction, numero: app_commands.Choice[str], monto: str):
+    await interaction.response.send_message(**_eco_dice(interaction.guild, interaction.user, int(numero.value), monto))
+
+
+@bot.tree.command(name="highlow", description="Adivina si la carta es mayor o menor (x1.9)")
+@app_commands.guild_only()
+@app_commands.describe(monto="Cuánto apostar (número, 'all' o 'mitad')")
+async def slash_highlow(interaction: discord.Interaction, monto: str):
+    res = _eco_highlow_start(interaction.guild, interaction.user, monto)
+    if res[0] == "msg":
+        return await interaction.response.send_message(**res[1])
+    embed, view = res[1]
+    await interaction.response.send_message(embed=embed, view=view)
+    view.msg = await interaction.original_response()
+
+
+@bot.tree.command(name="roulette", description="Apuesta en la ruleta (rojo/negro x2, verde x14)")
+@app_commands.guild_only()
+@app_commands.choices(apuesta=[
+    app_commands.Choice(name="Rojo", value="rojo"),
+    app_commands.Choice(name="Negro", value="negro"),
+    app_commands.Choice(name="Verde", value="verde"),
+])
+@app_commands.describe(apuesta="Color al que apuestas", monto="Cuánto apostar (número, 'all' o 'mitad')")
+async def slash_roulette(interaction: discord.Interaction, apuesta: app_commands.Choice[str], monto: str):
+    await interaction.response.send_message(**_eco_roulette(interaction.guild, interaction.user, apuesta.value, monto))
+
+
+@bot.tree.command(name="blackjack", description="Juega al Blackjack contra el crupier (x2, natural x2.5)")
+@app_commands.guild_only()
+@app_commands.describe(monto="Cuánto apostar (número, 'all' o 'mitad')")
+async def slash_blackjack(interaction: discord.Interaction, monto: str):
+    res = _eco_blackjack_start(interaction.guild, interaction.user, monto)
+    if res[0] == "msg":
+        return await interaction.response.send_message(**res[1])
+    embed, view = res[1]
+    await interaction.response.send_message(embed=embed, view=view)
+    view.msg = await interaction.original_response()
+
+
+@bot.tree.command(name="baltop", description="Muestra el top de usuarios más ricos")
+@app_commands.guild_only()
+async def slash_baltop(interaction: discord.Interaction):
+    await interaction.response.send_message(**_eco_baltop(interaction.guild))
+
+
+@bot.tree.command(name="add-money", description="Añade dinero a un usuario (admin)")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(miembro="Usuario", monto="Cantidad a añadir")
+async def slash_add_money(interaction: discord.Interaction, miembro: discord.Member, monto: str):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    await interaction.response.send_message(**_eco_admin_money(interaction.guild, "add", miembro, monto))
+
+
+@bot.tree.command(name="remove-money", description="Quita dinero a un usuario (admin)")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(miembro="Usuario", monto="Cantidad a quitar")
+async def slash_remove_money(interaction: discord.Interaction, miembro: discord.Member, monto: str):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    await interaction.response.send_message(**_eco_admin_money(interaction.guild, "remove", miembro, monto))
+
+
+@bot.tree.command(name="set-money", description="Fija el efectivo de un usuario (admin)")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(miembro="Usuario", monto="Cantidad final")
+async def slash_set_money(interaction: discord.Interaction, miembro: discord.Member, monto: str):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    await interaction.response.send_message(**_eco_admin_money(interaction.guild, "set", miembro, monto))
+
+
+@bot.tree.command(name="set-currency", description="Cambia el símbolo de la moneda (admin)")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(simbolo="Nuevo símbolo (ej: €, 💎, puntos)")
+async def slash_set_currency(interaction: discord.Interaction, simbolo: str):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    await interaction.response.send_message(**_eco_set_currency(interaction.guild, simbolo))
+
+
+@bot.tree.command(name="set-start-balance", description="Fija el balance inicial para usuarios nuevos (admin)")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(monto="Balance inicial")
+async def slash_set_start_balance(interaction: discord.Interaction, monto: int):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    await interaction.response.send_message(**_eco_set_start_balance(interaction.guild, str(monto)))
+
+
+@bot.tree.command(name="economy-config", description="Muestra la configuración de economía (admin)")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+async def slash_economy_config(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    await interaction.response.send_message(**_eco_config_view(interaction.guild))
+
+
+@bot.tree.command(name="reset-economy", description="Resetea TODA la economía del servidor (admin)")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.describe(confirmar="Marca True para confirmar el reseteo")
+async def slash_reset_economy(interaction: discord.Interaction, confirmar: bool = False):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    if not confirmar:
+        return await interaction.response.send_message("⚠️ Esto BORRARÁ todo el dinero de todos los usuarios. Marca `confirmar: True` para confirmar.")
+    await interaction.response.send_message(**_eco_reset(interaction.guild))
 
 
 if __name__ == "__main__":
