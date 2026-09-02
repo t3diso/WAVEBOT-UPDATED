@@ -88,12 +88,20 @@ antiraid_db = {}    # guild_id (str) -> config (ver _antiraid_default)
 # Joins recientes en memoria: guild_id (str) -> [timestamps]
 ANTIRAID_JOINS = {}
 
+# AutoMod (DESACTIVADO por defecto en cada servidor)
+AUTOMOD_PATH = ruta_datos("automod.json")
+automod_db = {}     # guild_id (str) -> config (ver _automod_default)
+# Mensajes recientes por usuario para anti-spam: guild_id -> {user_id: [timestamps]}
+AUTOMOD_SPAM_CACHE = {}
+AUTOMOD_INVITE_REGEX = re.compile(r"(discord\.gg|discord\.com/invite)/[A-Za-z0-9]+", re.IGNORECASE)
+AUTOMOD_LINK_REGEX = re.compile(r"(https?://|www\.)\S+", re.IGNORECASE)
+
 # Archivos de datos que el bot escribe en runtime (para migrar al volumen la primera vez).
 ARCHIVOS_DATOS = [
     "linkban_canal.json", "giveaways.json", "warns.json", "logs_channels.json",
     "honeypots.json", "xp_data.json", "level_roles.json", "autoroles.json",
     "prefixes.json", "reminders.json", "starboard.json", "antiraid.json",
-    "economy.json", "economy_shop.json",
+    "economy.json", "economy_shop.json", "automod.json",
 ]
 
 
@@ -782,6 +790,33 @@ def guardar_sesiones_dash():
         print(f"Error guardando dashboard_sesiones.json: {e}")
 
 
+def cargar_automod():
+    global automod_db
+    if os.path.exists(AUTOMOD_PATH):
+        try:
+            with open(AUTOMOD_PATH, "r", encoding="utf-8") as f:
+                automod_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            automod_db = {}
+    else:
+        automod_db = {}
+    for cfg in automod_db.values():
+        base = _automod_default()
+        for clave, valor in base.items():
+            cfg.setdefault(clave, valor)
+        cfg["stats"].setdefault("filtrados", 0)
+        cfg["stats"].setdefault("mutes", 0)
+    print(f"AutoMod configs cargados: {len(automod_db)} servidores.")
+
+
+def guardar_automod():
+    try:
+        with open(AUTOMOD_PATH, "w", encoding="utf-8") as f:
+            json.dump(automod_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando automod.json: {e}")
+
+
 def cargar_dashboard():
     """Carga dashboard.json (opcional): enabled, host, port, token."""
     global dashboard_config
@@ -852,6 +887,10 @@ _cache_mensajes = {}
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         await bot.process_commands(message)
+        return
+
+    # AutoMod: filtrar palabras/invites/links/spam antes de procesar el mensaje como comando.
+    if await _automod_check(message):
         return
 
     # Cachear para on_message_delete (sólo últimos 1000 para limitar RAM).
@@ -1111,6 +1150,7 @@ async def on_ready():
     cargar_economy()
     cargar_shop()
     cargar_antiraid()
+    cargar_automod()
     cargar_dashboard()
     cargar_sesiones_dash()
     # Arrancar el dashboard web (una sola vez, aunque on_ready se repita al reconectar).
@@ -3346,6 +3386,328 @@ async def antiraid_error(ctx, error):
 
 
 # ============================================================
+#  AUTOMOD (palabras, invites, links y spam; DESACTIVADO por defecto)
+# ============================================================
+
+def _automod_default():
+    """Config por defecto del AutoMod: todo desactivado."""
+    return {
+        "enabled": False,     # sistema desactivado por defecto
+        "palabras": [],       # palabras prohibidas (minúsculas)
+        "invites": False,     # bloquear invites de Discord
+        "links": False,       # bloquear todos los links
+        "spam_msgs": 5,       # mensajes que activan el anti-spam (0 = off)
+        "spam_seg": 5,        # ventana de tiempo en segundos
+        "spam_timeout": 600,  # segundos de timeout al spammer
+        "accion": "delete",   # delete | warn | mute (para palabras/invites/links)
+        "mute_min": 10,       # minutos de timeout si accion = mute
+        "exroles": [],        # IDs de roles exentos
+        "excanales": [],      # IDs de canales exentos
+        "stats": {"filtrados": 0, "mutes": 0},
+    }
+
+
+def _automod_cfg(guild_id):
+    """Devuelve (creándola si no existe) la config AutoMod de un servidor."""
+    gid = str(guild_id)
+    cfg = automod_db.setdefault(gid, _automod_default())
+    base = _automod_default()
+    for clave, valor in base.items():
+        cfg.setdefault(clave, valor)
+    cfg["stats"].setdefault("filtrados", 0)
+    cfg["stats"].setdefault("mutes", 0)
+    return cfg
+
+
+def _automod_status_embed(cfg: dict) -> discord.Embed:
+    """Embed con el estado/config actual del AutoMod (sin footer)."""
+    embed = discord.Embed(
+        title="🤖 AutoMod",
+        color=discord.Color.green() if cfg.get("enabled") else discord.Color.dark_grey(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Estado", value="🟢 Activado" if cfg.get("enabled") else "🔴 Desactivado (por defecto)", inline=True)
+    palabras = cfg.get("palabras", [])
+    embed.add_field(name="Palabras prohibidas", value=", ".join(f"`{p}`" for p in palabras[:15]) + (f" y {len(palabras) - 15} más" if len(palabras) > 15 else "") if palabras else "Ninguna", inline=False)
+    embed.add_field(name="Invites de Discord", value="🚫 Bloqueados" if cfg.get("invites") else "Permitidos", inline=True)
+    embed.add_field(name="Links", value="🚫 Bloqueados" if cfg.get("links") else "Permitidos", inline=True)
+    spam = "Desactivado" if not cfg.get("spam_msgs") else f"{cfg['spam_msgs']} mensajes en {cfg['spam_seg']}s → timeout {cfg['spam_timeout']}s"
+    embed.add_field(name="Anti-spam", value=spam, inline=False)
+    accion = cfg.get("accion", "delete")
+    accion_txt = {"delete": "🗑 Borrar mensaje", "warn": "⚠️ Borrar + avisar", "mute": "🔇 Borrar + silenciar"}[accion]
+    if accion == "mute":
+        accion_txt += f" ({cfg.get('mute_min', 10)} min)"
+    embed.add_field(name="Acción al filtrar", value=accion_txt, inline=True)
+    stats = cfg.get("stats", {})
+    embed.add_field(name="Stats", value=f"Filtrados: {stats.get('filtrados', 0)} • Silenciados: {stats.get('mutes', 0)}", inline=True)
+    return embed
+
+
+async def _automod_check(message: discord.Message):
+    """
+    Comprueba un mensaje contra el AutoMod. Devuelve True si fue filtrado
+    (el mensaje se elimina y no debe procesarse como comando).
+    Nunca actúa contra el staff (Manage Messages/Server/Admin), roles o canales exentos.
+    """
+    if not message.guild or message.author.bot or message.author.id == bot.user.id:
+        return False
+    gid = str(message.guild.id)
+    cfg = automod_db.get(gid)
+    if not cfg or not cfg.get("enabled"):
+        return False
+
+    miembro = message.author
+    es_miembro = isinstance(miembro, discord.Member)
+    if es_miembro:
+        if miembro.guild_permissions.administrator or miembro.guild_permissions.manage_guild or miembro.guild_permissions.manage_messages:
+            return False  # el staff nunca es filtrado
+        exroles = {int(r) for r in cfg.get("exroles", []) if str(r).isdigit()}
+        if any(rol.id in exroles for rol in miembro.roles):
+            return False
+    excanales = {int(c) for c in cfg.get("excanales", []) if str(c).isdigit()}
+    if message.channel.id in excanales:
+        return False
+
+    contenido = message.content or ""
+    motivo = None
+    if cfg.get("palabras"):
+        baja = contenido.lower()
+        if any(palabra in baja for palabra in cfg.get("palabras", [])):
+            motivo = "palabra prohibida"
+    if motivo is None and cfg.get("invites") and AUTOMOD_INVITE_REGEX.search(contenido):
+        motivo = "invite de Discord"
+    if motivo is None and cfg.get("links") and AUTOMOD_LINK_REGEX.search(contenido):
+        motivo = "link"
+
+    if motivo is not None:
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            pass
+        stats = cfg.setdefault("stats", {})
+        stats["filtrados"] = int(stats.get("filtrados", 0)) + 1
+        aviso = f"🤖 {message.author.mention}, tu mensaje fue eliminado (**{motivo}**)."
+        accion = cfg.get("accion", "delete")
+        if accion == "mute" and es_miembro:
+            try:
+                await miembro.edit(
+                    communication_disabled_until=discord.utils.utcnow() + datetime.timedelta(minutes=int(cfg.get("mute_min", 10))),
+                    reason=f"[AUTOMOD] {motivo}",
+                )
+                stats["mutes"] = int(stats.get("mutes", 0)) + 1
+                aviso += f" Silenciado {cfg.get('mute_min', 10)} min."
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+        guardar_automod()
+        try:
+            await message.channel.send(aviso, delete_after=8)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        embed = discord.Embed(
+            title="🤖 AutoMod: mensaje filtrado",
+            description=f"**Motivo:** {motivo}\n**Canal:** {message.channel.mention}",
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Usuario", value=f"{message.author} (`{message.author.id}`)", inline=False)
+        embed.set_thumbnail(url=message.author.display_avatar.url)
+        await enviar_logs(message.guild, embed)
+        return True
+
+    # Anti-spam: N mensajes en X segundos → timeout.
+    if es_miembro and cfg.get("spam_msgs", 0) >= 2 and cfg.get("spam_seg", 0) >= 2:
+        cache = AUTOMOD_SPAM_CACHE.setdefault(gid, {})
+        stamps = cache.setdefault(str(miembro.id), [])
+        ahora = time.time()
+        stamps.append(ahora)
+        ventana = int(cfg.get("spam_seg", 5))
+        stamps[:] = [t for t in stamps if ahora - t <= ventana]
+        if len(stamps) >= int(cfg.get("spam_msgs", 5)):
+            stamps.clear()
+            stats = cfg.setdefault("stats", {})
+            stats["mutes"] = int(stats.get("mutes", 0)) + 1
+            stats["filtrados"] = int(stats.get("filtrados", 0)) + 1
+            guardar_automod()
+            try:
+                await miembro.edit(
+                    communication_disabled_until=discord.utils.utcnow() + datetime.timedelta(seconds=int(cfg.get("spam_timeout", 600))),
+                    reason="[AUTOMOD] Spam",
+                )
+                await message.channel.send(
+                    f"🤖 {miembro.mention} silenciado {int(cfg.get('spam_timeout', 600)) // 60} min por **spam**.",
+                    delete_after=10,
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+            embed = discord.Embed(
+                title="🤖 AutoMod: spam detectado",
+                description=f"{miembro.mention} silenciado {int(cfg.get('spam_timeout', 600)) // 60} min en {message.channel.mention}.",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.add_field(name="Usuario", value=f"{miembro} (`{miembro.id}`)", inline=False)
+            embed.set_thumbnail(url=miembro.display_avatar.url)
+            await enviar_logs(message.guild, embed)
+            return True
+
+    return False
+
+
+@bot.command(name="automod")
+@commands.has_permissions(manage_guild=True)
+async def automod(ctx, *, args: str = ""):
+    """
+    Sistema AutoMod (desactivado por defecto). Uso: .automod [on|off|add|remove|invites|links|spam|accion|exrol|excanal]
+    Sin argumentos muestra la configuración actual.
+    """
+    cfg = _automod_cfg(ctx.guild.id)
+    tokens = args.split()
+    sub = tokens[0].lower() if tokens else ""
+    p = ctx.prefix if ctx.prefix and not MENTION_REGEX.match(ctx.prefix) else DEFAULT_PREFIX
+
+    if sub in ("", "config", "status"):
+        embed = _automod_status_embed(cfg)
+        embed.set_footer(text=f"Usa {p}automod on para activarlo. El staff (Manage Messages/Server) nunca es filtrado.")
+        return await ctx.send(embed=embed)
+
+    if sub == "on":
+        cfg["enabled"] = True
+        guardar_automod()
+        return await ctx.send("✅ AutoMod **activado**. El staff (Manage Messages/Server/Admin) nunca es filtrado.")
+
+    if sub == "off":
+        cfg["enabled"] = False
+        guardar_automod()
+        return await ctx.send("🔴 AutoMod **desactivado** (estado por defecto).")
+
+    if sub in ("add", "palabra"):
+        palabra = " ".join(tokens[1:]).strip().lower()
+        if not palabra:
+            return await ctx.send(f"❌ Uso correcto: `{p}automod add <palabra o frase>`")
+        if palabra in cfg["palabras"]:
+            return await ctx.send(f"ℹ️ `{palabra}` ya estaba en la lista.")
+        cfg["palabras"].append(palabra)
+        guardar_automod()
+        return await ctx.send(f"✅ Palabra prohibida añadida: `{palabra}` ({len(cfg['palabras'])} en total).")
+
+    if sub in ("remove", "quitar"):
+        palabra = " ".join(tokens[1:]).strip().lower()
+        if not palabra:
+            return await ctx.send(f"❌ Uso correcto: `{p}automod remove <palabra>`")
+        if palabra not in cfg["palabras"]:
+            return await ctx.send(f"ℹ️ `{palabra}` no estaba en la lista.")
+        cfg["palabras"].remove(palabra)
+        guardar_automod()
+        return await ctx.send(f"✅ Palabra eliminada: `{palabra}` ({len(cfg['palabras'])} restantes).")
+
+    if sub == "invites":
+        if len(tokens) < 2 or tokens[1].lower() not in ("on", "off", "true", "false"):
+            return await ctx.send(f"❌ Uso correcto: `{p}automod invites <on|off>`")
+        cfg["invites"] = tokens[1].lower() in ("on", "true")
+        guardar_automod()
+        return await ctx.send(f"✅ Invites de Discord: **{'BLOQUEADOS' if cfg['invites'] else 'permitidos'}**.")
+
+    if sub == "links":
+        if len(tokens) < 2 or tokens[1].lower() not in ("on", "off", "true", "false"):
+            return await ctx.send(f"❌ Uso correcto: `{p}automod links <on|off>`")
+        cfg["links"] = tokens[1].lower() in ("on", "true")
+        guardar_automod()
+        return await ctx.send(f"✅ Links: **{'BLOQUEADOS' if cfg['links'] else 'permitidos'}**.")
+
+    if sub == "spam":
+        if len(tokens) < 4:
+            return await ctx.send(f"❌ Uso correcto: `{p}automod spam <mensajes> <segundos> <timeout_seg>` (0 0 0 = desactivar)")
+        try:
+            msgs, seg, timeout = int(tokens[1]), int(tokens[2]), int(tokens[3])
+        except ValueError:
+            return await ctx.send("❌ Los tres valores deben ser números enteros.")
+        if not (0 <= msgs <= 50 and 0 <= seg <= 300 and 0 <= timeout <= 86400 * 28):
+            return await ctx.send("❌ Rangos: mensajes 0-50 · segundos 0-300 · timeout 0-2419200.")
+        if 0 < msgs < 2 or 0 < seg < 2:
+            return await ctx.send("❌ Para activarlo: mínimo 2 mensajes y 2 segundos (o 0 0 0 para desactivar).")
+        cfg["spam_msgs"], cfg["spam_seg"], cfg["spam_timeout"] = msgs, seg, timeout
+        guardar_automod()
+        texto = "Desactivado" if msgs == 0 else f"{msgs} mensajes en {seg}s → timeout {timeout}s"
+        return await ctx.send(f"✅ Anti-spam: **{texto}**.")
+
+    if sub == "accion":
+        if len(tokens) < 2 or tokens[1].lower() not in ("delete", "warn", "mute"):
+            return await ctx.send(f"❌ Uso correcto: `{p}automod accion <delete|warn|mute> [minutos]`")
+        cfg["accion"] = tokens[1].lower()
+        if len(tokens) >= 3:
+            try:
+                minutos = int(tokens[2])
+                if not (1 <= minutos <= 40320):
+                    raise ValueError
+                cfg["mute_min"] = minutos
+            except ValueError:
+                return await ctx.send("❌ Los minutos deben estar entre 1 y 40320 (~1 mes).")
+        guardar_automod()
+        extra = f" (silencio de {cfg['mute_min']} min)" if cfg["accion"] == "mute" else ""
+        return await ctx.send(f"✅ Acción al filtrar: **{cfg['accion']}**{extra}.")
+
+    if sub in ("exrol", "exrole"):
+        if len(tokens) < 3 or tokens[1].lower() not in ("add", "remove"):
+            return await ctx.send(f"❌ Uso correcto: `{p}automod exrol <add|remove> @rol`")
+        try:
+            rol = await commands.RoleConverter().convert(ctx, tokens[2])
+        except commands.RoleNotFound:
+            return await ctx.send("❌ Rol no encontrado.")
+        rid = str(rol.id)
+        if tokens[1].lower() == "add":
+            if rid in cfg["exroles"]:
+                return await ctx.send(f"ℹ️ @{rol.name} ya estaba exento.")
+            cfg["exroles"].append(rid)
+            guardar_automod()
+            return await ctx.send(f"✅ Rol exento añadido: @{rol.name}.")
+        if rid not in cfg["exroles"]:
+            return await ctx.send(f"ℹ️ @{rol.name} no estaba exento.")
+        cfg["exroles"].remove(rid)
+        guardar_automod()
+        return await ctx.send(f"✅ Rol exento eliminado: @{rol.name}.")
+
+    if sub in ("excanal", "exchannel"):
+        if len(tokens) < 3 or tokens[1].lower() not in ("add", "remove"):
+            return await ctx.send(f"❌ Uso correcto: `{p}automod excanal <add|remove> #canal`")
+        try:
+            canal = await commands.TextChannelConverter().convert(ctx, tokens[2])
+        except (commands.ChannelNotFound, commands.BadArgument):
+            return await ctx.send("❌ Canal no encontrado.")
+        cid = str(canal.id)
+        if tokens[1].lower() == "add":
+            if cid in cfg["excanales"]:
+                return await ctx.send(f"ℹ️ {canal.mention} ya estaba exento.")
+            cfg["excanales"].append(cid)
+            guardar_automod()
+            return await ctx.send(f"✅ Canal exento añadido: {canal.mention}.")
+        if cid not in cfg["excanales"]:
+            return await ctx.send(f"ℹ️ {canal.mention} no estaba exento.")
+        cfg["excanales"].remove(cid)
+        guardar_automod()
+        return await ctx.send(f"✅ Canal exento eliminado: {canal.mention}.")
+
+    return await ctx.send(
+        "❌ Subcomando desconocido. Usa:\n"
+        f"`{p}automod` :: Ver configuración\n"
+        f"`{p}automod on|off` :: Activar / desactivar\n"
+        f"`{p}automod add|remove <palabra>` :: Palabras prohibidas\n"
+        f"`{p}automod invites|links <on|off>` :: Bloquear invites / links\n"
+        f"`{p}automod spam <msgs> <seg> <timeout>` :: Anti-spam (0 0 0 = off)\n"
+        f"`{p}automod accion <delete|warn|mute> [min]` :: Acción al filtrar\n"
+        f"`{p}automod exrol <add|remove> @rol` :: Roles exentos\n"
+        f"`{p}automod excanal <add|remove> #canal` :: Canales exentos"
+    )
+
+
+@automod.error
+async def automod_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Server.")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me faltan permisos para ejecutar este comando.")
+
+
+# ============================================================
 #  HONEYPOT
 # ============================================================
 
@@ -3665,6 +4027,7 @@ async def ayuda(ctx, *, comando: str = None):
     embed.add_field(name="Categorías", value=(
         f"`{p}help mod` :: Moderación\n"
         f"`{p}help antiraid` :: Antiraid\n"
+        f"`{p}help automod` :: Automod\n"
         f"`{p}help roles` :: Roles\n"
         f"`{p}help niveles` :: Niveles / XP\n"
         f"`{p}help economia` :: Economía\n"
@@ -3683,6 +4046,7 @@ async def ayuda(ctx, *, comando: str = None):
             options=[
                 discord.SelectOption(label="Moderación", value="mod", description="Ban, kick, mute, warn, purge, nuke, etc."),
                 discord.SelectOption(label="Antiraid", value="antiraid", description="Antiraid on/off, set, action, punishnew, minage, raidmode"),
+                discord.SelectOption(label="Automod", value="automod", description="Filtro de palabras, invites, links y spam"),
                 discord.SelectOption(label="Roles", value="roles", description="Roleadd, roleremove, rolehuman, autorole, etc."),
                 discord.SelectOption(label="Niveles / XP", value="niveles", description="Rank, level, leaderboard, level-config, etc."),
                 discord.SelectOption(label="Economía", value="economia", description="Balance, work, crime, rob, tienda, juegos, etc."),
@@ -3729,6 +4093,18 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}antiraid raidmode <on|off>` :: Modo raid manual\n\n"
                     f"Desactivado por defecto • Nunca actúa contra el staff (Manage Server)"
                 ), color=discord.Color.dark_red()),
+                "automod": discord.Embed(title="Automod", description=(
+                    f"`{p}automod` :: Ver configuración\n"
+                    f"`{p}automod on/off` :: Activar / desactivar\n"
+                    f"`{p}automod add|remove (palabra)` :: Palabras prohibidas\n"
+                    f"`{p}automod invites <on|off>` :: Bloquear invites de Discord\n"
+                    f"`{p}automod links <on|off>` :: Bloquear todos los links\n"
+                    f"`{p}automod spam (msgs) (seg) (timeout)` :: Anti-spam (0 0 0 = off)\n"
+                    f"`{p}automod accion <delete|warn|mute> [min]` :: Acción al filtrar\n"
+                    f"`{p}automod exrol <add|remove> (@rol)` :: Roles exentos\n"
+                    f"`{p}automod excanal <add|remove> (#canal)` :: Canales exentos\n\n"
+                    f"Desactivado por defecto • El staff nunca es filtrado"
+                ), color=discord.Color.green()),
                 "roles": discord.Embed(title="Roles", description=(
                     f"`{p}roleadd (@usuario) (@rol)` :: Otorga rol\n"
                     f"`{p}roleremove (@usuario) (@rol)` :: Quita rol\n"
@@ -5205,6 +5581,194 @@ async def slash_antiraid_raidmode(interaction: discord.Interaction, estado: app_
 bot.tree.add_command(antiraid_group)
 
 
+# ============================================================
+#  SLASH: /automod (grupo)
+# ============================================================
+
+automod_group = app_commands.Group(name="automod", description="Sistema AutoMod (desactivado por defecto)")
+
+
+@automod_group.command(name="config", description="Muestra la configuración actual del AutoMod")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_automod_config(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _automod_cfg(interaction.guild.id)
+    embed = _automod_status_embed(cfg)
+    embed.set_footer(text="Usa /automod on para activarlo. El staff (Manage Messages/Server) nunca es filtrado.")
+    await interaction.response.send_message(embed=embed)
+
+
+@automod_group.command(name="on", description="Activa el AutoMod")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_automod_on(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _automod_cfg(interaction.guild.id)
+    cfg["enabled"] = True
+    guardar_automod()
+    await interaction.response.send_message("✅ AutoMod **activado**. El staff (Manage Messages/Server/Admin) nunca es filtrado.")
+
+
+@automod_group.command(name="off", description="Desactiva el AutoMod (estado por defecto)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_automod_off(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _automod_cfg(interaction.guild.id)
+    cfg["enabled"] = False
+    guardar_automod()
+    await interaction.response.send_message("🔴 AutoMod **desactivado** (estado por defecto).")
+
+
+@automod_group.command(name="add", description="Añade una palabra o frase prohibida")
+@app_commands.describe(palabra="Palabra o frase a prohibir (no distingue mayúsculas)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_automod_add(interaction: discord.Interaction, palabra: str):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _automod_cfg(interaction.guild.id)
+    palabra = palabra.strip().lower()
+    if not palabra:
+        return await interaction.response.send_message("❌ La palabra no puede estar vacía.", ephemeral=True)
+    if palabra in cfg["palabras"]:
+        return await interaction.response.send_message(f"ℹ️ `{palabra}` ya estaba en la lista.", ephemeral=True)
+    cfg["palabras"].append(palabra)
+    guardar_automod()
+    await interaction.response.send_message(f"✅ Palabra prohibida añadida: `{palabra}` ({len(cfg['palabras'])} en total).")
+
+
+@automod_group.command(name="remove", description="Elimina una palabra prohibida")
+@app_commands.describe(palabra="Palabra a quitar de la lista")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_automod_remove(interaction: discord.Interaction, palabra: str):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _automod_cfg(interaction.guild.id)
+    palabra = palabra.strip().lower()
+    if palabra not in cfg["palabras"]:
+        return await interaction.response.send_message(f"ℹ️ `{palabra}` no estaba en la lista.", ephemeral=True)
+    cfg["palabras"].remove(palabra)
+    guardar_automod()
+    await interaction.response.send_message(f"✅ Palabra eliminada: `{palabra}` ({len(cfg['palabras'])} restantes).")
+
+
+@automod_group.command(name="invites", description="Bloquea o permite invites de Discord")
+@app_commands.describe(estado="True = bloquear invites")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_automod_invites(interaction: discord.Interaction, estado: bool):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _automod_cfg(interaction.guild.id)
+    cfg["invites"] = estado
+    guardar_automod()
+    await interaction.response.send_message(f"✅ Invites de Discord: **{'BLOQUEADOS' if estado else 'permitidos'}**.")
+
+
+@automod_group.command(name="links", description="Bloquea o permite todos los links")
+@app_commands.describe(estado="True = bloquear links")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_automod_links(interaction: discord.Interaction, estado: bool):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _automod_cfg(interaction.guild.id)
+    cfg["links"] = estado
+    guardar_automod()
+    await interaction.response.send_message(f"✅ Links: **{'BLOQUEADOS' if estado else 'permitidos'}**.")
+
+
+@automod_group.command(name="spam", description="Configura el anti-spam")
+@app_commands.describe(mensajes="Mensajes que activan el filtro (2-50, 0 = desactivar)", segundos="Ventana de tiempo (2-300)", timeout_seg="Segundos de silencio al spammer")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_automod_spam(interaction: discord.Interaction, mensajes: int, segundos: int, timeout_seg: int):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    if not (0 <= mensajes <= 50 and 0 <= segundos <= 300 and 0 <= timeout_seg <= 86400 * 28):
+        return await interaction.response.send_message("❌ Rangos: mensajes 0-50 · segundos 0-300 · timeout 0-2419200.", ephemeral=True)
+    if 0 < mensajes < 2 or 0 < segundos < 2:
+        return await interaction.response.send_message("❌ Para activarlo: mínimo 2 mensajes y 2 segundos (o 0 0 0 para desactivar).", ephemeral=True)
+    cfg = _automod_cfg(interaction.guild.id)
+    cfg["spam_msgs"], cfg["spam_seg"], cfg["spam_timeout"] = mensajes, segundos, timeout_seg
+    guardar_automod()
+    texto = "Desactivado" if mensajes == 0 else f"{mensajes} mensajes en {segundos}s → timeout {timeout_seg}s"
+    await interaction.response.send_message(f"✅ Anti-spam: **{texto}**.")
+
+
+@automod_group.command(name="accion", description="Acción al filtrar un mensaje")
+@app_commands.describe(accion="Acción a aplicar", minutos="Minutos de silencio (solo para mute, 1-40320)")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(accion=[
+    app_commands.Choice(name="delete (solo borrar)", value="delete"),
+    app_commands.Choice(name="warn (borrar + avisar)", value="warn"),
+    app_commands.Choice(name="mute (borrar + silenciar)", value="mute"),
+])
+async def slash_automod_accion(interaction: discord.Interaction, accion: app_commands.Choice[str], minutos: int = None):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _automod_cfg(interaction.guild.id)
+    cfg["accion"] = accion.value
+    if minutos is not None:
+        if not (1 <= minutos <= 40320):
+            return await interaction.response.send_message("❌ Los minutos deben estar entre 1 y 40320 (~1 mes).", ephemeral=True)
+        cfg["mute_min"] = minutos
+    guardar_automod()
+    extra = f" (silencio de {cfg['mute_min']} min)" if cfg["accion"] == "mute" else ""
+    await interaction.response.send_message(f"✅ Acción al filtrar: **{cfg['accion']}**{extra}.")
+
+
+@automod_group.command(name="exrol", description="Añade o quita un rol exento de AutoMod")
+@app_commands.describe(accion="Añadir o quitar la exención", rol="Rol exento de AutoMod")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(accion=[
+    app_commands.Choice(name="add", value="add"),
+    app_commands.Choice(name="remove", value="remove"),
+])
+async def slash_automod_exrol(interaction: discord.Interaction, accion: app_commands.Choice[str], rol: discord.Role):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _automod_cfg(interaction.guild.id)
+    rid = str(rol.id)
+    if accion.value == "add":
+        if rid in cfg["exroles"]:
+            return await interaction.response.send_message(f"ℹ️ @{rol.name} ya estaba exento.", ephemeral=True)
+        cfg["exroles"].append(rid)
+        guardar_automod()
+        return await interaction.response.send_message(f"✅ Rol exento añadido: @{rol.name}.")
+    if rid not in cfg["exroles"]:
+        return await interaction.response.send_message(f"ℹ️ @{rol.name} no estaba exento.", ephemeral=True)
+    cfg["exroles"].remove(rid)
+    guardar_automod()
+    await interaction.response.send_message(f"✅ Rol exento eliminado: @{rol.name}.")
+
+
+@automod_group.command(name="excanal", description="Añade o quita un canal exento de AutoMod")
+@app_commands.describe(accion="Añadir o quitar la exención", canal="Canal exento de AutoMod")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(accion=[
+    app_commands.Choice(name="add", value="add"),
+    app_commands.Choice(name="remove", value="remove"),
+])
+async def slash_automod_excanal(interaction: discord.Interaction, accion: app_commands.Choice[str], canal: discord.TextChannel):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _automod_cfg(interaction.guild.id)
+    cid = str(canal.id)
+    if accion.value == "add":
+        if cid in cfg["excanales"]:
+            return await interaction.response.send_message(f"ℹ️ {canal.mention} ya estaba exento.", ephemeral=True)
+        cfg["excanales"].append(cid)
+        guardar_automod()
+        return await interaction.response.send_message(f"✅ Canal exento añadido: {canal.mention}.")
+    if cid not in cfg["excanales"]:
+        return await interaction.response.send_message(f"ℹ️ {canal.mention} no estaba exento.", ephemeral=True)
+    cfg["excanales"].remove(cid)
+    guardar_automod()
+    await interaction.response.send_message(f"✅ Canal exento eliminado: {canal.mention}.")
+
+
+bot.tree.add_command(automod_group)
+
+
 
 # ============================================================
 #  SLASH: /soft /softban (baneo temporal)
@@ -5304,6 +5868,7 @@ async def slash_help(interaction: discord.Interaction):
     )
     embed.add_field(name="🛡️ Moderación", value="`ban` `kick` `unban` `mute` `unmute` `softban`/`soft ban` `ipban` `ipunban`\n`purge` `nuke` `lock` `unlock` `rename` `namereset` `warn`/`warn add` `warnremove`/`warn remove` `warns`/`warn list`", inline=False)
     embed.add_field(name="🚨 Antiraid", value="`antiraid` (ver config) `antiraid on`/`off` `antiraid set` `antiraid action` `antiraid punishnew` `antiraid minage` `antiraid raidmode`\nGrupo slash `/antiraid`: config, on, off, set, action, punishnew, minage, raidmode.\nDesactivado por defecto • Nunca actúa contra el staff (Manage Server)", inline=False)
+    embed.add_field(name="🤖 Automod", value="`automod` (ver config) `automod on`/`off` `automod add`/`remove` `automod invites` `automod links` `automod spam` `automod accion` `automod exrol` `automod excanal`\nGrupo slash `/automod`: config, on, off, add, remove, invites, links, spam, accion, exrol, excanal.\nFiltro de palabras, invites, links y spam • Desactivado por defecto", inline=False)
     embed.add_field(name="👥 Roles", value="`roleadd`/`role add` `roleremove`/`role remove` `rolehuman`/`role human` `roleall`/`role all` `rolebot`/`role bot`\n`autorolehuman`/`autorole human` `autorolebot`/`autorole bot` `autorole`/`autorole general` `autorolelist`/`autorole list`", inline=False)
     embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
     embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
@@ -7903,6 +8468,40 @@ def _antiraid_public(cfg: dict):
     }
 
 
+def _automod_public(cfg: dict, guild: discord.Guild = None):
+    """Serializa la config AutoMod para la API del dashboard (resuelve nombres si hay guild)."""
+    stats = cfg.get("stats", {})
+
+    def nombre_rol(rid):
+        if guild is not None and str(rid).isdigit():
+            rol = guild.get_role(int(rid))
+            if rol is not None:
+                return rol.name
+        return "rol eliminado"
+
+    def nombre_canal(cid):
+        if guild is not None and str(cid).isdigit():
+            canal = guild.get_channel(int(cid))
+            if canal is not None:
+                return canal.name
+        return "canal eliminado"
+
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "palabras": list(cfg.get("palabras", [])),
+        "invites": bool(cfg.get("invites", False)),
+        "links": bool(cfg.get("links", False)),
+        "spam_msgs": int(cfg.get("spam_msgs", 0)),
+        "spam_seg": int(cfg.get("spam_seg", 0)),
+        "spam_timeout": int(cfg.get("spam_timeout", 0)),
+        "accion": str(cfg.get("accion", "delete")),
+        "mute_min": int(cfg.get("mute_min", 10)),
+        "exroles": [{"id": str(r), "nombre": nombre_rol(r)} for r in cfg.get("exroles", [])],
+        "excanales": [{"id": str(c), "nombre": nombre_canal(c)} for c in cfg.get("excanales", [])],
+        "stats": {"filtrados": int(stats.get("filtrados", 0)), "mutes": int(stats.get("mutes", 0))},
+    }
+
+
 def _dash_buscar_guild(gid_texto: str):
     """Devuelve el Guild a partir del parámetro de ruta, o None."""
     if not gid_texto.isdigit():
@@ -8217,13 +8816,14 @@ async def _dash_status(request):
     # Usuario con sesión iniciada (o token maestro).
     sesion = request.get("dash_sesion")
     if request.get("dash_acceso") == "maestro":
-        usuario = {"id": None, "nombre": "Token maestro", "avatar": None, "es_bot_owner": True}
+        usuario = {"id": None, "nombre": "Staff de Wave", "avatar": None, "es_bot_owner": True, "staff": True}
     elif sesion is not None:
         usuario = {
             "id": str(sesion["user_id"]),
             "nombre": sesion.get("nombre"),
             "avatar": sesion.get("avatar"),
             "es_bot_owner": str(sesion["user_id"]) == str(dashboard_config.get("owner_id", "")),
+            "staff": False,
         }
     else:
         usuario = None
@@ -8339,6 +8939,7 @@ async def _dash_guild(request):
         "es_bot_owner": nivel == "bot_owner",
         "permisos": permisos,
         "antiraid": _antiraid_public(_antiraid_cfg(gid)),
+        "automod": _automod_public(_automod_cfg(gid), guild),
         "moderacion": {
             "warns_totales": warns_totales,
             "usuarios_con_warns": usuarios_warns,
@@ -8509,6 +9110,112 @@ async def _dash_raidmode(request):
     return dash_web.json_response({"ok": True, "antiraid": _antiraid_public(cfg)})
 
 
+async def _dash_automod_set(request):
+    """POST /api/guild/<id>/automod — misma validación que el comando .automod (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_puede_configurar(request, guild):
+        return dash_web.json_response({"error": "Necesitas permiso de administración (Manage Server) en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    cfg = _automod_cfg(guild.id)
+    cambios = []
+
+    if "enabled" in data:
+        if not isinstance(data["enabled"], bool):
+            return dash_web.json_response({"error": "enabled debe ser true/false."}, status=400)
+        cfg["enabled"] = data["enabled"]
+        cambios.append("sistema " + ("activado" if data["enabled"] else "desactivado"))
+    if "palabra_add" in data:
+        palabra = str(data["palabra_add"]).strip().lower()
+        if not palabra:
+            return dash_web.json_response({"error": "La palabra no puede estar vacía."}, status=400)
+        if palabra in cfg["palabras"]:
+            return dash_web.json_response({"error": f"La palabra `{palabra}` ya estaba prohibida."}, status=400)
+        cfg["palabras"].append(palabra)
+        cambios.append(f"palabra añadida: {palabra}")
+    if "palabra_remove" in data:
+        palabra = str(data["palabra_remove"]).strip().lower()
+        if palabra not in cfg["palabras"]:
+            return dash_web.json_response({"error": f"La palabra `{palabra}` no estaba prohibida."}, status=400)
+        cfg["palabras"].remove(palabra)
+        cambios.append(f"palabra eliminada: {palabra}")
+    if "invites" in data:
+        if not isinstance(data["invites"], bool):
+            return dash_web.json_response({"error": "invites debe ser true/false."}, status=400)
+        cfg["invites"] = data["invites"]
+        cambios.append("invites " + ("bloqueados" if data["invites"] else "permitidos"))
+    if "links" in data:
+        if not isinstance(data["links"], bool):
+            return dash_web.json_response({"error": "links debe ser true/false."}, status=400)
+        cfg["links"] = data["links"]
+        cambios.append("links " + ("bloqueados" if data["links"] else "permitidos"))
+    if any(k in data for k in ("spam_msgs", "spam_seg", "spam_timeout")):
+        msgs, e1 = _dash_int(data.get("spam_msgs", cfg.get("spam_msgs", 0)), 0, 50)
+        seg, e2 = _dash_int(data.get("spam_seg", cfg.get("spam_seg", 0)), 0, 300)
+        timeout, e3 = _dash_int(data.get("spam_timeout", cfg.get("spam_timeout", 0)), 0, 86400 * 28)
+        if e1 or e2 or e3:
+            return dash_web.json_response({"error": "Anti-spam: mensajes 0-50 · segundos 0-300 · timeout 0-2419200."}, status=400)
+        if 0 < msgs < 2 or 0 < seg < 2:
+            return dash_web.json_response({"error": "Anti-spam: mínimo 2 mensajes y 2 segundos (o 0 0 0 para desactivar)."}, status=400)
+        cfg["spam_msgs"], cfg["spam_seg"], cfg["spam_timeout"] = msgs, seg, timeout
+        cambios.append(f"anti-spam: {msgs} msgs en {seg}s → {timeout}s")
+    if "accion" in data:
+        if data["accion"] not in ("delete", "warn", "mute"):
+            return dash_web.json_response({"error": "accion debe ser delete, warn o mute."}, status=400)
+        cfg["accion"] = data["accion"]
+        cambios.append(f"acción: {data['accion']}")
+    if "mute_min" in data:
+        v, e = _dash_int(data["mute_min"], 1, 40320)
+        if e:
+            return dash_web.json_response({"error": f"Los minutos de silencio {e} (1-40320)."}, status=400)
+        cfg["mute_min"] = v
+        cambios.append(f"silencio: {v} min")
+    if "exrol_add" in data:
+        rid = str(data["exrol_add"])
+        rol = guild.get_role(int(rid)) if rid.isdigit() else None
+        if rol is None or rol.is_default() or rol.managed:
+            return dash_web.json_response({"error": "Rol no válido."}, status=400)
+        if rid in cfg["exroles"]:
+            return dash_web.json_response({"error": f"@{rol.name} ya estaba exento."}, status=400)
+        cfg["exroles"].append(rid)
+        cambios.append(f"rol exento: @{rol.name}")
+    if "exrol_remove" in data:
+        rid = str(data["exrol_remove"])
+        if rid not in cfg["exroles"]:
+            return dash_web.json_response({"error": "Ese rol no estaba exento."}, status=400)
+        cfg["exroles"].remove(rid)
+        cambios.append("rol exento eliminado")
+    if "excanal_add" in data:
+        cid = str(data["excanal_add"])
+        canal = guild.get_channel(int(cid)) if cid.isdigit() else None
+        if canal is None:
+            return dash_web.json_response({"error": "Canal no encontrado en este servidor."}, status=400)
+        if cid in cfg["excanales"]:
+            return dash_web.json_response({"error": f"#{canal.name} ya estaba exento."}, status=400)
+        cfg["excanales"].append(cid)
+        cambios.append(f"canal exento: #{canal.name}")
+    if "excanal_remove" in data:
+        cid = str(data["excanal_remove"])
+        if cid not in cfg["excanales"]:
+            return dash_web.json_response({"error": "Ese canal no estaba exento."}, status=400)
+        cfg["excanales"].remove(cid)
+        cambios.append("canal exento eliminado")
+
+    guardar_automod()
+    if cambios:
+        embed = discord.Embed(
+            title="🤖 AutoMod actualizado desde el dashboard",
+            description=" • ".join(cambios)[:4096],
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow(),
+        )
+        await enviar_logs(guild, embed)
+    return dash_web.json_response({"ok": True, "automod": _automod_public(cfg, guild)})
+
+
 async def _dash_leave(request):
     """POST /api/guild/<id>/leave — el bot abandona ese servidor (solo owner del bot)."""
     if not _dash_es_bot_owner(request):
@@ -8645,6 +9352,42 @@ async def _dash_economy_user(request):
         u["cash"] = cantidad
     guardar_economy()
     return dash_web.json_response({"ok": True, "user_id": uid, "cash": u["cash"], "bank": u.get("bank", 0)})
+
+
+async def _dash_economy_item(request):
+    """POST /api/guild/<id>/economy/item — dar/quitar items del inventario de un usuario (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["manage_guild"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Manage Server en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    uid = str(data.get("user_id", ""))
+    if not uid.isdigit():
+        return dash_web.json_response({"error": "Debes indicar una ID de usuario válida."}, status=400)
+    item = str(data.get("item", "")).strip().lower()
+    if not item or " " in item:
+        return dash_web.json_response({"error": "El item debe ser una sola palabra (sin espacios)."}, status=400)
+    accion = data.get("accion")
+    if accion not in ("add", "remove"):
+        return dash_web.json_response({"error": "accion debe ser add o remove."}, status=400)
+    cantidad, e = _dash_int(data.get("cantidad", 1), 1)
+    if e:
+        return dash_web.json_response({"error": f"La cantidad {e}."}, status=400)
+    u = get_user_econ(guild.id, int(uid))
+    inv = u.setdefault("inventory", {})
+    if accion == "add":
+        inv[item] = int(inv.get(item, 0)) + cantidad
+        msg = f"✅ {cantidad} × {item} añadidos al inventario del usuario."
+    else:
+        inv[item] = max(0, int(inv.get(item, 0)) - cantidad)
+        if inv[item] == 0:
+            inv.pop(item, None)
+        msg = f"✅ {cantidad} × {item} quitados del inventario del usuario."
+    guardar_economy()
+    return dash_web.json_response({"ok": True, "msg": msg})
 
 
 async def _dash_shop_set(request):
@@ -8997,10 +9740,12 @@ async def _iniciar_dashboard():
     app.router.add_get("/api/guild/{gid}", _dash_guild)
     app.router.add_post("/api/guild/{gid}/antiraid", _dash_antiraid_set)
     app.router.add_post("/api/guild/{gid}/raidmode", _dash_raidmode)
+    app.router.add_post("/api/guild/{gid}/automod", _dash_automod_set)
     app.router.add_post("/api/guild/{gid}/leave", _dash_leave)
     app.router.add_post("/api/sync", _dash_sync)
     app.router.add_post("/api/guild/{gid}/economy", _dash_economy_set)
     app.router.add_post("/api/guild/{gid}/economy/user", _dash_economy_user)
+    app.router.add_post("/api/guild/{gid}/economy/item", _dash_economy_item)
     app.router.add_post("/api/guild/{gid}/shop", _dash_shop_set)
     app.router.add_post("/api/guild/{gid}/starboard", _dash_starboard_set)
     app.router.add_post("/api/guild/{gid}/xp", _dash_xp_set)

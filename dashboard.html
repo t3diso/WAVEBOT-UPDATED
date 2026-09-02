@@ -51,6 +51,8 @@
   .stat-chip span { font-size: 10.5px; color: var(--texto-2); text-transform: uppercase; letter-spacing: .5px; }
   .btn-refrescar { background: var(--acento); color: #fff; border: 0; border-radius: 10px; padding: 8px 15px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
   .btn-refrescar:hover { filter: brightness(1.12); }
+  .btn-invitar { background: var(--verde); color: #fff; border: 0; border-radius: 11px; padding: 10px 20px; font-size: 14px; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-block; }
+  .btn-invitar:hover { filter: brightness(1.1); text-decoration: none; }
 
   /* ===== Layout ===== */
   .layout { flex: 1; display: flex; min-height: 0; }
@@ -111,6 +113,8 @@
   .nav-btn:hover { background: var(--panel); color: var(--texto); }
   .nav-btn.activo { background: var(--acento-suave); color: var(--acento); }
   .nav-btn .candado { margin-left: auto; font-size: 11px; opacity: .7; }
+  .nav-grupo { font-size: 10.5px; font-weight: 800; color: var(--texto-2); text-transform: uppercase; letter-spacing: .7px; margin: 16px 8px 5px; }
+  .nav-secciones .nav-grupo:first-child { margin-top: 0; }
   .nav-separador { height: 1px; background: var(--border); margin: 10px 6px; }
 
   /* Contenido */
@@ -272,6 +276,7 @@
   </div>
   <div id="user-box" style="margin-left:6px"></div>
   <div class="chips-top">
+    <a class="btn-invitar" href="https://discord.com/oauth2/authorize?client_id=1488545785581797447&scope=bot+applications.commands&permissions=419556438" target="_blank" rel="noopener">➕ Añade a Wave</a>
     <div class="stat-chip"><b id="h-servidores">–</b><span>Servidores</span></div>
     <div class="stat-chip"><b id="h-usuarios">–</b><span>Usuarios</span></div>
     <div class="stat-chip"><b id="h-ping">–</b><span>Ping</span></div>
@@ -437,7 +442,7 @@ async function cargarEstado() {
       ub.innerHTML = `
         <div style="display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--border);border-radius:999px;padding:4px 8px 4px 5px">
           ${s.usuario.avatar ? `<img src="${esc(s.usuario.avatar)}" style="width:26px;height:26px;border-radius:50%" alt="">` : ""}
-          <span style="font-size:13px;font-weight:600">${esc(s.usuario.nombre)}${s.usuario.es_bot_owner ? " 👑" : ""}</span>
+          <span style="font-size:13px;font-weight:600">${esc(s.usuario.nombre)}${s.usuario.staff ? " 🛠️" : (s.usuario.es_bot_owner ? " 👑" : "")}</span>
           <a href="/oauth/logout" style="color:var(--texto-2);font-size:11.5px;padding:0 6px">Salir</a>
         </div>`;
     } else {
@@ -500,21 +505,35 @@ async function seleccionarGuild(id) {
   }
 }
 
-const NAV_SECCIONES = [
-  ["resumen", "🏠", "Resumen"],
-  ["antiraid", "🚨", "Antiraid"],
-  ["honeypots", "🍯", "Honeypots"],
-  ["canales", "🔗", "Canales y links"],
-  ["roles", "👥", "Roles y prefijos"],
-  ["warns", "⚠️", "Warns"],
-  ["starboard", "⭐", "Starboard"],
-  ["niveles", "📊", "Niveles / XP"],
-  ["economia", "💰", "Economía"],
-  ["tienda", "🛍️", "Tienda"],
+const NAV_GRUPOS = [
+  ["🏠", "General", [
+    ["resumen", "Resumen"],
+  ]],
+  ["🛡️", "Moderación", [
+    ["antiraid", "Anti-Raid"],
+    ["honeypots", "Honeypots"],
+    ["warns", "Warns"],
+    ["automod", "AutoMod"],
+  ]],
+  ["⚙️", "Configuración", [
+    ["canales", "Canales y Links"],
+    ["roles", "Roles"],
+    ["prefijos", "Prefijos"],
+  ]],
+  ["⭐", "Comunidad", [
+    ["starboard", "Starboard"],
+    ["niveles", "Niveles / XP"],
+    ["economia", "Economía"],
+  ]],
+  ["🛒", "Economía", [
+    ["tienda", "Tienda"],
+    ["items", "Items"],
+  ]],
 ];
+const NAV_IDS = NAV_GRUPOS.flatMap(grupo => grupo[2].map(sec => sec[0]));
 
 function nivelTextoDe(g) {
-  if (g.nivel === "bot_owner") return "👑 Owner del bot";
+  if (g.nivel === "bot_owner") return (ESTADO && ESTADO.usuario && ESTADO.usuario.staff) ? "🛠️ Staff de Wave" : "👑 Owner del bot";
   if (g.nivel === "owner") return "🛡️ Owner del servidor";
   if (g.nivel === "mod") return "⚔️ Moderador";
   const p = g.permisos || {};
@@ -527,13 +546,18 @@ function pintarGuild() {
   const g = DATOS_GUILD;
   const perms = g.permisos || {};
   const candado = seccion => {
-    if (seccion === "roles") return (!perms.manage_roles && !perms.manage_guild) ? "🔒" : "";
+    if (seccion === "roles") return perms.manage_roles ? "" : "🔒";
     if (seccion === "warns") return perms.moderate_members ? "" : "🔒";
+    if (seccion === "resumen") return "";
     return perms.manage_guild ? "" : "🔒";
   };
+  const navBtn = ([id, texto]) => `
+    <button class="nav-btn ${SECCION_ACTUAL === id ? "activo" : ""}" data-seccion="${id}" onclick="mostrarSeccion('${id}')">
+      <span class="texto-nav">${texto}</span>${candado(id) ? `<span class="candado">${candado(id)}</span>` : ""}
+    </button>`;
   const navOwner = g.es_bot_owner
-    ? `<div class="nav-separador"></div>
-       <button class="nav-btn ${SECCION_ACTUAL === "owner" ? "activo" : ""}" onclick="mostrarSeccion('owner')"><span>👑</span><span class="texto-nav">Owner del bot</span></button>`
+    ? `<div class="nav-grupo">👑 Owner</div>
+       <button class="nav-btn ${SECCION_ACTUAL === "owner" ? "activo" : ""}" data-seccion="owner" onclick="mostrarSeccion('owner')"><span class="texto-nav">Owner del bot</span></button>`
     : "";
 
   document.getElementById("zona-guild").innerHTML = `
@@ -554,10 +578,9 @@ function pintarGuild() {
     </div>
     <div class="guild-cuerpo">
       <nav class="nav-secciones">
-        ${NAV_SECCIONES.map(([id, icono, texto]) => `
-          <button class="nav-btn ${SECCION_ACTUAL === id ? "activo" : ""}" onclick="mostrarSeccion('${id}')">
-            <span>${icono}</span><span class="texto-nav">${texto}</span>${candado(id) ? `<span class="candado">${candado(id)}</span>` : ""}
-          </button>`).join("")}
+        ${NAV_GRUPOS.map(([icono, grupo, items]) => `
+          <div class="nav-grupo">${icono} ${grupo}</div>
+          ${items.map(navBtn).join("")}`).join("")}
         ${navOwner}
       </nav>
       <main class="contenido" id="contenido-seccion"></main>
@@ -569,14 +592,10 @@ function mostrarSeccion(seccion) {
   const g = DATOS_GUILD;
   if (!g) return;
   if (seccion === "owner" && !g.es_bot_owner) seccion = "resumen";
-  if (!NAV_SECCIONES.some(s => s[0] === seccion) && seccion !== "owner") seccion = "resumen";
+  if (!NAV_IDS.includes(seccion) && seccion !== "owner") seccion = "resumen";
   SECCION_ACTUAL = seccion;
   try { localStorage.setItem("dash_seccion", seccion); } catch (e) {}
-  document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("activo"));
-  const btns = document.querySelectorAll(".nav-secciones .nav-btn");
-  const idx = NAV_SECCIONES.map(s => s[0]).indexOf(seccion);
-  if (idx >= 0 && btns[idx]) btns[idx].classList.add("activo");
-  else if (seccion === "owner" && btns[btns.length - 1]) btns[btns.length - 1].classList.add("activo");
+  document.querySelectorAll(".nav-btn").forEach(b => b.classList.toggle("activo", b.dataset.seccion === seccion));
 
   const cont = document.getElementById("contenido-seccion");
   if (!cont) return;
@@ -617,14 +636,13 @@ function aplicarPermisosSeccion(seccion) {
   const perms = (DATOS_GUILD || {}).permisos || {};
   if (seccion === "roles") {
     if (!perms.manage_roles) desactivar(["sec-autoroles"]);
-    if (!perms.manage_guild) desactivar(["sec-prefijos"]);
     return;
   }
   if (seccion === "warns") {
     if (!perms.moderate_members) desactivar(["card-warns"]);
     return;
   }
-  if (seccion === "owner") return;
+  if (seccion === "owner" || seccion === "resumen") return;
   if (!perms.manage_guild) desactivar(["contenido-seccion"]);
 }
 
@@ -645,6 +663,7 @@ SECCIONES.resumen = function () {
   ];
   const modulos = [
     ["🚨 Antiraid", ar.enabled, ar.enabled ? "Activado" : "Desactivado", "antiraid"],
+    ["🤖 AutoMod", (g.automod || {}).enabled, (g.automod || {}).enabled ? "Activado" : "Desactivado", "automod"],
     ["🍯 Honeypots", (g.honeypots_detalle || []).length > 0, (g.honeypots_detalle || []).length + " activos", "honeypots"],
     ["⭐ Starboard", g.starboard.enabled, g.starboard.enabled ? "Activado" : "Desactivado", "starboard"],
     ["📊 Niveles / XP", g.xp.enabled, g.xp.enabled ? "Activado" : "Desactivado", "niveles"],
@@ -782,7 +801,7 @@ SECCIONES.roles = function () {
   const perms = g.permisos || {};
   return `
     <div class="card" id="card-roles">
-      <h2>👥 Autoroles <span class="sub">roles que se dan automáticamente al entrar (permiso Manage Roles)</span></h2>
+      <h2>👥 Roles <span class="sub">autoroles que se dan automáticamente al entrar (permiso Manage Roles)</span></h2>
       <div id="sec-autoroles">
         ${notaRO(perms.manage_roles, "Manage Roles")}
         ${[
@@ -799,18 +818,148 @@ SECCIONES.roles = function () {
           <button class="btn btn-primario" onclick="autoroleAdd('${cat}')">➕ Añadir</button>
         </div>`).join("")}
       </div>
-      <div id="sec-prefijos">
-        <h2 style="margin-top:22px">⌨️ Prefijos de comandos</h2>
-        ${notaRO(perms.manage_guild)}
-        <div class="chips">
-          <span class="chip fijo">. (por defecto, no se puede quitar)</span>
-          ${(g.prefixes_custom || []).map(p => `<span class="chip">${esc(p)}<button onclick="prefijoRemove('${esc(p)}')" title="Quitar">✕</button></span>`).join("")}
-        </div>
-        <div class="fila-inline">
-          <input id="pfx-nuevo" placeholder="nuevo prefijo (máx 5)" style="width:190px">
-          <button class="btn btn-primario" onclick="prefijoAdd()">➕ Añadir prefijo</button>
+    </div>`;
+};
+
+SECCIONES.prefijos = function () {
+  const g = DATOS_GUILD;
+  const perms = g.permisos || {};
+  return `
+    <div class="card" id="card-prefijos">
+      <h2>⌨️ Prefijos <span class="sub">con qué carácter empiezan los comandos de texto</span></h2>
+      ${notaRO(perms.manage_guild)}
+      <div class="chips">
+        <span class="chip fijo">. (por defecto, no se puede quitar)</span>
+        ${(g.prefixes_custom || []).map(p => `<span class="chip">${esc(p)}<button onclick="prefijoRemove('${esc(p)}')" title="Quitar">✕</button></span>`).join("")}
+      </div>
+      <div class="fila-inline">
+        <input id="pfx-nuevo" placeholder="nuevo prefijo (máx 5)" style="width:190px">
+        <button class="btn btn-primario" onclick="prefijoAdd()">➕ Añadir prefijo</button>
+      </div>
+    </div>`;
+};
+
+SECCIONES.automod = function () {
+  const g = DATOS_GUILD;
+  const am = g.automod || {};
+  const perms = g.permisos || {};
+  const palabraSafe = w => `decodeURIComponent('${encodeURIComponent(w)}')`;
+  return `
+    <div class="card" id="card-automod">
+      <h2>🤖 AutoMod <span class="sub">moderación automática: palabras, invites, links y spam</span></h2>
+      ${notaRO(perms.manage_guild)}
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Sistema AutoMod</div>
+          <div class="opcion-desc">Desactivado por defecto. El staff (Manage Messages/Server/Admin) nunca es filtrado.</div></div>
+        <label class="switch"><input type="checkbox" id="am-enabled" ${am.enabled ? "checked" : ""}><span class="pista"></span></label>
+      </div>
+      <div class="grupo-titulo">🤐 Palabras prohibidas</div>
+      <div class="chips">
+        ${(am.palabras || []).map(w => `<span class="chip">${esc(w)}<button onclick="automodPalabraRemove(${palabraSafe(w)})" title="Quitar">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguna</span>'}
+      </div>
+      <div class="fila-inline" style="margin-bottom:16px">
+        <input id="am-palabra" placeholder="palabra o frase" style="width:200px">
+        <button class="btn btn-primario" onclick="automodPalabraAdd()">➕ Prohibir palabra</button>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Invites de Discord</div>
+          <div class="opcion-desc">Elimina cualquier discord.gg / enlace de invitación.</div></div>
+        <label class="switch"><input type="checkbox" id="am-invites" ${am.invites ? "checked" : ""}><span class="pista"></span></label>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Todos los links</div>
+          <div class="opcion-desc">Elimina cualquier enlace http(s) o www.</div></div>
+        <label class="switch"><input type="checkbox" id="am-links" ${am.links ? "checked" : ""}><span class="pista"></span></label>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Acción al filtrar</div></div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <select id="am-accion" style="width:200px">
+            <option value="delete" ${am.accion === "delete" ? "selected" : ""}>🗑 Borrar</option>
+            <option value="warn" ${am.accion === "warn" ? "selected" : ""}>⚠️ Borrar + avisar</option>
+            <option value="mute" ${am.accion === "mute" ? "selected" : ""}>🔇 Borrar + silenciar</option>
+          </select>
+          <input class="mini-input" type="number" id="am-mute-min" min="1" max="40320" value="${am.mute_min ?? 10}" title="Minutos de silencio">
+          <span style="color:var(--texto-2);font-size:11.5px">min</span>
         </div>
       </div>
+      <div class="grupo-titulo">🌊 Anti-spam (0 = desactivado)</div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Mensajes / ventana / silencio</div>
+          <div class="opcion-desc">Ej: 5 mensajes en 5s → 600s de silencio.</div></div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input class="mini-input" type="number" id="am-spam-msgs" min="0" max="50" value="${am.spam_msgs ?? 0}" title="Mensajes">
+          <span style="color:var(--texto-2)">en</span>
+          <input class="mini-input" type="number" id="am-spam-seg" min="0" max="300" value="${am.spam_seg ?? 0}" title="Segundos">
+          <span style="color:var(--texto-2)">s →</span>
+          <input class="mini-input" type="number" id="am-spam-timeout" min="0" max="2419200" value="${am.spam_timeout ?? 0}" title="Silencio en segundos">
+          <span style="color:var(--texto-2);font-size:11.5px">s</span>
+        </div>
+      </div>
+      <div class="grupo-titulo">🛡️ Roles exentos</div>
+      <div class="chips">
+        ${(am.exroles || []).map(r => `<span class="chip">@${esc(r.nombre)}<button onclick="automodExrolRemove('${r.id}')" title="Quitar exención">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno</span>'}
+      </div>
+      <div class="fila-inline" style="margin-bottom:16px">
+        <select id="am-exrol">${optsRoles(null)}</select>
+        <button class="btn btn-primario" onclick="automodExrolAdd()">➕ Eximir rol</button>
+      </div>
+      <div class="grupo-titulo">#️⃣ Canales exentos</div>
+      <div class="chips">
+        ${(am.excanales || []).map(c => `<span class="chip">#${esc(c.nombre)}<button onclick="automodExcanalRemove('${c.id}')" title="Quitar exención">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno</span>'}
+      </div>
+      <div class="fila-inline">
+        <select id="am-excanal">${optsCanales(null, true)}</select>
+        <button class="btn btn-primario" onclick="automodExcanalAdd()">➕ Eximir canal</button>
+      </div>
+      <div class="stats-mini">
+        <span class="mini-chip">🧹 <b>${fmtNum((am.stats || {}).filtrados)}</b> filtrados</span>
+        <span class="mini-chip">🔇 <b>${fmtNum((am.stats || {}).mutes)}</b> silenciados</span>
+      </div>
+      <div class="acciones-form">
+        <button class="btn btn-primario" onclick="guardarAutomod()">💾 Guardar AutoMod</button>
+      </div>
+    </div>`;
+};
+
+SECCIONES.items = function () {
+  const g = DATOS_GUILD;
+  const perms = g.permisos || {};
+  return `
+    <div class="card" id="card-items">
+      <h2>🎒 Items <span class="sub">dar o quitar items del inventario de un usuario</span></h2>
+      ${notaRO(perms.manage_guild)}
+      <div class="fila-opcion">
+        <div><div class="opcion-label">ID del usuario</div>
+          <div class="opcion-desc">Modo desarrollador de Discord → Copiar ID de usuario.</div></div>
+        <input id="it-user" placeholder="Ej: 611116738943123457" style="width:230px">
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Item</div></div>
+        <input id="it-item" list="items-list" placeholder="nombre del item" style="width:180px">
+      </div>
+      <datalist id="items-list">${(g.shop || []).map(s => `<option value="${esc(s.item)}">`).join("")}</datalist>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Cantidad</div></div>
+        <input type="number" id="it-cantidad" min="1" value="1">
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Acción</div></div>
+        <select id="it-accion">
+          <option value="add">➕ Dar item</option>
+          <option value="remove">➖ Quitar item</option>
+        </select>
+      </div>
+      <div class="acciones-form">
+        <button class="btn btn-primario" onclick="itemUsuario()">🎒 Aplicar</button>
+      </div>
+      <div class="grupo-titulo">Items disponibles en la tienda</div>
+      ${(g.shop || []).map(it => `
+      <div class="item-tienda">
+        <span class="nombre">${esc(it.item)}</span>
+        <span class="precio">${esc(g.economia.moneda)}${fmtNum(it.precio)}</span>
+        <span class="desc">${esc(it.desc || "")}</span>
+      </div>`).join("") || '<div style="color:var(--texto-2);font-size:12.5px">La tienda está vacía — crea items en la sección Tienda.</div>'}
     </div>`;
 };
 
@@ -1007,10 +1156,11 @@ SECCIONES.tienda = function () {
 };
 
 SECCIONES.owner = function () {
+  const esStaff = ESTADO && ESTADO.usuario && ESTADO.usuario.staff;
   return `
     <div class="card">
-      <h2>👑 Owner del bot</h2>
-      <div class="dato-fila"><span>Sesión actual</span><b>${esc((ESTADO && ESTADO.usuario && ESTADO.usuario.nombre) || "Owner del bot")} 👑</b></div>
+      <h2>${esStaff ? "🛠️ Staff de Wave" : "👑 Owner del bot"}</h2>
+      <div class="dato-fila"><span>Sesión actual</span><b>${esc((ESTADO && ESTADO.usuario && ESTADO.usuario.nombre) || "Owner del bot")} ${esStaff ? "🛠️" : "👑"}</b></div>
       <div class="dato-fila"><span>Acceso</span><b>Control total de todos los servidores</b></div>
       <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;">
         <button class="btn btn-peligro" onclick="expulsarBot()">🚪 Expulsar bot de este servidor</button>
@@ -1045,6 +1195,78 @@ async function toggleRaidmode(estado) {
   } catch (e) { toast("❌ " + e.message, false); }
 }
 
+async function guardarAutomod() {
+  const payload = {
+    enabled: document.getElementById("am-enabled").checked,
+    invites: document.getElementById("am-invites").checked,
+    links: document.getElementById("am-links").checked,
+    accion: document.getElementById("am-accion").value,
+    mute_min: parseInt(document.getElementById("am-mute-min").value, 10) || 10,
+    spam_msgs: parseInt(document.getElementById("am-spam-msgs").value, 10) || 0,
+    spam_seg: parseInt(document.getElementById("am-spam-seg").value, 10) || 0,
+    spam_timeout: parseInt(document.getElementById("am-spam-timeout").value, 10) || 0,
+  };
+  try {
+    await api("/api/guild/" + GUILD_ACTUAL + "/automod", { method: "POST", body: JSON.stringify(payload) });
+    toast("✅ AutoMod guardado correctamente");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function automodPalabraAdd() {
+  const w = document.getElementById("am-palabra").value.trim();
+  if (!w) return toast("Escribe la palabra primero", false);
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/automod", { method: "POST", body: JSON.stringify({ palabra_add: w }) });
+    toast(r.msg || "✅ Palabra añadida");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function automodPalabraRemove(w) {
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/automod", { method: "POST", body: JSON.stringify({ palabra_remove: w }) });
+    toast(r.msg || "✅ Palabra eliminada");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function automodExrolAdd() {
+  const rol = document.getElementById("am-exrol").value;
+  if (!rol) return toast("Selecciona un rol primero", false);
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/automod", { method: "POST", body: JSON.stringify({ exrol_add: rol }) });
+    toast(r.msg || "✅ Rol exento añadido");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function automodExrolRemove(rid) {
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/automod", { method: "POST", body: JSON.stringify({ exrol_remove: rid }) });
+    toast(r.msg || "✅ Exención eliminada");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function automodExcanalAdd() {
+  const canal = document.getElementById("am-excanal").value;
+  if (!canal) return toast("Selecciona un canal primero", false);
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/automod", { method: "POST", body: JSON.stringify({ excanal_add: canal }) });
+    toast(r.msg || "✅ Canal exento añadido");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function automodExcanalRemove(cid) {
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/automod", { method: "POST", body: JSON.stringify({ excanal_remove: cid }) });
+    toast(r.msg || "✅ Exención eliminada");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
 async function guardarEconomia() {
   const ent = id => parseInt(document.getElementById(id).value, 10) || 0;
   const pctv = id => (parseFloat(document.getElementById(id).value) || 0) / 100;
@@ -1075,6 +1297,19 @@ async function dineroUsuario() {
   try {
     const r = await api("/api/guild/" + GUILD_ACTUAL + "/economy/user", { method: "POST", body: JSON.stringify(payload) });
     toast("✅ Hecho. Efectivo: " + fmtNum(r.cash) + " · Banco: " + fmtNum(r.bank));
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function itemUsuario() {
+  const payload = {
+    user_id: document.getElementById("it-user").value.trim(),
+    item: document.getElementById("it-item").value.trim(),
+    accion: document.getElementById("it-accion").value,
+    cantidad: parseInt(document.getElementById("it-cantidad").value, 10) || 1,
+  };
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/economy/item", { method: "POST", body: JSON.stringify(payload) });
+    toast(r.msg || "✅ Hecho");
   } catch (e) { toast("❌ " + e.message, false); }
 }
 
