@@ -705,6 +705,21 @@ def cargar_dashboard():
         dashboard_config["port"] = 8080
     dashboard_config["token"] = str(dashboard_config.get("token", ""))
     dashboard_config["owner_id"] = str(dashboard_config.get("owner_id", "")).strip()
+    # Detección de Railway: escuchar en 0.0.0.0, usar el PORT de la plataforma y
+    # EXIGIR token (DASHBOARD_TOKEN), porque la URL es pública. Sin token, se desactiva.
+    en_railway = bool(os.environ.get("RAILWAY_SERVICE_ID") or os.environ.get("RAILWAY_RUN_ID"))
+    if en_railway:
+        dashboard_config["host"] = "0.0.0.0"
+        try:
+            dashboard_config["port"] = int(os.environ.get("PORT", dashboard_config["port"]))
+        except (TypeError, ValueError):
+            pass
+        token_env = str(os.environ.get("DASHBOARD_TOKEN", "")).strip()
+        if token_env:
+            dashboard_config["token"] = token_env
+        else:
+            dashboard_config["enabled"] = False
+            print("Dashboard DESACTIVADO en Railway: define la variable DASHBOARD_TOKEN para activarlo con seguridad.")
     estado = "activado" if dashboard_config["enabled"] else "desactivado"
     print(f"Dashboard: {estado} -> http://{dashboard_config['host']}:{dashboard_config['port']}")
 
