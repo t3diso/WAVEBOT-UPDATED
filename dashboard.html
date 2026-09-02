@@ -212,6 +212,7 @@
     <div class="bot-nombre"><span id="bot-estado" class="estado-punto"></span><span id="bot-nombre">Cargando…</span></div>
     <div class="bot-sub" id="bot-sub">Conectando con el bot…</div>
   </div>
+  <div id="user-box" style="margin-left:6px"></div>
   <div class="stats-header">
     <div class="stat-chip"><b id="h-servidores">–</b><span>Servidores</span></div>
     <div class="stat-chip"><b id="h-usuarios">–</b><span>Usuarios</span></div>
@@ -271,10 +272,12 @@ function mostrarLogin(datos) {
     : "";
   div.innerHTML = `
     <div class="login-card">
-      <h2>🔐 Token del dashboard</h2>
-      <div class="login-desc">Pega el valor de la variable <b>DASHBOARD_TOKEN</b> de Railway (o de <b>dashboard.json</b>). Se guarda en este navegador.</div>
-      <input id="login-input" type="password" placeholder="Pega aquí el token" autocomplete="off">
-      <button class="btn btn-primario" style="width:100%" onclick="entrarConToken()">Entrar</button>
+      <h2>🔐 Acceder al dashboard</h2>
+      <div class="login-desc">Entra con tu cuenta de Discord y verás tus servidores según tus permisos: los mods pueden configurar, el resto solo ve.</div>
+      <a class="btn btn-primario" style="display:block;text-decoration:none;margin-bottom:16px" href="/oauth/login">🔐 Entrar con Discord</a>
+      <div class="login-desc">¿Tienes token maestro? (acceso total, solo owner del bot)</div>
+      <input id="login-input" type="password" placeholder="Token maestro (opcional)" autocomplete="off">
+      <button class="btn btn-primario" style="width:100%" onclick="entrarConToken()">Entrar con token</button>
       ${debug}
     </div>`;
   document.body.appendChild(div);
@@ -337,6 +340,18 @@ async function cargarEstado() {
     } else {
       chipOwner.style.display = "none";
     }
+    // Caja de usuario (sesión Discord o token maestro)
+    const ub = document.getElementById("user-box");
+    if (s.usuario) {
+      ub.innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px;background:var(--panel-2);border:1px solid var(--border);border-radius:999px;padding:4px 8px 4px 5px">
+          ${s.usuario.avatar ? `<img src="${esc(s.usuario.avatar)}" style="width:26px;height:26px;border-radius:50%" alt="">` : ""}
+          <span style="font-size:13px;font-weight:600">${esc(s.usuario.nombre)}${s.usuario.es_bot_owner ? " 👑" : ""}</span>
+          <a href="/oauth/logout" style="color:var(--texto-2);font-size:11.5px;padding:0 6px">Salir</a>
+        </div>`;
+    } else {
+      ub.innerHTML = '<a class="btn btn-primario" style="text-decoration:none;display:inline-block;padding:8px 14px;font-size:12.5px" href="/oauth/login">🔐 Entrar con Discord</a>';
+    }
     const av = document.getElementById("bot-avatar");
     if (s.bot.avatar) { av.src = s.bot.avatar; av.style.display = ""; } else { av.style.display = "none"; }
   } catch (e) {
@@ -352,7 +367,7 @@ async function cargarGuilds() {
     if (!GUILD_ACTUAL && GUILDS.length) seleccionarGuild(GUILDS[0].id);
     if (!GUILDS.length) {
       document.getElementById("principal").innerHTML =
-        '<div class="card"><div class="vacio">El bot no está en ningún servidor todavía.</div></div>';
+        '<div class="card"><div class="vacio">No hay servidores en común: el bot no está en ningún servidor donde tú estés (o no iniciaste sesión).</div></div>';
     }
   } catch (e) {
     document.getElementById("lista-guilds").innerHTML = "";
@@ -395,6 +410,12 @@ function pintarGuild() {
   const g = DATOS_GUILD;
   const ar = g.antiraid;
   const RaidActivo = ar.active;
+  const nivelTexto = {
+    bot_owner: "👑 Owner del bot",
+    owner: "🛡️ Owner del servidor",
+    mod: "⚔️ Moderador",
+    member: "👁️ Solo lectura",
+  }[g.nivel] || "👁️ Solo lectura";
 
   document.getElementById("principal").innerHTML = `
     <div class="card hero-card">
@@ -407,6 +428,7 @@ function pintarGuild() {
           <div class="hero-meta">👑 ${esc(g.owner_nombre || "Desconocido")} · 🗓️ Creado el ${esc(g.creado_texto)}</div>
         </div>
         <div class="hero-tags">
+          <span class="etiqueta">${nivelTexto}</span>
           <span class="etiqueta">👥 <b>${fmtNum(g.miembros)}</b> miembros</span>
           <span class="etiqueta">⌨️ Prefijos: <b>${esc(g.prefijos.join(" · "))}</b></span>
           <span class="etiqueta">🤖 Bots: <b>${fmtNum(g.bots)}</b></span>
@@ -417,6 +439,10 @@ function pintarGuild() {
     <div class="grid-cards">
       <div class="card" id="card-antiraid">
         <h2>🚨 Antiraid</h2>
+        ${!g.puede_configurar ? `
+        <div class="banner-raid visible" style="border-color:var(--texto-2);color:var(--texto-2);background:var(--panel-2)">
+          👁️ Solo lectura — no tienes permiso (Manage Server) para cambiar la configuración de este servidor.
+        </div>` : ""}
         <div class="banner-raid ${RaidActivo ? "visible" : ""}">
           ${RaidActivo ? "MODO RAID ACTIVO — todas las entradas están siendo castigadas (" + (ar.manual ? "manual, no se desactiva solo" : "automático") + ")" : ""}
         </div>
@@ -495,17 +521,22 @@ function pintarGuild() {
         <div class="dato-fila"><span>🛒 Items en la tienda</span><b>${fmtNum(g.economia.items_tienda)}</b></div>
       </div>
 
-      ${ESTADO && ESTADO.owner ? `
+      ${g.es_bot_owner ? `
       <div class="card">
         <h2>👑 Owner del bot</h2>
-        <div class="dato-fila"><span>Propietario</span><b>${esc(ESTADO.owner.nombre)}</b></div>
-        <div class="dato-fila"><span>ID</span><b>${ESTADO.owner.id}</b></div>
+        <div class="dato-fila"><span>Sesión actual</span><b>${esc((ESTADO && ESTADO.usuario && ESTADO.usuario.nombre) || "Owner del bot")} 👑</b></div>
+        <div class="dato-fila"><span>Acceso</span><b>Control total de todos los servidores</b></div>
         <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;">
           <button class="btn btn-peligro" onclick="expulsarBot()">🚪 Expulsar bot de este servidor</button>
           <button class="btn btn-primario" onclick="sincronizarSlash()">🔄 Sincronizar slash commands</button>
         </div>
       </div>` : ""}
     </div>`;
+  if (!g.puede_configurar) {
+    document.querySelectorAll("#card-antiraid input, #card-antiraid select").forEach(el => { el.disabled = true; });
+    const acciones = document.querySelector("#card-antiraid .acciones-form");
+    if (acciones) acciones.style.display = "none";
+  }
 }
 
 /* ===== Acciones ===== */

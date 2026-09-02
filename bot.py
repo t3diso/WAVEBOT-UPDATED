@@ -4,11 +4,14 @@ import json
 import os
 import random
 import re
-import time
+import secrets
 import sys
+import time
+import urllib.parse
 import discord
 from discord import app_commands
 from discord.ext import commands
+import aiohttp
 from aiohttp import web as dash_web
 
 intents = discord.Intents.default()
@@ -70,6 +73,13 @@ DASHBOARD_HTML_PATH = "dashboard.html"
 dashboard_config = {"enabled": True, "host": "127.0.0.1", "port": 8080, "token": ""}
 _dashboard_arrancado = False
 _INICIO_BOT = time.time()
+
+# Sesiones OAuth (entrar con Discord) del dashboard
+DASH_SESIONES = {}       # session_id -> {"user_id", "nombre", "avatar", "expira", "guilds": {gid: {"owner", "perms"}}}
+DASH_OAUTH_STATES = {}   # state -> timestamp (protección CSRF, caduca a los 10 min)
+DASH_SESION_SEG = 7 * 86400
+PERM_ADMINISTRADOR = 0x8
+PERM_MANAGE_GUILD = 0x20
 
 DEFAULT_PREFIX = "."
 
@@ -705,8 +715,10 @@ def cargar_dashboard():
         dashboard_config["port"] = 8080
     dashboard_config["token"] = str(dashboard_config.get("token", ""))
     dashboard_config["owner_id"] = str(dashboard_config.get("owner_id", "")).strip()
-    # Detección de Railway: escuchar en 0.0.0.0, usar el PORT de la plataforma y
-    # EXIGIR token (DASHBOARD_TOKEN), porque la URL es pública. Sin token, se desactiva.
+    # Detección de Railway: escuchar en 0.0.0.0 y usar el PORT de la plataforma.
+    # El token ya NO es obligatorio: los usuarios entran con Discord (OAuth) y
+    # solo ven lo que sus permisos les permiten. Si se define DASHBOARD_TOKEN,
+    # actúa como llave maestra (acceso total, para el owner del bot).
     en_railway = bool(os.environ.get("RAILWAY_SERVICE_ID") or os.environ.get("RAILWAY_RUN_ID"))
     if en_railway:
         dashboard_config["host"] = "0.0.0.0"
@@ -717,10 +729,11 @@ def cargar_dashboard():
         token_env = str(os.environ.get("DASHBOARD_TOKEN", "")).strip()
         if token_env:
             dashboard_config["token"] = token_env
-            print(f"Dashboard: token de Railway activo ({len(token_env)} caracteres)")
-        else:
-            dashboard_config["enabled"] = False
-            print("Dashboard DESACTIVADO en Railway: define la variable DASHBOARD_TOKEN para activarlo con seguridad.")
+            print(f"Dashboard: token maestro de Railway activo ({len(token_env)} caracteres)")
+    # OAuth (entrar con Discord): client_id por defecto = ID del bot; secret por variable de entorno.
+    dashboard_config["client_id"] = str(os.environ.get("DISCORD_CLIENT_ID", dashboard_config.get("client_id", "1488545785581797447"))).strip()
+    dashboard_config["client_secret"] = str(os.environ.get("DISCORD_CLIENT_SECRET", "")).strip()
+    print(f"Dashboard OAuth (entrar con Discord): {'CONFIGURADO' if dashboard_config['client_secret'] else 'no configurado (falta DISCORD_CLIENT_SECRET)'}")
     estado = "activado" if dashboard_config["enabled"] else "desactivado"
     print(f"Dashboard: {estado} -> http://{dashboard_config['host']}:{dashboard_config['port']}")
 
@@ -3923,7 +3936,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     if before.roles != after.roles:
         anadidos = [r for r in after.roles if r not in before.roles]
         quitados = [r for r in before.roles if r not in after.roles]
-        embed = discord.Embed(title="🎭 Roles cambiados", color=discord.Color.blurple(), timestamp=discord.utils.utc())
+        embed = discord.Embed(title="🎭 Roles cambiados", color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
         embed.add_field(name="Usuario", value=f"{after.mention} (`{after.id}`)", inline=False)
         if anadidos:
             embed.add_field(name="Añadidos", value=", ".join(r.mention for r in anadidos[:10]), inline=False)
@@ -7768,6 +7781,22 @@ def _dashboard_html_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), DASHBOARD_HTML_PATH)
 
 
+def _dashboard_url_publica():
+    """URL pública para mostrar en el comando .dashboard (dominio propio > Railway > host:port)."""
+    url = str(os.environ.get("DASHBOARD_PUBLIC_URL", "")).strip()
+    if url:
+        return url.rstrip("/")
+    dominio = str(os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")).strip()
+    if dominio:
+        return "https://" + dominio
+    if dashboard_config.get("public_url"):
+        return str(dashboard_config["public_url"]).strip().rstrip("/")
+    host = dashboard_config["host"]
+    if host in ("0.0.0.0", "::"):
+        host = "localhost"
+    return f"http://{host}:{dashboard_config['port']}"
+
+
 def _antiraid_public(cfg: dict):
     """Serializa la config antiraid para la API del dashboard."""
     stats = cfg.get("stats", {})
@@ -7796,19 +7825,184 @@ def _dash_buscar_guild(gid_texto: str):
 
 @dash_web.middleware
 async def _dash_auth(request, handler):
-    """Exige token en todo excepto en la página principal (/), que muestra un login por UI."""
-    token = dashboard_config.get("token", "")
-    if token and request.path != "/":
+    """La página (/) y el login OAuth son públicos. El resto exige sesión OAuth o token maestro."""
+    ruta = request.path
+    if ruta == "/" or ruta.startswith("/oauth/"):
+        return await handler(request)
+    token_maestro = dashboard_config.get("token", "")
+    if token_maestro:
         provisto = request.query.get("token", "") or request.headers.get("X-Dashboard-Token", "")
-        if provisto != token:
-            return dash_web.json_response({
-                "error": "No autorizado: token incorrecto o ausente",
-                "debug": {
-                    "token_recibido": "ausente (no lo enviaste)" if not provisto else f"{len(provisto)} caracteres",
-                    "token_esperado": f"{len(token)} caracteres",
-                },
-            }, status=401)
-    return await handler(request)
+        if provisto == token_maestro:
+            request["dash_acceso"] = "maestro"
+            return await handler(request)
+    sid = request.cookies.get("dash_session", "")
+    sesion = DASH_SESIONES.get(sid)
+    if sesion is not None and sesion["expira"] > time.time():
+        request["dash_acceso"] = "oauth"
+        request["dash_sesion"] = sesion
+        return await handler(request)
+    return dash_web.json_response(
+        {"error": "No autorizado: entra con Discord o usa el token maestro", "necesita_login": True},
+        status=401,
+    )
+
+
+def _dash_nivel(request, guild):
+    """Nivel de acceso del usuario actual sobre un guild: bot_owner | owner | mod | member | none."""
+    if request.get("dash_acceso") == "maestro":
+        return "bot_owner"
+    sesion = request.get("dash_sesion")
+    if sesion is None:
+        return "none"
+    uid = int(sesion["user_id"])
+    if str(uid) == str(dashboard_config.get("owner_id", "")):
+        return "bot_owner"
+    if guild.owner_id == uid:
+        return "owner"
+    # Permisos en vivo desde la cache de miembros (precisa); si no está en cache,
+    # se usa el snapshot de guilds que dio Discord al iniciar sesión.
+    miembro = guild.get_member(uid)
+    if miembro is not None:
+        perms = miembro.guild_permissions.value
+    else:
+        info = sesion.get("guilds", {}).get(str(guild.id))
+        if info is None:
+            return "none"
+        perms = int(info.get("perms", 0))
+    if perms & PERM_ADMINISTRADOR or perms & PERM_MANAGE_GUILD:
+        return "mod"
+    return "member"
+
+
+def _dash_es_bot_owner(request):
+    """True si el acceso actual es el token maestro o el owner del bot configurado."""
+    if request.get("dash_acceso") == "maestro":
+        return True
+    sesion = request.get("dash_sesion")
+    return sesion is not None and str(sesion["user_id"]) == str(dashboard_config.get("owner_id", ""))
+
+
+def _dash_puede_configurar(request, guild):
+    return _dash_nivel(request, guild) in ("bot_owner", "owner", "mod")
+
+
+def _dash_redirect_uri(request):
+    """Redirect URI derivado de la petición (respeta el proxy https de Railway)."""
+    scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
+    return f"{scheme}://{request.host}/oauth/callback"
+
+
+async def _dash_oauth_login(request):
+    """Redirige a Discord para iniciar sesión (scopes: identify + guilds)."""
+    if not dashboard_config.get("client_secret"):
+        return dash_web.Response(
+            text="OAuth no configurado: define la variable DISCORD_CLIENT_SECRET "
+                 "(Client Secret de tu aplicación en discord.com/developers/applications)",
+            status=500, content_type="text/plain",
+        )
+    ahora = time.time()
+    for k in list(DASH_OAUTH_STATES):  # limpiar states caducados
+        if ahora - DASH_OAUTH_STATES[k] > 600:
+            DASH_OAUTH_STATES.pop(k, None)
+    state = secrets.token_hex(16)
+    DASH_OAUTH_STATES[state] = ahora
+    params = {
+        "client_id": dashboard_config["client_id"],
+        "redirect_uri": _dash_redirect_uri(request),
+        "response_type": "code",
+        "scope": "identify guilds",
+        "state": state,
+    }
+    raise dash_web.HTTPFound("https://discord.com/oauth2/authorize?" + urllib.parse.urlencode(params))
+
+
+async def _dash_oauth_callback(request):
+    """Canjea el código por el usuario + sus guilds y crea la sesión (cookie)."""
+    if request.query.get("error"):
+        return dash_web.Response(text="Login cancelado o denegado.", status=400, content_type="text/plain")
+    code = request.query.get("code", "")
+    state = request.query.get("state", "")
+    creado = DASH_OAUTH_STATES.pop(state, None)
+    if not code or creado is None or time.time() - creado > 600:
+        return dash_web.Response(
+            text="Enlace de login inválido o caducado. Vuelve a entrar desde el dashboard.",
+            status=400, content_type="text/plain",
+        )
+    datos_token = {
+        "client_id": dashboard_config["client_id"],
+        "client_secret": dashboard_config["client_secret"],
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": _dash_redirect_uri(request),
+    }
+    async with aiohttp.ClientSession() as ses:
+        async with ses.post(
+            "https://discord.com/api/v10/oauth2/token", data=datos_token,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        ) as r:
+            if r.status != 200:
+                return dash_web.Response(
+                    text=f"Error canjeando el código con Discord (HTTP {r.status}). "
+                         "Revisa el Client Secret y la Redirect URI registrada en el Developer Portal.",
+                    status=502, content_type="text/plain",
+                )
+            token_resp = await r.json()
+        access_token = token_resp.get("access_token", "")
+        headers_auth = {"Authorization": f"Bearer {access_token}"}
+        async with ses.get("https://discord.com/api/v10/users/@me", headers=headers_auth) as r:
+            usuario = await r.json()
+        async with ses.get("https://discord.com/api/v10/users/@me/guilds", headers=headers_auth) as r:
+            guilds_oauth = await r.json()
+
+    uid = str(usuario.get("id", ""))
+    if not uid:
+        return dash_web.Response(text="No pude obtener tu usuario de Discord.", status=502, content_type="text/plain")
+    avatar_hash = usuario.get("avatar")
+    avatar = (
+        f"https://cdn.discordapp.com/avatars/{uid}/{avatar_hash}.png?size=64"
+        if avatar_hash
+        else f"https://cdn.discordapp.com/embed/avatars/{int(uid) % 5}.png"
+    )
+    nombre = usuario.get("global_name") or usuario.get("username") or uid
+
+    guildes = {}
+    if isinstance(guilds_oauth, list):
+        for g in guilds_oauth:
+            gid = g.get("id")
+            if gid is None:
+                continue
+            try:
+                perms = int(g.get("permissions", "0"))
+            except (TypeError, ValueError):
+                perms = 0
+            guildes[str(gid)] = {"owner": bool(g.get("owner")), "perms": perms}
+
+    ahora = time.time()
+    for k in list(DASH_SESIONES):  # limpiar sesiones caducadas
+        if DASH_SESIONES[k]["expira"] <= ahora:
+            DASH_SESIONES.pop(k, None)
+
+    sid = secrets.token_hex(32)
+    DASH_SESIONES[sid] = {
+        "user_id": int(uid),
+        "nombre": nombre,
+        "avatar": avatar,
+        "expira": ahora + DASH_SESION_SEG,
+        "guilds": guildes,
+    }
+    print(f"Dashboard: {nombre} (ID {uid}) inició sesión en el dashboard")
+    respuesta = dash_web.HTTPFound("/")
+    respuesta.set_cookie("dash_session", sid, max_age=DASH_SESION_SEG, httponly=True, samesite="Lax")
+    raise respuesta
+
+
+async def _dash_oauth_logout(request):
+    """Cierra la sesión del dashboard."""
+    sid = request.cookies.get("dash_session", "")
+    DASH_SESIONES.pop(sid, None)
+    respuesta = dash_web.HTTPFound("/")
+    respuesta.del_cookie("dash_session")
+    raise respuesta
 
 
 async def _dash_index(request):
@@ -7838,12 +8032,26 @@ async def _dash_status(request):
                 usuario_owner = None
         if usuario_owner is not None:
             owner = {"id": str(usuario_owner.id), "nombre": str(usuario_owner), "avatar": str(usuario_owner.display_avatar.url)}
+    # Usuario con sesión iniciada (o token maestro).
+    sesion = request.get("dash_sesion")
+    if request.get("dash_acceso") == "maestro":
+        usuario = {"id": None, "nombre": "Token maestro", "avatar": None, "es_bot_owner": True}
+    elif sesion is not None:
+        usuario = {
+            "id": str(sesion["user_id"]),
+            "nombre": sesion.get("nombre"),
+            "avatar": sesion.get("avatar"),
+            "es_bot_owner": str(sesion["user_id"]) == str(dashboard_config.get("owner_id", "")),
+        }
+    else:
+        usuario = None
     return dash_web.json_response({
         "estado": "online" if conectado else "offline",
         "servidores": len(bot.guilds),
         "usuarios": usuarios,
         "ping_ms": ping_ms,
         "uptime_seg": int(time.time() - _INICIO_BOT),
+        "usuario": usuario,
         "owner": owner,
         "bot": {
             "nombre": str(bot.user) if bot.user else "WAVEBOT",
@@ -7856,11 +8064,15 @@ async def _dash_status(request):
 async def _dash_guilds(request):
     datos = []
     for g in sorted(bot.guilds, key=lambda x: -(x.member_count if x.member_count is not None else len(x.members))):
+        nivel = _dash_nivel(request, g)
+        if nivel == "none":
+            continue  # el usuario no está en este servidor
         datos.append({
             "id": str(g.id),  # como texto: los snowflakes superan la precisión de JS (53 bits)
             "nombre": g.name,
             "icono": str(g.icon.url) if g.icon else None,
             "miembros": g.member_count if g.member_count is not None else len(g.members),
+            "nivel": nivel,
         })
     return dash_web.json_response(datos)
 
@@ -7869,6 +8081,9 @@ async def _dash_guild(request):
     guild = _dash_buscar_guild(request.match_info["gid"])
     if guild is None:
         return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    nivel = _dash_nivel(request, guild)
+    if nivel == "none":
+        return dash_web.json_response({"error": "No tienes acceso a este servidor"}, status=403)
     gid = str(guild.id)
 
     def nombres_canales(ids):
@@ -7906,6 +8121,9 @@ async def _dash_guild(request):
         "bots": sum(1 for m in guild.members if m.bot),
         "owner_id": str(guild.owner_id),
         "owner_nombre": str(guild.owner) if guild.owner else None,
+        "nivel": nivel,
+        "puede_configurar": nivel in ("bot_owner", "owner", "mod"),
+        "es_bot_owner": nivel == "bot_owner",
         "creado_texto": guild.created_at.strftime("%d/%m/%Y"),
         "prefijos": _get_prefixes_sync(guild.id),
         "antiraid": _antiraid_public(_antiraid_cfg(gid)),
@@ -7942,6 +8160,8 @@ async def _dash_antiraid_set(request):
     guild = _dash_buscar_guild(request.match_info["gid"])
     if guild is None:
         return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_puede_configurar(request, guild):
+        return dash_web.json_response({"error": "Necesitas permiso de administración (Manage Server) en este servidor."}, status=403)
     try:
         data = await request.json()
     except Exception:
@@ -8012,6 +8232,8 @@ async def _dash_raidmode(request):
     guild = _dash_buscar_guild(request.match_info["gid"])
     if guild is None:
         return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_puede_configurar(request, guild):
+        return dash_web.json_response({"error": "Necesitas permiso de administración (Manage Server) en este servidor."}, status=403)
     try:
         data = await request.json()
     except Exception:
@@ -8050,10 +8272,9 @@ async def _dash_raidmode(request):
 
 
 async def _dash_leave(request):
-    """POST /api/guild/<id>/leave — el bot abandona ese servidor (solo owner)."""
-    owner_id = str(dashboard_config.get("owner_id", ""))
-    if not owner_id:
-        return dash_web.json_response({"error": "No hay owner configurado (owner_id en dashboard.json)"}, status=403)
+    """POST /api/guild/<id>/leave — el bot abandona ese servidor (solo owner del bot)."""
+    if not _dash_es_bot_owner(request):
+        return dash_web.json_response({"error": "Solo el owner del bot puede hacer esto."}, status=403)
     guild = _dash_buscar_guild(request.match_info["gid"])
     if guild is None:
         return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
@@ -8067,10 +8288,9 @@ async def _dash_leave(request):
 
 
 async def _dash_sync(request):
-    """POST /api/sync — sincroniza los slash commands (solo owner)."""
-    owner_id = str(dashboard_config.get("owner_id", ""))
-    if not owner_id:
-        return dash_web.json_response({"error": "No hay owner configurado (owner_id en dashboard.json)"}, status=403)
+    """POST /api/sync — sincroniza los slash commands (solo owner del bot)."""
+    if not _dash_es_bot_owner(request):
+        return dash_web.json_response({"error": "Solo el owner del bot puede hacer esto."}, status=403)
     try:
         sincronizados = await bot.tree.sync()
     except Exception as e:
@@ -8082,6 +8302,9 @@ async def _iniciar_dashboard():
     """Arranca el servidor aiohttp del dashboard en el mismo event loop del bot."""
     app = dash_web.Application(middlewares=[_dash_auth])
     app.router.add_get("/", _dash_index)
+    app.router.add_get("/oauth/login", _dash_oauth_login)
+    app.router.add_get("/oauth/callback", _dash_oauth_callback)
+    app.router.add_get("/oauth/logout", _dash_oauth_logout)
     app.router.add_get("/api/status", _dash_status)
     app.router.add_get("/api/guilds", _dash_guilds)
     app.router.add_get("/api/guild/{gid}", _dash_guild)
@@ -8105,18 +8328,14 @@ async def dashboard(ctx):
     """Muestra la URL del panel web del bot. Uso: .dashboard"""
     if not dashboard_config.get("enabled"):
         return await ctx.send("🔴 El dashboard está desactivado. Edita `dashboard.json` (`enabled`) y reinicia el bot.")
-    host = dashboard_config["host"]
-    if host in ("0.0.0.0", "::"):
-        host = "localhost"
-    url = f"http://{host}:{dashboard_config['port']}"
+    url = _dashboard_url_publica()
     embed = discord.Embed(
         title="📊 Panel web del bot",
         description=f"Controla el bot desde el navegador:\n**{url}**",
         color=discord.Color.blurple(),
         timestamp=discord.utils.utcnow(),
     )
-    embed.add_field(name="Qué puedes hacer", value="Ver estado en vivo, servidores, moderación, economía y configurar el **antiraid**.", inline=False)
-    embed.set_footer(text="Si configuraste un token en dashboard.json, añade ?token=TUTOKEN a la URL.")
+    embed.add_field(name="Cómo funciona", value="Entras con tu cuenta de Discord y ves tus servidores según tus permisos: los mods pueden configurar, el resto solo consulta.", inline=False)
     await ctx.send(embed=embed)
 
 
@@ -8133,18 +8352,14 @@ async def slash_dashboard(interaction: discord.Interaction):
         return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
     if not dashboard_config.get("enabled"):
         return await interaction.response.send_message("🔴 El dashboard está desactivado. Edita `dashboard.json` (`enabled`) y reinicia el bot.", ephemeral=True)
-    host = dashboard_config["host"]
-    if host in ("0.0.0.0", "::"):
-        host = "localhost"
-    url = f"http://{host}:{dashboard_config['port']}"
+    url = _dashboard_url_publica()
     embed = discord.Embed(
         title="📊 Panel web del bot",
         description=f"Controla el bot desde el navegador:\n**{url}**",
         color=discord.Color.blurple(),
         timestamp=discord.utils.utcnow(),
     )
-    embed.add_field(name="Qué puedes hacer", value="Ver estado en vivo, servidores, moderación, economía y configurar el **antiraid**.", inline=False)
-    embed.set_footer(text="Si configuraste un token en dashboard.json, añade ?token=TUTOKEN a la URL.")
+    embed.add_field(name="Cómo funciona", value="Entras con tu cuenta de Discord y ves tus servidores según tus permisos: los mods pueden configurar, el resto solo consulta.", inline=False)
     await interaction.response.send_message(embed=embed)
 
 
