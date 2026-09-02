@@ -343,7 +343,7 @@ function mostrarLogin(datos) {
   div.innerHTML = `
     <div class="login-card">
       <h2>🔐 Acceder al dashboard</h2>
-      <div class="login-desc">Entra con tu cuenta de Discord y verás tus servidores según tus permisos: los mods pueden configurar, el resto solo ve.</div>
+      <div class="login-desc">Entra con tu cuenta de Discord: verás únicamente los servidores donde tengas permisos de gestión, y podrás tocar solo lo que tu cargo permita.</div>
       <a class="btn btn-primario" style="display:block;text-decoration:none" href="/oauth/login">🔐 Entrar con Discord</a>
       <div style="text-align:right;margin-top:16px">
         <a href="#" onclick="mostrarTokenLogin(event)" style="font-size:11.5px;color:var(--texto-2)">Acceso con token maestro</a>
@@ -430,7 +430,7 @@ async function cargarGuilds() {
     if (!GUILD_ACTUAL && GUILDS.length) seleccionarGuild(GUILDS[0].id);
     if (!GUILDS.length && !GUILD_ACTUAL) {
       document.getElementById("zona-guild").innerHTML =
-        '<div class="card"><div class="vacio">No hay servidores en común: el bot no está en ningún servidor donde tú estés (o no iniciaste sesión).</div></div>';
+        '<div class="card"><div class="vacio">No tienes permisos de gestión en ningún servidor donde esté el bot (o no has iniciado sesión).</div></div>';
     }
   } catch (e) {
     if (e.message !== "Token requerido") {
@@ -485,13 +485,14 @@ const NAV_SECCIONES = [
   ["tienda", "🛍️", "Tienda"],
 ];
 
-function nivelTextoDe(nivel) {
-  return {
-    bot_owner: "👑 Owner del bot",
-    owner: "🛡️ Owner del servidor",
-    mod: "⚔️ Moderador",
-    member: "👁️ Solo lectura",
-  }[nivel] || "👁️ Solo lectura";
+function nivelTextoDe(g) {
+  if (g.nivel === "bot_owner") return "👑 Owner del bot";
+  if (g.nivel === "owner") return "🛡️ Owner del servidor";
+  if (g.nivel === "mod") return "⚔️ Moderador";
+  const p = g.permisos || {};
+  if (p.moderate_members) return "⚠️ Mod de warns";
+  if (p.manage_roles) return "👥 Gestor de roles";
+  return "👁️ Solo lectura";
 }
 
 function pintarGuild() {
@@ -518,7 +519,7 @@ function pintarGuild() {
         <div class="guild-meta">👑 ${esc(g.owner_nombre || "Desconocido")} · 🗓️ ${esc(g.creado_texto)} · ⌨️ ${esc(g.prefijos.join(" · "))}</div>
       </div>
       <div class="guild-tags">
-        <span class="etiqueta">${nivelTextoDe(g.nivel)}</span>
+        <span class="etiqueta">${nivelTextoDe(g)}</span>
         <span class="etiqueta">👥 <b>${fmtNum(g.miembros)}</b></span>
         <span class="etiqueta">🤖 <b>${fmtNum(g.bots)}</b></span>
       </div>

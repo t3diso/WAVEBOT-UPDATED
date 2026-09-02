@@ -8241,15 +8241,15 @@ async def _dash_status(request):
 async def _dash_guilds(request):
     datos = []
     for g in sorted(bot.guilds, key=lambda x: -(x.member_count if x.member_count is not None else len(x.members))):
-        nivel = _dash_nivel(request, g)
-        if nivel == "none":
-            continue  # el usuario no está en este servidor
+        permisos = _dash_permisos_miembro(request, g)
+        if not any(permisos.values()):
+            continue  # el usuario no está en el servidor o no tiene ningún permiso de gestión
         datos.append({
             "id": str(g.id),  # como texto: los snowflakes superan la precisión de JS (53 bits)
             "nombre": g.name,
             "icono": str(g.icon.url) if g.icon else None,
             "miembros": g.member_count if g.member_count is not None else len(g.members),
-            "nivel": nivel,
+            "nivel": _dash_nivel(request, g),
         })
     return dash_web.json_response(datos)
 
@@ -8259,8 +8259,10 @@ async def _dash_guild(request):
     if guild is None:
         return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
     nivel = _dash_nivel(request, guild)
-    if nivel == "none":
-        return dash_web.json_response({"error": "No tienes acceso a este servidor"}, status=403)
+    permisos = _dash_permisos_miembro(request, guild)
+    if nivel == "none" or not any(permisos.values()):
+        # No está en el servidor o no tiene ningún permiso de gestión: no ve nada de él.
+        return dash_web.json_response({"error": "No tienes permisos de gestión en este servidor."}, status=403)
     gid = str(guild.id)
 
     def nombres_canales(ids):
@@ -8316,8 +8318,6 @@ async def _dash_guild(request):
     ecfg = get_econ_config(gid)
     ec_users = economy_db.get(gid, {})
     dinero_total = sum(int(u.get("cash", 0)) + int(u.get("bank", 0)) for u in ec_users.values() if isinstance(u, dict))
-
-    permisos = _dash_permisos_miembro(request, guild)
 
     return dash_web.json_response({
         "id": str(guild.id),  # como texto: los snowflakes superan la precisión de JS (53 bits)
@@ -9015,43 +9015,41 @@ async def _iniciar_dashboard():
 
 
 @bot.command(name="dashboard")
-@commands.has_permissions(manage_guild=True)
 async def dashboard(ctx):
-    """Muestra la URL del panel web del bot. Uso: .dashboard"""
+    """Muestra la URL del panel web del bot. Uso: .dashboard (disponible para todos)"""
     if not dashboard_config.get("enabled"):
         return await ctx.send("🔴 El dashboard está desactivado. Edita `dashboard.json` (`enabled`) y reinicia el bot.")
     url = _dashboard_url_publica()
     embed = discord.Embed(
         title="📊 Panel web del bot",
-        description=f"Controla el bot desde el navegador:\n**{url}**",
+        description=f"Entra con tu cuenta de Discord:\n**{url}**",
         color=discord.Color.blurple(),
         timestamp=discord.utils.utcnow(),
     )
-    embed.add_field(name="Cómo funciona", value="Entras con tu cuenta de Discord y ves tus servidores según tus permisos: los mods pueden configurar, el resto solo consulta.", inline=False)
+    embed.add_field(
+        name="Cómo funciona",
+        value="Cada usuario ve únicamente los servidores donde tenga permisos de gestión: el owner del servidor lo controla todo, los mods configuran según su cargo, y los miembros sin permisos no ven nada de ese servidor.",
+        inline=False,
+    )
     await ctx.send(embed=embed)
 
 
-@dashboard.error
-async def dashboard_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ Necesitas el permiso Manage Server.")
-
-
 @bot.tree.command(name="dashboard", description="Muestra la URL del panel web del bot")
-@app_commands.default_permissions(manage_guild=True)
 async def slash_dashboard(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_guild:
-        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
     if not dashboard_config.get("enabled"):
         return await interaction.response.send_message("🔴 El dashboard está desactivado. Edita `dashboard.json` (`enabled`) y reinicia el bot.", ephemeral=True)
     url = _dashboard_url_publica()
     embed = discord.Embed(
         title="📊 Panel web del bot",
-        description=f"Controla el bot desde el navegador:\n**{url}**",
+        description=f"Entra con tu cuenta de Discord:\n**{url}**",
         color=discord.Color.blurple(),
         timestamp=discord.utils.utcnow(),
     )
-    embed.add_field(name="Cómo funciona", value="Entras con tu cuenta de Discord y ves tus servidores según tus permisos: los mods pueden configurar, el resto solo consulta.", inline=False)
+    embed.add_field(
+        name="Cómo funciona",
+        value="Cada usuario ve únicamente los servidores donde tenga permisos de gestión: el owner del servidor lo controla todo, los mods configuran según su cargo, y los miembros sin permisos no ven nada de ese servidor.",
+        inline=False,
+    )
     await interaction.response.send_message(embed=embed)
 
 
