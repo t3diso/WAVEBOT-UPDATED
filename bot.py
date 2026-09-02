@@ -80,6 +80,8 @@ DASH_OAUTH_STATES = {}   # state -> timestamp (protección CSRF, caduca a los 10
 DASH_SESION_SEG = 7 * 86400
 PERM_ADMINISTRADOR = 0x8
 PERM_MANAGE_GUILD = 0x20
+PERM_MANAGE_ROLES = 1 << 28
+PERM_MODERATE_MEMBERS = 1 << 24
 
 DEFAULT_PREFIX = "."
 
@@ -7886,6 +7888,69 @@ def _dash_puede_configurar(request, guild):
     return _dash_nivel(request, guild) in ("bot_owner", "owner", "mod")
 
 
+def _dash_permisos_miembro(request, guild):
+    """Permisos granulares del usuario actual (para econ/roles/warns): live desde cache, fallback OAuth."""
+    perms_vacios = {"manage_guild": False, "manage_roles": False, "moderate_members": False}
+    if request.get("dash_acceso") == "maestro":
+        return {"manage_guild": True, "manage_roles": True, "moderate_members": True}
+    sesion = request.get("dash_sesion")
+    if sesion is None:
+        return perms_vacios
+    uid = int(sesion["user_id"])
+    if str(uid) == str(dashboard_config.get("owner_id", "")) or guild.owner_id == uid:
+        return {"manage_guild": True, "manage_roles": True, "moderate_members": True}
+    miembro = guild.get_member(uid)
+    if miembro is not None:
+        gp = miembro.guild_permissions
+        return {
+            "manage_guild": bool(gp.manage_guild or gp.administrator),
+            "manage_roles": bool(gp.manage_roles or gp.administrator),
+            "moderate_members": bool(gp.moderate_members or gp.administrator),
+        }
+    info = sesion.get("guilds", {}).get(str(guild.id))
+    if info is None:
+        return perms_vacios
+    perms = int(info.get("perms", 0))
+    return {
+        "manage_guild": bool(perms & PERM_ADMINISTRADOR or perms & PERM_MANAGE_GUILD),
+        "manage_roles": bool(perms & PERM_ADMINISTRADOR or perms & PERM_MANAGE_ROLES),
+        "moderate_members": bool(perms & PERM_ADMINISTRADOR or perms & PERM_MODERATE_MEMBERS),
+    }
+
+
+async def _dash_leer_json(request):
+    """Lee el body JSON. Devuelve (data, None) o (None, respuesta_error)."""
+    try:
+        data = await request.json()
+    except Exception:
+        return None, dash_web.json_response({"error": "JSON inválido"}, status=400)
+    if not isinstance(data, dict):
+        return None, dash_web.json_response({"error": "El cuerpo debe ser un objeto JSON"}, status=400)
+    return data, None
+
+
+def _dash_int(valor, minimo=None, maximo=None):
+    """Valida un entero (rechaza bools). Devuelve (valor, None) o (None, mensaje_error)."""
+    if isinstance(valor, bool) or not isinstance(valor, int):
+        return None, "debe ser un número entero"
+    if minimo is not None and valor < minimo:
+        return None, f"debe ser {minimo} o más"
+    if maximo is not None and valor > maximo:
+        return None, f"debe ser {maximo} o menos"
+    return valor, None
+
+
+def _dash_num(valor, minimo=None, maximo=None):
+    """Valida un número (int o float, rechaza bools). Devuelve (valor, None) o (None, mensaje)."""
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        return None, "debe ser un número"
+    if minimo is not None and valor < minimo:
+        return None, f"debe ser {minimo} o más"
+    if maximo is not None and valor > maximo:
+        return None, f"debe ser {maximo} o menos"
+    return valor, None
+
+
 def _dash_redirect_uri(request):
     """Redirect URI derivado de la petición (respeta el proxy https de Railway)."""
     scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
@@ -8102,16 +8167,45 @@ async def _dash_guild(request):
 
     autor_cfg = autoroles_db.get(gid, {})
     autoroles_count = sum(len(autor_cfg.get(k, [])) for k in ("all", "human", "bot"))
+    autoroles_detalle = {}
+    for cat in ("all", "human", "bot"):
+        autoroles_detalle[cat] = []
+        for rid in autor_cfg.get(cat, []):
+            rol = guild.get_role(int(rid))
+            autoroles_detalle[cat].append({"id": str(rid), "nombre": rol.name if rol else "rol eliminado"})
+
+    honeypots_detalle = []
+    for cid, hcfg in honeypots_db.get(gid, {}).items():
+        canal = guild.get_channel(int(cid))
+        honeypots_detalle.append({
+            "id": str(cid),
+            "nombre": canal.name if canal else "canal eliminado",
+            "action": hcfg.get("action", "ban"),
+            "duration": hcfg.get("duration"),
+        })
+
+    def detalle_canales(ids):
+        out = []
+        for cid in ids:
+            canal = guild.get_channel(cid)
+            if canal is not None:
+                out.append({"id": str(cid), "nombre": canal.name})
+        return out
+
+    logs_detalle = detalle_canales(logs_channels)
+    linkban_detalle = detalle_canales(linkban_canal)
 
     warns_listas = [v for v in warns_db.values() if isinstance(v, list)]
     warns_totales = sum(len(v) for v in warns_listas)
     usuarios_warns = sum(1 for v in warns_listas if v)
 
     sb = starboard_db.get(gid, {})
-    xpc = xp_config_db.get(gid, {})
-    ec_cfg = econ_config_db.get(gid, {})
+    xpc = get_xp_config(guild.id)
+    ecfg = get_econ_config(gid)
     ec_users = economy_db.get(gid, {})
     dinero_total = sum(int(u.get("cash", 0)) + int(u.get("bank", 0)) for u in ec_users.values() if isinstance(u, dict))
+
+    permisos = _dash_permisos_miembro(request, guild)
 
     return dash_web.json_response({
         "id": str(guild.id),  # como texto: los snowflakes superan la precisión de JS (53 bits)
@@ -8121,11 +8215,12 @@ async def _dash_guild(request):
         "bots": sum(1 for m in guild.members if m.bot),
         "owner_id": str(guild.owner_id),
         "owner_nombre": str(guild.owner) if guild.owner else None,
+        "creado_texto": guild.created_at.strftime("%d/%m/%Y"),
+        "prefijos": _get_prefixes_sync(guild.id),
         "nivel": nivel,
         "puede_configurar": nivel in ("bot_owner", "owner", "mod"),
         "es_bot_owner": nivel == "bot_owner",
-        "creado_texto": guild.created_at.strftime("%d/%m/%Y"),
-        "prefijos": _get_prefixes_sync(guild.id),
+        "permisos": permisos,
         "antiraid": _antiraid_public(_antiraid_cfg(gid)),
         "moderacion": {
             "warns_totales": warns_totales,
@@ -8135,23 +8230,49 @@ async def _dash_guild(request):
             "honeypots": honeypots_nombres,
             "autoroles": autoroles_count,
         },
+        "canales": [{"id": str(c.id), "nombre": c.name} for c in sorted(guild.text_channels, key=lambda x: x.position)],
+        "roles": [{"id": str(r.id), "nombre": r.name} for r in guild.roles if not r.is_default() and not r.managed],
         "starboard": {
             "enabled": bool(sb.get("enabled", False)),
             "threshold": int(sb.get("threshold", 5)),
+            "channel_id": str(sb["channel_id"]) if sb.get("channel_id") else None,
         },
         "xp": {
             "enabled": bool(xpc.get("enabled", False)),
-            "xp_min": int(xpc.get("xp_min", 0) or 0),
-            "xp_max": int(xpc.get("xp_max", 0) or 0),
-            "cooldown": int(xpc.get("cooldown", 0) or 0),
+            "xp_min": int(xpc.get("xp_min", 15)),
+            "xp_max": int(xpc.get("xp_max", 25)),
+            "cooldown": int(xpc.get("cooldown", 60)),
+            "channel_id": str(xpc["levelup_channel"]) if xpc.get("levelup_channel") else None,
+            "message": str(xpc.get("levelup_msg", "")),
+            "announce": bool(xpc.get("levelup_enabled", True)),
             "usuarios": len(xp_db.get(gid, {})),
         },
+        "econ_config": {
+            "currency": ecfg.get("currency", "$"),
+            "start_balance": int(ecfg.get("start_balance", 0)),
+            "daily_min": int(ecfg.get("daily_min", 200)), "daily_max": int(ecfg.get("daily_max", 400)),
+            "weekly_min": int(ecfg.get("weekly_min", 1000)), "weekly_max": int(ecfg.get("weekly_max", 2000)),
+            "monthly_min": int(ecfg.get("monthly_min", 4000)), "monthly_max": int(ecfg.get("monthly_max", 8000)),
+            "work_min": int(ecfg.get("work_min", 50)), "work_max": int(ecfg.get("work_max", 200)),
+            "crime_min": int(ecfg.get("crime_min", 100)), "crime_max": int(ecfg.get("crime_max", 500)), "crime_fallo": float(ecfg.get("crime_fallo", 0.35)),
+            "slut_min": int(ecfg.get("slut_min", 150)), "slut_max": int(ecfg.get("slut_max", 400)), "slut_fallo": float(ecfg.get("slut_fallo", 0.15)),
+            "rob_min": float(ecfg.get("rob_min", 0.10)), "rob_max": float(ecfg.get("rob_max", 0.25)), "rob_fallo": float(ecfg.get("rob_fallo", 0.40)),
+        },
         "economia": {
-            "moneda": ec_cfg.get("currency", "$"),
+            "moneda": ecfg.get("currency", "$"),
             "usuarios": len(ec_users),
             "dinero_total": dinero_total,
             "items_tienda": len(shop_db.get(gid, {})),
         },
+        "shop": [
+            {"item": nombre, "precio": int(v.get("price", 0)), "desc": str(v.get("description", "") or "")}
+            for nombre, v in shop_db.get(gid, {}).items()
+        ],
+        "prefixes_custom": list(prefixes_db.get(gid, [])),
+        "autoroles_detalle": autoroles_detalle,
+        "honeypots_detalle": honeypots_detalle,
+        "logs_detalle": logs_detalle,
+        "linkban_detalle": linkban_detalle,
     })
 
 
@@ -8298,6 +8419,450 @@ async def _dash_sync(request):
     return dash_web.json_response({"ok": True, "sincronizados": len(sincronizados)})
 
 
+ECON_RANGOS = ("daily", "weekly", "monthly", "work", "crime", "slut", "rob")
+ECON_FALLOS = ("crime", "slut", "rob")
+
+
+def _econ_public(cfg):
+    return {
+        "currency": cfg.get("currency", "$"),
+        "start_balance": int(cfg.get("start_balance", 0)),
+        "daily_min": int(cfg.get("daily_min", 200)), "daily_max": int(cfg.get("daily_max", 400)),
+        "weekly_min": int(cfg.get("weekly_min", 1000)), "weekly_max": int(cfg.get("weekly_max", 2000)),
+        "monthly_min": int(cfg.get("monthly_min", 4000)), "monthly_max": int(cfg.get("monthly_max", 8000)),
+        "work_min": int(cfg.get("work_min", 50)), "work_max": int(cfg.get("work_max", 200)),
+        "crime_min": int(cfg.get("crime_min", 100)), "crime_max": int(cfg.get("crime_max", 500)), "crime_fallo": float(cfg.get("crime_fallo", 0.35)),
+        "slut_min": int(cfg.get("slut_min", 150)), "slut_max": int(cfg.get("slut_max", 400)), "slut_fallo": float(cfg.get("slut_fallo", 0.15)),
+        "rob_min": float(cfg.get("rob_min", 0.10)), "rob_max": float(cfg.get("rob_max", 0.25)), "rob_fallo": float(cfg.get("rob_fallo", 0.40)),
+    }
+
+
+async def _dash_economy_set(request):
+    """POST /api/guild/<id>/economy — config de economía (permiso Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["manage_guild"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Manage Server en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    cfg = get_econ_config(guild.id)
+    cambios = []
+
+    if "currency" in data:
+        v = str(data["currency"]).strip()
+        if not v or len(v) > 5:
+            return dash_web.json_response({"error": "La moneda debe tener entre 1 y 5 caracteres."}, status=400)
+        cfg["currency"] = v
+        cambios.append(f"moneda: {v}")
+    if "start_balance" in data:
+        v, e = _dash_int(data["start_balance"], 0)
+        if e:
+            return dash_web.json_response({"error": f"El balance inicial {e}."}, status=400)
+        cfg["start_balance"] = v
+        cambios.append(f"balance inicial: {v}")
+
+    for campo in ECON_RANGOS:
+        if f"{campo}_min" in data or f"{campo}_max" in data:
+            actual = _econ_public(cfg)
+            if campo == "rob":  # rob funciona con fracciones (0-1) del dinero de la víctima
+                mn, e1 = _dash_num(data.get(f"{campo}_min", actual[f"{campo}_min"]), 0, 1)
+                mx, e2 = _dash_num(data.get(f"{campo}_max", actual[f"{campo}_max"]), 0, 1)
+                if e1 or e2:
+                    return dash_web.json_response({"error": "rob: los valores deben estar entre 0 y 1 (fracción del dinero robado)."}, status=400)
+            else:
+                mn, e1 = _dash_int(data.get(f"{campo}_min", actual[f"{campo}_min"]), 0)
+                mx, e2 = _dash_int(data.get(f"{campo}_max", actual[f"{campo}_max"]), 0)
+                if e1 or e2:
+                    return dash_web.json_response({"error": f"{campo}: los valores {e1}."}, status=400)
+            if mn > mx:
+                return dash_web.json_response({"error": f"{campo}: el mínimo no puede ser mayor que el máximo."}, status=400)
+            cfg[f"{campo}_min"] = mn
+            cfg[f"{campo}_max"] = mx
+            cambios.append(f"{campo}: {mn} – {mx}")
+        if campo in ECON_FALLOS and f"{campo}_fallo" in data:
+            v, e = _dash_num(data[f"{campo}_fallo"], 0, 1)
+            if e:
+                return dash_web.json_response({"error": f"{campo}_fallo {e} (entre 0 y 1)."}, status=400)
+            cfg[f"{campo}_fallo"] = v
+            cambios.append(f"{campo}_fallo: {v}")
+
+    guardar_economy()
+    if cambios:
+        embed = discord.Embed(
+            title="💰 Economía actualizada desde el dashboard",
+            description=" • ".join(cambios)[:4096],
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow(),
+        )
+        await enviar_logs(guild, embed)
+    return dash_web.json_response({"ok": True, "econ_config": _econ_public(cfg)})
+
+
+async def _dash_economy_user(request):
+    """POST /api/guild/<id>/economy/user — add/remove/set dinero de un usuario (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["manage_guild"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Manage Server en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    uid = str(data.get("user_id", ""))
+    if not uid.isdigit():
+        return dash_web.json_response({"error": "Debes indicar una ID de usuario válida."}, status=400)
+    accion = data.get("accion")
+    if accion not in ("add", "remove", "set"):
+        return dash_web.json_response({"error": "accion debe ser add, remove o set."}, status=400)
+    cantidad, e = _dash_int(data.get("cantidad"), 0)
+    if e:
+        return dash_web.json_response({"error": f"La cantidad {e}."}, status=400)
+    u = get_user_econ(guild.id, int(uid))
+    if accion == "add":
+        u["cash"] += cantidad
+    elif accion == "remove":
+        u["cash"] = max(0, u["cash"] - cantidad)
+    else:
+        u["cash"] = cantidad
+    guardar_economy()
+    return dash_web.json_response({"ok": True, "user_id": uid, "cash": u["cash"], "bank": u.get("bank", 0)})
+
+
+async def _dash_shop_set(request):
+    """POST /api/guild/<id>/shop — añadir/quitar items de la tienda (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["manage_guild"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Manage Server en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    accion = data.get("accion")
+    item = str(data.get("item", ""))
+    if accion == "add":
+        precio, e = _dash_int(data.get("precio"), 1)
+        if e:
+            return dash_web.json_response({"error": f"El precio {e}."}, status=400)
+        desc = str(data.get("desc", "") or "")[:200]
+        resp = _eco_shop_add(guild, item, precio, desc)
+    elif accion == "remove":
+        resp = _eco_shop_remove(guild, item)
+    else:
+        return dash_web.json_response({"error": "accion debe ser add o remove."}, status=400)
+    msg = resp.get("content", "")
+    return dash_web.json_response({
+        "ok": msg.startswith("✅"),
+        "msg": msg,
+        "shop": [
+            {"item": nombre, "precio": int(v.get("price", 0)), "desc": str(v.get("description", "") or "")}
+            for nombre, v in shop_db.get(str(guild.id), {}).items()
+        ],
+    })
+
+
+async def _dash_starboard_set(request):
+    """POST /api/guild/<id>/starboard — enabled/canal/umbral (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["manage_guild"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Manage Server en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    sb = starboard_db.setdefault(str(guild.id), {"enabled": False, "channel_id": None, "threshold": 5, "posted": {}})
+    if "enabled" in data:
+        if not isinstance(data["enabled"], bool):
+            return dash_web.json_response({"error": "enabled debe ser true/false."}, status=400)
+        sb["enabled"] = data["enabled"]
+    if "channel_id" in data:
+        v = data["channel_id"]
+        if v is None:
+            sb["channel_id"] = None
+        elif isinstance(v, str) and v.isdigit() and guild.get_channel(int(v)) is not None:
+            sb["channel_id"] = int(v)
+        else:
+            return dash_web.json_response({"error": "Canal no encontrado en este servidor."}, status=400)
+    if "threshold" in data:
+        v, e = _dash_int(data["threshold"], 1, 100)
+        if e:
+            return dash_web.json_response({"error": f"El umbral de estrellas {e}."}, status=400)
+        sb["threshold"] = v
+    guardar_starboard()
+    return dash_web.json_response({"ok": True, "starboard": {
+        "enabled": bool(sb.get("enabled", False)),
+        "threshold": int(sb.get("threshold", 5)),
+        "channel_id": str(sb["channel_id"]) if sb.get("channel_id") else None,
+    }})
+
+
+async def _dash_xp_set(request):
+    """POST /api/guild/<id>/xp — configuración del sistema de niveles (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["manage_guild"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Manage Server en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    config = get_xp_config(guild.id)
+    if "enabled" in data:
+        if not isinstance(data["enabled"], bool):
+            return dash_web.json_response({"error": "enabled debe ser true/false."}, status=400)
+        config["enabled"] = data["enabled"]
+    if "xp_min" in data or "xp_max" in data:
+        mn, e1 = _dash_int(data.get("xp_min", config.get("xp_min", 15)), 0)
+        mx, e2 = _dash_int(data.get("xp_max", config.get("xp_max", 25)), 0)
+        if e1 or e2:
+            return dash_web.json_response({"error": "El XP debe ser enteros ≥ 0."}, status=400)
+        if mn > mx:
+            return dash_web.json_response({"error": "El XP mínimo no puede superar al máximo."}, status=400)
+        config["xp_min"] = mn
+        config["xp_max"] = mx
+    if "cooldown" in data:
+        v, e = _dash_int(data["cooldown"], 0)
+        if e:
+            return dash_web.json_response({"error": f"El cooldown {e}."}, status=400)
+        config["cooldown"] = v
+    if "announce" in data:
+        if not isinstance(data["announce"], bool):
+            return dash_web.json_response({"error": "announce debe ser true/false."}, status=400)
+        config["levelup_enabled"] = data["announce"]
+    if "channel_id" in data:
+        v = data["channel_id"]
+        if v is None:
+            config["levelup_channel"] = None
+        elif isinstance(v, str) and v.isdigit() and guild.get_channel(int(v)) is not None:
+            config["levelup_channel"] = int(v)
+        else:
+            return dash_web.json_response({"error": "Canal no encontrado en este servidor."}, status=400)
+    if "message" in data:
+        v = str(data["message"]).strip()
+        if not v:
+            return dash_web.json_response({"error": "El mensaje de level-up no puede estar vacío."}, status=400)
+        if len(v) > 500:
+            return dash_web.json_response({"error": "El mensaje no puede superar 500 caracteres."}, status=400)
+        config["levelup_msg"] = v
+    guardar_xp()
+    return dash_web.json_response({"ok": True, "xp": {
+        "enabled": bool(config.get("enabled", False)),
+        "xp_min": int(config.get("xp_min", 15)),
+        "xp_max": int(config.get("xp_max", 25)),
+        "cooldown": int(config.get("cooldown", 60)),
+        "channel_id": str(config["levelup_channel"]) if config.get("levelup_channel") else None,
+        "message": str(config.get("levelup_msg", "")),
+        "announce": bool(config.get("levelup_enabled", True)),
+    }})
+
+
+async def _dash_canales_set(request):
+    """POST /api/guild/<id>/canales — añadir/quitar canales de logs o linkban (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["manage_guild"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Manage Server en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    tipo = data.get("tipo")
+    accion = data.get("accion")
+    if tipo not in ("logs", "linkban"):
+        return dash_web.json_response({"error": "tipo debe ser logs o linkban."}, status=400)
+    if accion not in ("add", "remove"):
+        return dash_web.json_response({"error": "accion debe ser add o remove."}, status=400)
+    cid = str(data.get("canal_id", ""))
+    canal = guild.get_channel(int(cid)) if cid.isdigit() else None
+    if canal is None:
+        return dash_web.json_response({"error": "Canal no encontrado en este servidor."}, status=400)
+    if tipo == "logs":
+        if accion == "add":
+            if canal.id in logs_channels:
+                return dash_web.json_response({"error": f"#{canal.name} ya era un canal de logs."}, status=400)
+            logs_channels.add(canal.id)
+            guardar_logs_channels()
+            msg = f"✅ #{canal.name} añadido a canales de logs."
+        else:
+            logs_channels.discard(canal.id)
+            guardar_logs_channels()
+            msg = f"✅ #{canal.name} quitado de canales de logs."
+    else:
+        if accion == "add":
+            if canal.id in linkban_canal:
+                return dash_web.json_response({"error": f"#{canal.name} ya tenía links prohibidos."}, status=400)
+            linkban_canal.add(canal.id)
+            guardar_linkban()
+            msg = f"✅ Links prohibidos en #{canal.name}."
+        else:
+            linkban_canal.discard(canal.id)
+            guardar_linkban()
+            msg = f"✅ Links permitidos en #{canal.name}."
+    return dash_web.json_response({"ok": True, "msg": msg})
+
+
+async def _dash_honeypot_set(request):
+    """POST /api/guild/<id>/honeypot — añadir/quitar honeypots (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["manage_guild"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Manage Server en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    accion = data.get("accion")
+    if accion not in ("add", "remove"):
+        return dash_web.json_response({"error": "accion debe ser add o remove."}, status=400)
+    cid = str(data.get("canal_id", ""))
+    canal = guild.get_channel(int(cid)) if cid.isdigit() else None
+    if canal is None:
+        return dash_web.json_response({"error": "Canal no encontrado en este servidor."}, status=400)
+    gid = str(guild.id)
+    if accion == "add":
+        acc = str(data.get("action", "ban")).lower()
+        if acc not in ("ban", "kick", "mute"):
+            return dash_web.json_response({"error": "action debe ser ban, kick o mute."}, status=400)
+        duracion = None
+        if acc == "mute":
+            duracion, e = _dash_int(data.get("duracion", 3600), 10, 86400 * 28)
+            if e:
+                return dash_web.json_response({"error": f"La duración del mute {e} (en segundos)."}, status=400)
+        honeypots_db.setdefault(gid, {})[cid] = {"action": acc, "duration": duracion}
+        guardar_honeypots()
+        msg = f"✅ Honeypot configurado en #{canal.name} (acción: {acc})."
+    else:
+        if cid not in honeypots_db.get(gid, {}):
+            return dash_web.json_response({"error": "Ese canal no era un honeypot."}, status=400)
+        del honeypots_db[gid][cid]
+        guardar_honeypots()
+        msg = f"✅ Honeypot eliminado de #{canal.name}."
+    return dash_web.json_response({"ok": True, "msg": msg})
+
+
+async def _dash_autorole_set(request):
+    """POST /api/guild/<id>/autorole — añadir/quitar autoroles (permiso Manage Roles)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["manage_roles"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Manage Roles en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    categoria = str(data.get("categoria", "")).lower()
+    accion = data.get("accion")
+    if categoria not in ("all", "human", "bot"):
+        return dash_web.json_response({"error": "categoria debe ser all, human o bot."}, status=400)
+    if accion not in ("add", "remove"):
+        return dash_web.json_response({"error": "accion debe ser add o remove."}, status=400)
+    rid = str(data.get("rol_id", ""))
+    rol = guild.get_role(int(rid)) if rid.isdigit() else None
+    if accion == "add":
+        if rol is None or rol.is_default() or rol.managed:
+            return dash_web.json_response({"error": "Rol no válido (no se pueden usar @everyone ni roles de integraciones)."}, status=400)
+        autoroles_db.setdefault(str(guild.id), {"human": [], "bot": [], "all": []})
+        lista = autoroles_db[str(guild.id)].setdefault(categoria, [])
+        if rid in lista:
+            return dash_web.json_response({"error": f"@{rol.name} ya estaba en autoroles ({categoria})."}, status=400)
+        lista.append(rid)
+        guardar_autoroles()
+        msg = f"✅ Autorol @{rol.name} añadido ({categoria})."
+    else:
+        lista = autoroles_db.get(str(guild.id), {}).get(categoria, [])
+        if rid not in lista:
+            return dash_web.json_response({"error": "Ese rol no estaba en los autoroles."}, status=400)
+        lista.remove(rid)
+        guardar_autoroles()
+        msg = "✅ Autorol eliminado."
+    return dash_web.json_response({"ok": True, "msg": msg})
+
+
+async def _dash_prefix_set(request):
+    """POST /api/guild/<id>/prefix — añadir/quitar prefijos personalizados (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["manage_guild"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Manage Server en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    accion = data.get("accion")
+    prefijo = str(data.get("prefijo", "")).strip()
+    if accion not in ("add", "remove"):
+        return dash_web.json_response({"error": "accion debe ser add o remove."}, status=400)
+    if not prefijo:
+        return dash_web.json_response({"error": "Debes indicar el prefijo."}, status=400)
+    if len(prefijo) > 5:
+        return dash_web.json_response({"error": "El prefijo no puede tener más de 5 caracteres."}, status=400)
+    if prefijo == DEFAULT_PREFIX:
+        return dash_web.json_response({"error": "El prefijo por defecto (.) no se puede añadir ni eliminar."}, status=400)
+    gid = str(guild.id)
+    customs = prefixes_db.setdefault(gid, [])
+    if accion == "add":
+        if prefijo in customs:
+            return dash_web.json_response({"error": f"El prefijo `{prefijo}` ya estaba activo."}, status=400)
+        customs.append(prefijo)
+        msg = f"✅ Prefijo `{prefijo}` añadido."
+    else:
+        if prefijo not in customs:
+            return dash_web.json_response({"error": f"El prefijo `{prefijo}` no está configurado."}, status=400)
+        customs.remove(prefijo)
+        if not customs:
+            prefixes_db.pop(gid, None)
+        msg = f"✅ Prefijo `{prefijo}` eliminado."
+    guardar_prefixes()
+    return dash_web.json_response({"ok": True, "msg": msg, "prefixes_custom": list(prefixes_db.get(gid, []))})
+
+
+async def _dash_warns_get(request):
+    """GET /api/guild/<id>/warns?user_id=X — lista los warns de un usuario (permiso Moderate Members)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["moderate_members"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Moderate Members (timeout) en este servidor."}, status=403)
+    uid = str(request.query.get("user_id", ""))
+    if not uid.isdigit():
+        return dash_web.json_response({"error": "Debes indicar una ID de usuario válida (?user_id=...)."}, status=400)
+    return dash_web.json_response({"user_id": uid, "warns": warns_db.get(uid, [])})
+
+
+async def _dash_warns_remove(request):
+    """POST /api/guild/<id>/warns/remove — elimina un warn por número (permiso Moderate Members)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["moderate_members"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Moderate Members (timeout) en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    uid = str(data.get("user_id", ""))
+    if not uid.isdigit():
+        return dash_web.json_response({"error": "Debes indicar una ID de usuario válida."}, status=400)
+    numero, e = _dash_int(data.get("numero"), 1)
+    if e:
+        return dash_web.json_response({"error": f"El número de warn {e}."}, status=400)
+    lista = warns_db.get(uid, [])
+    warn_a_borrar = None
+    for w in lista:
+        if w.get("numero") == numero:
+            warn_a_borrar = w
+            break
+    if warn_a_borrar is None:
+        return dash_web.json_response({"error": f"No existe el warn #{numero}. El usuario tiene {len(lista)} warns."}, status=400)
+    lista.remove(warn_a_borrar)
+    for i, w in enumerate(lista, start=1):
+        w["numero"] = i
+    guardar_warns()
+    return dash_web.json_response({"ok": True, "msg": f"✅ Warn #{numero} eliminado. Quedan {len(lista)}.", "warns": lista})
+
+
 async def _iniciar_dashboard():
     """Arranca el servidor aiohttp del dashboard en el mismo event loop del bot."""
     app = dash_web.Application(middlewares=[_dash_auth])
@@ -8312,6 +8877,17 @@ async def _iniciar_dashboard():
     app.router.add_post("/api/guild/{gid}/raidmode", _dash_raidmode)
     app.router.add_post("/api/guild/{gid}/leave", _dash_leave)
     app.router.add_post("/api/sync", _dash_sync)
+    app.router.add_post("/api/guild/{gid}/economy", _dash_economy_set)
+    app.router.add_post("/api/guild/{gid}/economy/user", _dash_economy_user)
+    app.router.add_post("/api/guild/{gid}/shop", _dash_shop_set)
+    app.router.add_post("/api/guild/{gid}/starboard", _dash_starboard_set)
+    app.router.add_post("/api/guild/{gid}/xp", _dash_xp_set)
+    app.router.add_post("/api/guild/{gid}/canales", _dash_canales_set)
+    app.router.add_post("/api/guild/{gid}/honeypot", _dash_honeypot_set)
+    app.router.add_post("/api/guild/{gid}/autorole", _dash_autorole_set)
+    app.router.add_post("/api/guild/{gid}/prefix", _dash_prefix_set)
+    app.router.add_get("/api/guild/{gid}/warns", _dash_warns_get)
+    app.router.add_post("/api/guild/{gid}/warns/remove", _dash_warns_remove)
     runner = dash_web.AppRunner(app)
     await runner.setup()
     site = dash_web.TCPSite(runner, dashboard_config["host"], dashboard_config["port"])

@@ -178,8 +178,24 @@
   #toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
   #toast.ok { border-color: var(--verde); } #toast.err { border-color: var(--rojo); }
 
-  /* ===== Login del dashboard ===== */
-  #overlay-login {
+  /* ===== Tarjetas editables ===== */
+  .grupo-titulo { font-size: 12px; font-weight: 700; color: var(--texto-2); text-transform: uppercase; letter-spacing: .4px; margin: 18px 0 8px; }
+  .grupo-titulo:first-child { margin-top: 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 6px 0 10px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 5px 7px 5px 12px; font-size: 12.5px; }
+  .chip.fijo { padding-right: 12px; color: var(--texto-2); }
+  .chip button { background: none; border: 0; color: var(--texto-2); cursor: pointer; font-size: 14px; padding: 0 6px; line-height: 1; }
+  .chip button:hover { color: var(--rojo); }
+  .fila-inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .fila-inline select { flex: 1; min-width: 150px; width: auto; }
+  .item-tienda { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 13px; }
+  .item-tienda:last-child { border-bottom: 0; }
+  .item-tienda .nombre { font-weight: 600; min-width: 90px; }
+  .item-tienda .precio { color: var(--verde); font-weight: 700; min-width: 80px; }
+  .item-tienda .desc { color: var(--texto-2); flex: 1; overflow-wrap: anywhere; }
+  .mini-input { width: 80px !important; }
+
+  /* ===== Login del dashboard ===== */  #overlay-login {
     position: fixed; inset: 0; background: rgba(0, 0, 0, .78);
     display: flex; align-items: center; justify-content: center; z-index: 200;
   }
@@ -410,12 +426,28 @@ function pintarGuild() {
   const g = DATOS_GUILD;
   const ar = g.antiraid;
   const RaidActivo = ar.active;
+  const perms = g.permisos || {};
+  const ec = g.econ_config || {};
+  const sb = g.starboard || {};
+  const xp = g.xp || {};
   const nivelTexto = {
     bot_owner: "👑 Owner del bot",
     owner: "🛡️ Owner del servidor",
     mod: "⚔️ Moderador",
     member: "👁️ Solo lectura",
   }[g.nivel] || "👁️ Solo lectura";
+
+  // Helpers locales para selects de canales/roles y notas de solo lectura
+  const optsCanales = (sel, conVacio) =>
+    (conVacio ? `<option value="" ${!sel ? "selected" : ""}>— Sin canal —</option>` : "") +
+    (g.canales || []).map(c => `<option value="${c.id}" ${sel === c.id ? "selected" : ""}>#${esc(c.nombre)}</option>`).join("");
+  const optsRoles = sel =>
+    (g.roles || []).map(r => `<option value="${r.id}" ${sel === r.id ? "selected" : ""}>@${esc(r.nombre)}</option>`).join("");
+  const notaRO = (perm, nombrePerm) => perm ? "" : `
+    <div class="banner-raid visible" style="border-color:var(--texto-2);color:var(--texto-2);background:var(--panel-2)">
+      👁️ Solo lectura — necesitas el permiso ${nombrePerm || "Manage Server"} en este servidor.
+    </div>`;
+  const pct = v => Math.round((v || 0) * 100);
 
   document.getElementById("principal").innerHTML = `
     <div class="card hero-card">
@@ -495,30 +527,236 @@ function pintarGuild() {
         </div>
       </div>
 
-      <div class="card">
-        <h2>🛡️ Moderación</h2>
-        <div class="dato-fila"><span>⚠️ Warns totales</span><b>${fmtNum(g.moderacion.warns_totales)} <span style="color:var(--texto-2);font-weight:400">(${fmtNum(g.moderacion.usuarios_con_warns)} usuarios)</span></b></div>
-        <div class="dato-fila"><span>📜 Canales de logs</span><b>${g.moderacion.canales_logs.length ? esc(g.moderacion.canales_logs.join(", ")) : "Ninguno"}</b></div>
-        <div class="dato-fila"><span>🔗 Canales sin links (linkban)</span><b>${g.moderacion.linkban.length ? esc(g.moderacion.linkban.join(", ")) : "Ninguno"}</b></div>
-        <div class="dato-fila"><span>🍯 Honeypots</span><b>${g.moderacion.honeypots.length ? esc(g.moderacion.honeypots.join(", ")) : "Ninguno"}</b></div>
-        <div class="dato-fila"><span>🧑‍💼 Autoroles</span><b>${fmtNum(g.moderacion.autoroles)} configurados</b></div>
-      </div>
-
-      <div class="card">
-        <h2>⭐ Starboard y niveles</h2>
-        <div class="dato-fila"><span>Starboard</span><b class="${g.starboard.enabled ? "verde" : "rojo"}">${g.starboard.enabled ? "Activado" : "Desactivado"}</b></div>
-        <div class="dato-fila"><span>⭐ Estrellas necesarias</span><b>${fmtNum(g.starboard.threshold)}</b></div>
-        <div class="dato-fila"><span>📊 Sistema de XP</span><b class="${g.xp.enabled ? "verde" : "rojo"}">${g.xp.enabled ? "Activado" : "Desactivado"}</b></div>
-        <div class="dato-fila"><span>⚡ XP por mensaje</span><b>${g.xp.xp_min} – ${g.xp.xp_max} (cooldown ${g.xp.cooldown}s)</b></div>
-        <div class="dato-fila"><span>🎓 Usuarios con nivel</span><b>${fmtNum(g.xp.usuarios)}</b></div>
-      </div>
-
-      <div class="card">
+      <div class="card" id="card-econ">
         <h2>💰 Economía</h2>
-        <div class="dato-fila"><span>Moneda</span><b>${esc(g.economia.moneda)}</b></div>
-        <div class="dato-fila"><span>👤 Usuarios con cuenta</span><b>${fmtNum(g.economia.usuarios)}</b></div>
-        <div class="dato-fila"><span>🏦 Dinero total (cash + banco)</span><b>${esc(g.economia.moneda)}${fmtNum(g.economia.dinero_total)}</b></div>
-        <div class="dato-fila"><span>🛒 Items en la tienda</span><b>${fmtNum(g.economia.items_tienda)}</b></div>
+        ${notaRO(perms.manage_guild)}
+        <div class="stats-mini">
+          <span class="mini-chip">👤 <b>${fmtNum(g.economia.usuarios)}</b> usuarios</span>
+          <span class="mini-chip">🏦 <b>${esc(g.economia.moneda)}${fmtNum(g.economia.dinero_total)}</b> en circulación</span>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Moneda</div>
+            <div class="opcion-desc">Símbolo usado en todos los comandos (máx 5 caracteres).</div></div>
+          <input id="ec-currency" value="${esc(ec.currency || "$")}" maxlength="5" style="width:80px">
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Balance inicial</div>
+            <div class="opcion-desc">Efectivo con el que empieza cada usuario nuevo.</div></div>
+          <input type="number" id="ec-start" min="0" value="${ec.start_balance ?? 0}">
+        </div>
+        <div class="grupo-titulo">Recompensas (mínimo – máximo)</div>
+        ${[
+          ["daily", "💵 Daily (diario)"],
+          ["weekly", "📅 Weekly (semanal)"],
+          ["monthly", "🗓️ Monthly (mensual)"],
+          ["work", "🛠️ Work (trabajo)"],
+          ["crime", "🚔 Crime (crimen)"],
+          ["slut", "💋 Slut"],
+        ].map(([campo, texto]) => `
+        <div class="fila-opcion">
+          <div class="opcion-label">${texto}</div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input class="mini-input" type="number" id="ec-${campo}-min" min="0" value="${ec[campo + "_min"] ?? 0}">
+            <span style="color:var(--texto-2)">–</span>
+            <input class="mini-input" type="number" id="ec-${campo}-max" min="0" value="${ec[campo + "_max"] ?? 0}">
+            ${campo === "crime" || campo === "slut" ? `<span style="color:var(--texto-2);font-size:11.5px">fallo %</span><input class="mini-input" type="number" id="ec-${campo}-fallo" min="0" max="100" value="${pct(ec[campo + "_fallo"])}">` : ""}
+          </div>
+        </div>`).join("")}
+        <div class="fila-opcion">
+          <div class="opcion-label">🦹 Rob (% del efectivo de la víctima)</div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input class="mini-input" type="number" id="ec-rob-min" min="0" max="100" value="${pct(ec.rob_min)}">
+            <span style="color:var(--texto-2)">–</span>
+            <input class="mini-input" type="number" id="ec-rob-max" min="0" max="100" value="${pct(ec.rob_max)}">
+            <span style="color:var(--texto-2);font-size:11.5px">fallo %</span>
+            <input class="mini-input" type="number" id="ec-rob-fallo" min="0" max="100" value="${pct(ec.rob_fallo)}">
+          </div>
+        </div>
+        <div class="acciones-form">
+          <button class="btn btn-primario" onclick="guardarEconomia()">💾 Guardar economía</button>
+        </div>
+      </div>
+
+      <div class="card" id="card-econ-user">
+        <h2>👤 Dinero de un usuario</h2>
+        ${notaRO(perms.manage_guild)}
+        <div class="fila-opcion">
+          <div><div class="opcion-label">ID del usuario</div>
+            <div class="opcion-desc">Copia su ID (modo desarrollador de Discord → copiar ID).</div></div>
+          <input id="eu-id" placeholder="Ej: 611116738943123457" style="width:230px">
+        </div>
+        <div class="fila-opcion">
+          <div class="opcion-label">Cantidad (efectivo)</div>
+          <input type="number" id="eu-cantidad" min="0" value="0">
+        </div>
+        <div class="fila-opcion">
+          <div class="opcion-label">Acción</div>
+          <select id="eu-accion">
+            <option value="add">➕ Añadir</option>
+            <option value="remove">➖ Quitar</option>
+            <option value="set">🎯 Fijar exactamente</option>
+          </select>
+        </div>
+        <div class="acciones-form">
+          <button class="btn btn-primario" onclick="dineroUsuario()">💸 Aplicar</button>
+        </div>
+      </div>
+
+      <div class="card" id="card-shop">
+        <h2>🛍️ Tienda (${fmtNum(g.shop.length)} items)</h2>
+        ${notaRO(perms.manage_guild)}
+        ${(g.shop || []).map(it => `
+        <div class="item-tienda">
+          <span class="nombre">${esc(it.item)}</span>
+          <span class="precio">${esc(g.economia.moneda)}${fmtNum(it.precio)}</span>
+          <span class="desc">${esc(it.desc || "")}</span>
+          <button class="btn btn-peligro" style="padding:5px 11px;font-size:12px" onclick="tiendaRemove('${esc(it.item)}')">🗑</button>
+        </div>`).join("") || '<div class="vacio" style="padding:14px">La tienda está vacía.</div>'}
+        <div class="grupo-titulo">Añadir item</div>
+        <div class="fila-inline">
+          <input id="shop-item" placeholder="nombre (sin espacios)" style="width:170px">
+          <input class="mini-input" type="number" id="shop-precio" min="1" placeholder="precio">
+          <input id="shop-desc" placeholder="descripción (opcional)" style="flex:1;min-width:140px;width:auto">
+          <button class="btn btn-primario" onclick="tiendaAdd()">➕ Añadir</button>
+        </div>
+      </div>
+
+      <div class="card" id="card-starboard">
+        <h2>⭐ Starboard</h2>
+        ${notaRO(perms.manage_guild)}
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Starboard</div>
+            <div class="opcion-desc">Los mensajes con suficientes ⭐ se publican en el canal elegido.</div></div>
+          <label class="switch"><input type="checkbox" id="sb-enabled" ${sb.enabled ? "checked" : ""}><span class="pista"></span></label>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Canal del starboard</div></div>
+          <select id="sb-channel">${optsCanales(sb.channel_id, true)}</select>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">⭐ Estrellas necesarias</div></div>
+          <input type="number" id="sb-threshold" min="1" max="100" value="${sb.threshold ?? 5}">
+        </div>
+        <div class="acciones-form">
+          <button class="btn btn-primario" onclick="guardarStarboard()">💾 Guardar starboard</button>
+        </div>
+      </div>
+
+      <div class="card" id="card-xp">
+        <h2>📊 Niveles / XP <span style="color:var(--texto-2);font-weight:400;font-size:12px">(${fmtNum(xp.usuarios)} usuarios)</span></h2>
+        ${notaRO(perms.manage_guild)}
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Sistema de XP</div>
+            <div class="opcion-desc">Gana XP por mensaje y sube de nivel (con recompensas de rol si las configuras).</div></div>
+          <label class="switch"><input type="checkbox" id="xp-enabled" ${xp.enabled ? "checked" : ""}><span class="pista"></span></label>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">XP por mensaje</div></div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input class="mini-input" type="number" id="xp-min" min="0" value="${xp.xp_min ?? 15}">
+            <span style="color:var(--texto-2)">–</span>
+            <input class="mini-input" type="number" id="xp-max" min="0" value="${xp.xp_max ?? 25}">
+          </div>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Cooldown anti-spam</div></div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input class="mini-input" type="number" id="xp-cooldown" min="0" value="${xp.cooldown ?? 60}">
+            <span style="color:var(--texto-2)">seg</span>
+          </div>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Anuncios de level-up</div></div>
+          <label class="switch"><input type="checkbox" id="xp-announce" ${xp.announce ? "checked" : ""}><span class="pista"></span></label>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Canal de anuncios</div></div>
+          <select id="xp-channel">${optsCanales(xp.channel_id, true)}</select>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Mensaje de level-up</div>
+            <div class="opcion-desc">Variables: {user} {level} {xp}</div></div>
+          <input id="xp-message" value="${esc(xp.message || "")}" style="width:100%;max-width:340px">
+        </div>
+        <div class="acciones-form">
+          <button class="btn btn-primario" onclick="guardarXp()">💾 Guardar niveles</button>
+        </div>
+      </div>
+
+      <div class="card" id="card-canales">
+        <h2>🔗 Canales</h2>
+        ${notaRO(perms.manage_guild)}
+        <div class="grupo-titulo">📜 Canales de logs (eventos del servidor)</div>
+        <div class="chips">
+          ${(g.logs_detalle || []).map(c => `<span class="chip">#${esc(c.nombre)}<button onclick="canalRemove('logs','${c.id}')" title="Quitar">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno configurado</span>'}
+        </div>
+        <div class="fila-inline">
+          <select id="logs-canal">${optsCanales(null, true)}</select>
+          <button class="btn btn-primario" onclick="canalAdd('logs')">➕ Añadir logs</button>
+        </div>
+        <div class="grupo-titulo">🚫 Canales con links prohibidos (linkban)</div>
+        <div class="chips">
+          ${(g.linkban_detalle || []).map(c => `<span class="chip">#${esc(c.nombre)}<button onclick="canalRemove('linkban','${c.id}')" title="Permitir links">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno configurado</span>'}
+        </div>
+        <div class="fila-inline">
+          <select id="linkban-canal">${optsCanales(null, true)}</select>
+          <button class="btn btn-primario" onclick="canalAdd('linkban')">➕ Prohibir links</button>
+        </div>
+        <div class="grupo-titulo">🍯 Honeypots (trampa para raiders)</div>
+        <div class="chips">
+          ${(g.honeypots_detalle || []).map(h => `<span class="chip">#${esc(h.nombre)} · ${esc(h.action)}${h.action === "mute" && h.duration ? " " + Math.round(h.duration / 60) + "m" : ""}<button onclick="honeypotRemove('${h.id}')" title="Quitar honeypot">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno configurado</span>'}
+        </div>
+        <div class="fila-inline">
+          <select id="hp-canal">${optsCanales(null, true)}</select>
+          <select id="hp-accion" style="flex:0;min-width:110px;width:auto">
+            <option value="ban">🚫 ban</option>
+            <option value="kick">👢 kick</option>
+            <option value="mute">🔇 mute</option>
+          </select>
+          <input class="mini-input" type="number" id="hp-duracion" min="10" value="3600" title="Duración del mute en segundos">
+          <button class="btn btn-primario" onclick="honeypotAdd()">➕ Añadir honeypot</button>
+        </div>
+      </div>
+
+      <div class="card" id="card-roles">
+        <h2>👥 Autoroles y prefijos</h2>
+        <div id="sec-autoroles">
+          ${notaRO(perms.manage_roles, "Manage Roles")}
+          ${[
+            ["all", "🧩 Autoroles para TODOS"],
+            ["human", "🧑 Autoroles para HUMANOS"],
+            ["bot", "🤖 Autoroles para BOTS"],
+          ].map(([cat, titulo]) => `
+          <div class="grupo-titulo">${titulo}</div>
+          <div class="chips">
+            ${(g.autoroles_detalle?.[cat] || []).map(r => `<span class="chip">@${esc(r.nombre)}<button onclick="autoroleRemove('${cat}','${r.id}')" title="Quitar">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno</span>'}
+          </div>
+          <div class="fila-inline">
+            <select id="arol-${cat}">${optsRoles(null)}</select>
+            <button class="btn btn-primario" onclick="autoroleAdd('${cat}')">➕ Añadir</button>
+          </div>`).join("")}
+        </div>
+        <div id="sec-prefijos">
+          <div class="grupo-titulo">⌨️ Prefijos de comandos</div>
+          <div class="chips">
+            <span class="chip fijo">. (por defecto, no se puede quitar)</span>
+            ${(g.prefixes_custom || []).map(p => `<span class="chip">${esc(p)}<button onclick="prefijoRemove('${esc(p)}')" title="Quitar">✕</button></span>`).join("")}
+          </div>
+          <div class="fila-inline">
+            <input id="pfx-nuevo" placeholder="nuevo prefijo (máx 5)" style="width:190px">
+            <button class="btn btn-primario" onclick="prefijoAdd()">➕ Añadir prefijo</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="card-warns">
+        <h2>⚠️ Warns <span style="color:var(--texto-2);font-weight:400;font-size:12px">(${fmtNum(g.moderacion.warns_totales)} en total · ${fmtNum(g.moderacion.usuarios_con_warns)} usuarios)</span></h2>
+        ${notaRO(perms.moderate_members, "Moderate Members")}
+        <div class="fila-inline" style="margin-bottom:10px">
+          <input id="warns-uid" placeholder="ID del usuario a consultar" style="width:230px">
+          <button class="btn btn-primario" onclick="buscarWarns()">🔍 Buscar warns</button>
+        </div>
+        <div id="warns-resultado"></div>
       </div>
 
       ${g.es_bot_owner ? `
@@ -532,11 +770,16 @@ function pintarGuild() {
         </div>
       </div>` : ""}
     </div>`;
-  if (!g.puede_configurar) {
-    document.querySelectorAll("#card-antiraid input, #card-antiraid select").forEach(el => { el.disabled = true; });
-    const acciones = document.querySelector("#card-antiraid .acciones-form");
-    if (acciones) acciones.style.display = "none";
+  // Desactivar controles según permisos granulares (el servidor también lo valida en cada POST)
+  const desactivar = ids => ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.querySelectorAll("input, select, button").forEach(x => { x.disabled = true; });
+  });
+  if (!perms.manage_guild) {
+    desactivar(["card-antiraid", "card-econ", "card-econ-user", "card-shop", "card-starboard", "card-xp", "card-canales", "sec-prefijos"]);
   }
+  if (!perms.manage_roles) desactivar(["sec-autoroles"]);
+  if (!perms.moderate_members) desactivar(["card-warns"]);
 }
 
 /* ===== Acciones ===== */
@@ -567,6 +810,198 @@ async function toggleRaidmode(estado) {
   } catch (e) {
     toast("❌ " + e.message, false);
   }
+}
+
+/* ===== Acciones de configuración del servidor ===== */
+async function guardarEconomia() {
+  const ent = id => parseInt(document.getElementById(id).value, 10) || 0;
+  const pctv = id => (parseFloat(document.getElementById(id).value) || 0) / 100;
+  const payload = {
+    currency: document.getElementById("ec-currency").value.trim(),
+    start_balance: ent("ec-start"),
+    daily_min: ent("ec-daily-min"), daily_max: ent("ec-daily-max"),
+    weekly_min: ent("ec-weekly-min"), weekly_max: ent("ec-weekly-max"),
+    monthly_min: ent("ec-monthly-min"), monthly_max: ent("ec-monthly-max"),
+    work_min: ent("ec-work-min"), work_max: ent("ec-work-max"),
+    crime_min: ent("ec-crime-min"), crime_max: ent("ec-crime-max"), crime_fallo: pctv("ec-crime-fallo"),
+    slut_min: ent("ec-slut-min"), slut_max: ent("ec-slut-max"), slut_fallo: pctv("ec-slut-fallo"),
+    rob_min: pctv("ec-rob-min"), rob_max: pctv("ec-rob-max"), rob_fallo: pctv("ec-rob-fallo"),
+  };
+  try {
+    await api("/api/guild/" + GUILD_ACTUAL + "/economy", { method: "POST", body: JSON.stringify(payload) });
+    toast("✅ Economía guardada correctamente");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function dineroUsuario() {
+  const payload = {
+    user_id: document.getElementById("eu-id").value.trim(),
+    accion: document.getElementById("eu-accion").value,
+    cantidad: parseInt(document.getElementById("eu-cantidad").value, 10) || 0,
+  };
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/economy/user", { method: "POST", body: JSON.stringify(payload) });
+    toast("✅ Hecho. Efectivo: " + fmtNum(r.cash) + " · Banco: " + fmtNum(r.bank));
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function tiendaAdd() {
+  const payload = {
+    accion: "add",
+    item: document.getElementById("shop-item").value.trim(),
+    precio: parseInt(document.getElementById("shop-precio").value, 10) || 0,
+    desc: document.getElementById("shop-desc").value.trim(),
+  };
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/shop", { method: "POST", body: JSON.stringify(payload) });
+    toast(r.msg, r.ok);
+    if (r.ok) await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function tiendaRemove(item) {
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/shop", { method: "POST", body: JSON.stringify({ accion: "remove", item }) });
+    toast(r.msg, r.ok);
+    if (r.ok) await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function guardarStarboard() {
+  const payload = {
+    enabled: document.getElementById("sb-enabled").checked,
+    channel_id: document.getElementById("sb-channel").value || null,
+    threshold: parseInt(document.getElementById("sb-threshold").value, 10) || 1,
+  };
+  try {
+    await api("/api/guild/" + GUILD_ACTUAL + "/starboard", { method: "POST", body: JSON.stringify(payload) });
+    toast("✅ Starboard guardado");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function guardarXp() {
+  const payload = {
+    enabled: document.getElementById("xp-enabled").checked,
+    xp_min: parseInt(document.getElementById("xp-min").value, 10) || 0,
+    xp_max: parseInt(document.getElementById("xp-max").value, 10) || 0,
+    cooldown: parseInt(document.getElementById("xp-cooldown").value, 10) || 0,
+    announce: document.getElementById("xp-announce").checked,
+    channel_id: document.getElementById("xp-channel").value || null,
+    message: document.getElementById("xp-message").value,
+  };
+  try {
+    await api("/api/guild/" + GUILD_ACTUAL + "/xp", { method: "POST", body: JSON.stringify(payload) });
+    toast("✅ Niveles guardados");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function canalAdd(tipo) {
+  const idSel = tipo === "logs" ? "logs-canal" : "linkban-canal";
+  const canal = document.getElementById(idSel).value;
+  if (!canal) return toast("Selecciona un canal primero", false);
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/canales", { method: "POST", body: JSON.stringify({ tipo, canal_id: canal, accion: "add" }) });
+    toast(r.msg, r.ok);
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function canalRemove(tipo, canalId) {
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/canales", { method: "POST", body: JSON.stringify({ tipo, canal_id: canalId, accion: "remove" }) });
+    toast(r.msg, r.ok);
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function honeypotAdd() {
+  const canal = document.getElementById("hp-canal").value;
+  if (!canal) return toast("Selecciona un canal primero", false);
+  const payload = {
+    canal_id: canal,
+    accion: "add",
+    action: document.getElementById("hp-accion").value,
+    duracion: parseInt(document.getElementById("hp-duracion").value, 10) || 3600,
+  };
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/honeypot", { method: "POST", body: JSON.stringify(payload) });
+    toast(r.msg, r.ok);
+    if (r.ok) await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function honeypotRemove(canalId) {
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/honeypot", { method: "POST", body: JSON.stringify({ canal_id: canalId, accion: "remove" }) });
+    toast(r.msg, r.ok);
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function autoroleAdd(cat) {
+  const rol = document.getElementById("arol-" + cat).value;
+  if (!rol) return toast("Selecciona un rol primero", false);
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/autorole", { method: "POST", body: JSON.stringify({ categoria: cat, rol_id: rol, accion: "add" }) });
+    toast(r.msg, r.ok);
+    if (r.ok) await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function autoroleRemove(cat, rolId) {
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/autorole", { method: "POST", body: JSON.stringify({ categoria: cat, rol_id: rolId, accion: "remove" }) });
+    toast(r.msg, r.ok);
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function prefijoAdd() {
+  const p = document.getElementById("pfx-nuevo").value.trim();
+  if (!p) return toast("Escribe el prefijo primero", false);
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/prefix", { method: "POST", body: JSON.stringify({ prefijo: p, accion: "add" }) });
+    toast(r.msg, r.ok);
+    if (r.ok) await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function prefijoRemove(p) {
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/prefix", { method: "POST", body: JSON.stringify({ prefijo: p, accion: "remove" }) });
+    toast(r.msg, r.ok);
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function buscarWarns() {
+  const uid = document.getElementById("warns-uid").value.trim();
+  if (!uid) return toast("Escribe la ID del usuario", false);
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/warns?user_id=" + encodeURIComponent(uid));
+    const cont = document.getElementById("warns-resultado");
+    if (!r.warns.length) {
+      cont.innerHTML = '<div style="color:var(--texto-2);font-size:13px;padding:8px 0">Ese usuario no tiene warns. ✨</div>';
+      return;
+    }
+    cont.innerHTML = r.warns.map(w => `
+      <div class="dato-fila">
+        <span>#${w.numero} · ${esc(w.motivo)}</span>
+        <b>${esc(w.moderador)} <button class="btn btn-peligro" style="padding:4px 10px;font-size:11.5px" onclick="warnRemove('${esc(uid)}', ${w.numero})" title="Eliminar warn">🗑</button></b>
+      </div>`).join("");
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function warnRemove(uid, numero) {
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/warns/remove", { method: "POST", body: JSON.stringify({ user_id: uid, numero }) });
+    toast(r.msg, r.ok);
+    document.getElementById("warns-uid").value = uid;
+    buscarWarns();
+  } catch (e) { toast("❌ " + e.message, false); }
 }
 
 /* ===== Acciones de owner ===== */
