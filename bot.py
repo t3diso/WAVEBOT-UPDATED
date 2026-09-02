@@ -56,6 +56,12 @@ reminders_db = {}    # id -> {user_id, channel_id, msg_id, msg, fin, md}
 STARBOARD_PATH = "starboard.json"
 starboard_db = {}   # guild_id (str) -> {"enabled": bool, "channel_id": int|None, "threshold": int, "posted": {msg_id: star_msg_id}}
 
+# Antiraid (DESACTIVADO por defecto en cada servidor)
+ANTIRAID_PATH = "antiraid.json"
+antiraid_db = {}    # guild_id (str) -> config (ver _antiraid_default)
+# Joins recientes en memoria: guild_id (str) -> [timestamps]
+ANTIRAID_JOINS = {}
+
 DEFAULT_PREFIX = "."
 
 MENTION_REGEX = re.compile(r"^<@!?(?P<id>\d+)>\s*$")
@@ -643,6 +649,34 @@ def guardar_starboard():
         print(f"Error guardando starboard.json: {e}")
 
 
+def cargar_antiraid():
+    global antiraid_db
+    if os.path.exists(ANTIRAID_PATH):
+        try:
+            with open(ANTIRAID_PATH, "r", encoding="utf-8") as f:
+                antiraid_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            antiraid_db = {}
+    else:
+        antiraid_db = {}
+    # Rellenar claves que falten en configs guardadas (compatibilidad).
+    for cfg in antiraid_db.values():
+        base = _antiraid_default()
+        for clave, valor in base.items():
+            cfg.setdefault(clave, valor)
+        cfg["stats"].setdefault("raids", 0)
+        cfg["stats"].setdefault("punished", 0)
+    print(f"Antiraid configs cargados: {len(antiraid_db)} servidores.")
+
+
+def guardar_antiraid():
+    try:
+        with open(ANTIRAID_PATH, "w", encoding="utf-8") as f:
+            json.dump(antiraid_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando antiraid.json: {e}")
+
+
 async def enviar_logs(guild: discord.Guild, embed: discord.Embed):
     """Envía un embed de logs a todos los canales configurados en el servidor."""
     for canal_id in list(logs_channels):
@@ -929,6 +963,7 @@ async def on_ready():
     cargar_starboard()
     cargar_economy()
     cargar_shop()
+    cargar_antiraid()
     await bot.change_presence(status=discord.Status.online, activity=discord.Game(name=".help | created by ukodev"))
     print(f"Conectado como {bot.user} (ID: {bot.user.id})")
     print(f"Servidores: {len(bot.guilds)}")
@@ -2835,6 +2870,325 @@ async def ipunban_error(ctx, error):
 
 
 # ============================================================
+#  ANTIRAID (detección de joins masivos, DESACTIVADO por defecto)
+# ============================================================
+
+ANTIRAID_MUTE_MINUTOS = 60  # duración del timeout cuando la acción es "mute"
+
+
+def _antiraid_default():
+    """Config por defecto del antiraid: desactivado."""
+    return {
+        "enabled": False,      # sistema desactivado por defecto
+        "action": "kick",      # ban | kick | mute
+        "threshold": 5,        # joins necesarios dentro de la ventana para considerar raid
+        "seconds": 10,         # ventana de tiempo en segundos
+        "punish_new": True,    # castigar a quienes entren mientras el modo raid esté activo
+        "min_age": 0,          # edad mínima de la cuenta en minutos (0 = desactivado)
+        "active": False,       # modo raid activo ahora mismo
+        "activated_at": None,  # timestamp de activación
+        "manual": False,       # activado manualmente (no se desactiva solo)
+        "stats": {"raids": 0, "punished": 0},
+    }
+
+
+def _antiraid_cfg(guild_id):
+    """Devuelve (creándola si no existe) la config antiraid de un servidor."""
+    gid = str(guild_id)
+    cfg = antiraid_db.setdefault(gid, _antiraid_default())
+    base = _antiraid_default()
+    for clave, valor in base.items():
+        cfg.setdefault(clave, valor)
+    cfg["stats"].setdefault("raids", 0)
+    cfg["stats"].setdefault("punished", 0)
+    return cfg
+
+
+def _antiraid_status_embed(cfg: dict) -> discord.Embed:
+    """Embed con el estado/config actual del antiraid (sin footer)."""
+    accion = cfg.get("action", "kick")
+    embed = discord.Embed(
+        title="🚨 Antiraid",
+        color=discord.Color.dark_red() if cfg.get("enabled") else discord.Color.dark_grey(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Estado", value="🟢 Activado" if cfg.get("enabled") else "🔴 Desactivado (por defecto)", inline=True)
+    raid_txt = "🚨 ACTIVO (castigando entradas)" if cfg.get("active") else "Inactivo"
+    if cfg.get("active") and cfg.get("manual"):
+        raid_txt += " • manual"
+    embed.add_field(name="Modo raid", value=raid_txt, inline=True)
+    embed.add_field(name="Detección", value=f"**{cfg.get('threshold', 5)}** joins en **{cfg.get('seconds', 10)}s**", inline=False)
+    accion_txt = f"`{accion}`" + (f" (timeout {ANTIRAID_MUTE_MINUTOS} min)" if accion == "mute" else "")
+    embed.add_field(name="Acción", value=accion_txt, inline=True)
+    embed.add_field(name="Castigar entradas en raid", value="Sí" if cfg.get("punish_new", True) else "No", inline=True)
+    min_age = int(cfg.get("min_age", 0))
+    embed.add_field(name="Edad mínima cuenta", value=f"{min_age} min" if min_age > 0 else "Desactivada", inline=True)
+    stats = cfg.get("stats", {})
+    embed.add_field(name="Stats", value=f"Raids detectados: {stats.get('raids', 0)} • Castigados: {stats.get('punished', 0)}", inline=False)
+    return embed
+
+
+async def _antiraid_punish(member: discord.Member, cfg: dict, motivo: str):
+    """Aplica la acción configurada (ban/kick/mute) a un miembro. Devuelve True si se castigó."""
+    razon = f"[ANTIRAID] {motivo}"
+    accion = cfg.get("action", "kick")
+    try:
+        if accion == "ban":
+            await member.ban(reason=razon, delete_message_days=1)
+        elif accion == "mute":
+            await member.edit(
+                communication_disabled_until=discord.utils.utcnow() + datetime.timedelta(minutes=ANTIRAID_MUTE_MINUTOS),
+                reason=razon,
+            )
+        else:
+            await member.kick(reason=razon)
+        stats = cfg.setdefault("stats", {})
+        stats["punished"] = int(stats.get("punished", 0)) + 1
+        return True
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+
+
+async def _antiraid_check(member: discord.Member):
+    """
+    Lógica antiraid al unirse un miembro. Devuelve True si fue castigado
+    (en ese caso no se le aplican autoroles).
+    """
+    gid = str(member.guild.id)
+    cfg = antiraid_db.get(gid)
+    if not cfg or not cfg.get("enabled"):
+        return False
+
+    # Nunca castigar al propio bot, al dueño del servidor ni al staff con Manage Server.
+    if member.id == bot.user.id or member.id == member.guild.owner_id or member.guild_permissions.manage_guild:
+        return False
+
+    ahora = time.time()
+    ventana = max(int(cfg.get("seconds", 10)), 3)
+
+    # Registrar el join SIEMPRE (sirve para detectar el raid y para mantener activo el modo).
+    joins = ANTIRAID_JOINS.setdefault(gid, [])
+    joins.append(ahora)
+    joins[:] = [t for t in joins if ahora - t <= ventana]
+
+    # Modo raid ya activo → castigo directo.
+    if cfg.get("active"):
+        await _antiraid_punish(member, cfg, "Modo raid activo")
+        guardar_antiraid()
+        return True
+
+    # Filtro de edad mínima de cuenta.
+    if int(cfg.get("min_age", 0)) > 0:
+        edad_minutos = (ahora - member.created_at.timestamp()) / 60
+        if edad_minutos < int(cfg["min_age"]):
+            await _antiraid_punish(member, cfg, f"Cuenta demasiado nueva (< {cfg['min_age']} min)")
+            guardar_antiraid()
+            return True
+
+    # ¿Umbral de joins alcanzado dentro de la ventana? → raid detectado.
+    if len(joins) >= max(int(cfg.get("threshold", 5)), 2):
+        cfg["active"] = True
+        cfg["activated_at"] = ahora
+        cfg["manual"] = False
+        stats = cfg.setdefault("stats", {})
+        stats["raids"] = int(stats.get("raids", 0)) + 1
+        motivo = f"Raid detectado ({len(joins)} joins en {ventana}s)"
+
+        castigados = 0
+        if cfg.get("punish_new", True):
+            # Castigar a toda la ráfaga: quienes entraron en la ventana (incluye al que la dispara).
+            for m in list(member.guild.members):
+                if m.id == bot.user.id or m.id == m.guild.owner_id or m.guild_permissions.manage_guild:
+                    continue
+                if m.joined_at is not None and (ahora - m.joined_at.timestamp()) <= ventana:
+                    if await _antiraid_punish(m, cfg, motivo):
+                        castigados += 1
+        else:
+            # Solo castigar al miembro que disparó el umbral.
+            if await _antiraid_punish(member, cfg, motivo):
+                castigados += 1
+
+        guardar_antiraid()
+
+        embed = discord.Embed(
+            title="🚨 RAID DETECTADO",
+            description=f"Modo raid activado automáticamente: {len(joins)} joins en {ventana}s.",
+            color=discord.Color.dark_red(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Acción", value=str(cfg.get("action", "kick")).upper(), inline=True)
+        embed.add_field(name="Castigados", value=str(castigados), inline=True)
+        embed.set_footer(text="El modo raid se desactiva solo cuando dejen de entrar usuarios.")
+        await enviar_logs(member.guild, embed)
+
+        bot.loop.create_task(_antiraid_auto_off(gid))
+        return True
+
+    return False
+
+
+async def _antiraid_auto_off(gid: str):
+    """Desactiva el modo raid automático cuando no entran usuarios durante una ventana completa."""
+    while True:
+        cfg = antiraid_db.get(gid)
+        if not cfg or not cfg.get("active") or cfg.get("manual"):
+            return
+        ventana = max(int(cfg.get("seconds", 10)), 3)
+        ahora = time.time()
+        recientes = [t for t in ANTIRAID_JOINS.get(gid, []) if ahora - t <= ventana]
+        if recientes:
+            await asyncio.sleep(ventana)
+            continue
+        break
+    cfg = antiraid_db.get(gid)
+    if cfg and cfg.get("active"):
+        cfg["active"] = False
+        cfg["activated_at"] = None
+        guardar_antiraid()
+        guild = bot.get_guild(int(gid))
+        if guild is not None:
+            embed = discord.Embed(
+                title="✅ Modo raid desactivado",
+                description="No se detectaron más entradas masivas. Antiraid vuelve a la normalidad.",
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow(),
+            )
+            await enviar_logs(guild, embed)
+
+
+@bot.command(name="antiraid")
+@commands.has_permissions(manage_guild=True)
+async def antiraid(ctx, *, args: str = ""):
+    """
+    Sistema antiraid (desactivado por defecto). Uso: .antiraid [on|off|set|action|punishnew|minage|raidmode]
+    Sin argumentos muestra la configuración actual.
+    """
+    cfg = _antiraid_cfg(ctx.guild.id)
+    tokens = args.split()
+    sub = tokens[0].lower() if tokens else ""
+    p = ctx.prefix if ctx.prefix and not MENTION_REGEX.match(ctx.prefix) else DEFAULT_PREFIX
+
+    if sub in ("", "config", "status"):
+        embed = _antiraid_status_embed(cfg)
+        embed.set_footer(text=f"Usa {p}antiraid on para activarlo. Nunca actúa contra el staff (Manage Server).")
+        return await ctx.send(embed=embed)
+
+    if sub == "on":
+        cfg["enabled"] = True
+        guardar_antiraid()
+        return await ctx.send("✅ Antiraid **activado**. Nunca actúa contra el staff (Manage Server), el dueño del servidor ni contra mí.")
+
+    if sub == "off":
+        cfg["enabled"] = False
+        cfg["active"] = False
+        cfg["activated_at"] = None
+        cfg["manual"] = False
+        guardar_antiraid()
+        return await ctx.send("🔴 Antiraid **desactivado** (estado por defecto). Modo raid cancelado si estaba activo.")
+
+    if sub == "set":
+        if len(tokens) < 3:
+            return await ctx.send("❌ Uso correcto: `.antiraid set <joins> <segundos>` (ej: `.antiraid set 5 10`)")
+        try:
+            umbral = int(tokens[1])
+            ventana = int(tokens[2])
+        except ValueError:
+            return await ctx.send("❌ Ambos valores deben ser números enteros.")
+        if not (2 <= umbral <= 100):
+            return await ctx.send("❌ El umbral debe estar entre 2 y 100 joins.")
+        if not (3 <= ventana <= 3600):
+            return await ctx.send("❌ La ventana debe estar entre 3 y 3600 segundos.")
+        cfg["threshold"] = umbral
+        cfg["seconds"] = ventana
+        guardar_antiraid()
+        return await ctx.send(f"✅ Detección de raid: **{umbral} joins en {ventana}s**.")
+
+    if sub == "action":
+        if len(tokens) < 2 or tokens[1].lower() not in ("ban", "kick", "mute"):
+            return await ctx.send("❌ Uso correcto: `.antiraid action <ban|kick|mute>`")
+        cfg["action"] = tokens[1].lower()
+        guardar_antiraid()
+        extra = f" (timeout de {ANTIRAID_MUTE_MINUTOS} min)" if cfg["action"] == "mute" else ""
+        return await ctx.send(f"✅ Acción antiraid: **{cfg['action']}**{extra}.")
+
+    if sub in ("punishnew", "punish"):
+        if len(tokens) < 2:
+            return await ctx.send("❌ Uso correcto: `.antiraid punishnew <true|false>`")
+        valor = tokens[1].lower()
+        if valor in ("true", "on", "si", "sí", "1"):
+            cfg["punish_new"] = True
+        elif valor in ("false", "off", "no", "0"):
+            cfg["punish_new"] = False
+        else:
+            return await ctx.send("❌ Uso correcto: `.antiraid punishnew <true|false>`")
+        guardar_antiraid()
+        extra = "" if cfg["punish_new"] else "\n(Con `false` solo se castiga al usuario que dispara el umbral)."
+        return await ctx.send(f"✅ Castigar entradas durante raid: **{'Sí' if cfg['punish_new'] else 'No'}**.{extra}")
+
+    if sub == "minage":
+        if len(tokens) < 2:
+            return await ctx.send("❌ Uso correcto: `.antiraid minage <minutos>` (0 = desactivado)")
+        try:
+            minutos = int(tokens[1])
+        except ValueError:
+            return await ctx.send("❌ Los minutos deben ser un número entero.")
+        if not (0 <= minutos <= 43800):
+            return await ctx.send("❌ La edad mínima debe estar entre 0 (desactivado) y 43800 minutos (~1 mes).")
+        cfg["min_age"] = minutos
+        guardar_antiraid()
+        texto = f"**{minutos} min**" if minutos > 0 else "**desactivado**"
+        return await ctx.send(f"✅ Edad mínima de cuenta: {texto}.")
+
+    if sub in ("raidmode", "raid"):
+        if len(tokens) < 2 or tokens[1].lower() not in ("on", "off"):
+            return await ctx.send("❌ Uso correcto: `.antiraid raidmode <on|off>`")
+        if tokens[1].lower() == "on":
+            if not cfg.get("enabled"):
+                return await ctx.send("❌ El antiraid está desactivado. Actívalo primero con `.antiraid on`.")
+            cfg["active"] = True
+            cfg["activated_at"] = time.time()
+            cfg["manual"] = True
+            guardar_antiraid()
+            embed = discord.Embed(
+                title="🚨 Modo raid activado (manual)",
+                description="Todos los que entren ahora serán castigados hasta que lo desactives.",
+                color=discord.Color.dark_red(),
+                timestamp=discord.utils.utcnow(),
+            )
+            embed.set_footer(text=f"Se mantiene activo hasta {p}antiraid raidmode off (no se desactiva solo).")
+            await ctx.send(embed=embed)
+            await enviar_logs(ctx.guild, embed)
+            return
+        cfg["active"] = False
+        cfg["activated_at"] = None
+        cfg["manual"] = False
+        guardar_antiraid()
+        embed = discord.Embed(title="✅ Modo raid desactivado", color=discord.Color.green(), timestamp=discord.utils.utcnow())
+        await ctx.send(embed=embed)
+        await enviar_logs(ctx.guild, embed)
+        return
+
+    return await ctx.send(
+        "❌ Subcomando desconocido. Usa:\n"
+        f"`{p}antiraid` :: Ver configuración\n"
+        f"`{p}antiraid on|off` :: Activar / desactivar\n"
+        f"`{p}antiraid set <joins> <segundos>` :: Umbral de detección\n"
+        f"`{p}antiraid action <ban|kick|mute>` :: Acción contra raiders\n"
+        f"`{p}antiraid punishnew <true|false>` :: Castigar entradas en raid\n"
+        f"`{p}antiraid minage <minutos>` :: Edad mínima de cuenta (0 = off)\n"
+        f"`{p}antiraid raidmode <on|off>` :: Modo raid manual"
+    )
+
+
+@antiraid.error
+async def antiraid_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Server.")
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.send("❌ Me faltan permisos para ejecutar este comando.")
+
+
+# ============================================================
 #  HONEYPOT
 # ============================================================
 
@@ -3153,6 +3507,7 @@ async def ayuda(ctx, *, comando: str = None):
     )
     embed.add_field(name="Categorías", value=(
         f"`{p}help mod` :: Moderación\n"
+        f"`{p}help antiraid` :: Antiraid\n"
         f"`{p}help roles` :: Roles\n"
         f"`{p}help niveles` :: Niveles / XP\n"
         f"`{p}help economia` :: Economía\n"
@@ -3170,6 +3525,7 @@ async def ayuda(ctx, *, comando: str = None):
             placeholder="Selecciona una categoría...",
             options=[
                 discord.SelectOption(label="Moderación", value="mod", description="Ban, kick, mute, warn, purge, nuke, etc."),
+                discord.SelectOption(label="Antiraid", value="antiraid", description="Antiraid on/off, set, action, punishnew, minage, raidmode"),
                 discord.SelectOption(label="Roles", value="roles", description="Roleadd, roleremove, rolehuman, autorole, etc."),
                 discord.SelectOption(label="Niveles / XP", value="niveles", description="Rank, level, leaderboard, level-config, etc."),
                 discord.SelectOption(label="Economía", value="economia", description="Balance, work, crime, rob, tienda, juegos, etc."),
@@ -3206,6 +3562,16 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}warnremove (@usuario) (número)` :: Quita warn\n"
                     f"`{p}warns (@usuario)` :: Ver warns"
                 ), color=discord.Color.red()),
+                "antiraid": discord.Embed(title="Antiraid", description=(
+                    f"`{p}antiraid` :: Ver configuración\n"
+                    f"`{p}antiraid on/off` :: Activar / desactivar\n"
+                    f"`{p}antiraid set (joins) (segundos)` :: Umbral de raid\n"
+                    f"`{p}antiraid action <ban|kick|mute>` :: Acción contra raiders\n"
+                    f"`{p}antiraid punishnew <true|false>` :: Castigar entradas en raid\n"
+                    f"`{p}antiraid minage (minutos)` :: Edad mínima de cuenta\n"
+                    f"`{p}antiraid raidmode <on|off>` :: Modo raid manual\n\n"
+                    f"Desactivado por defecto • Nunca actúa contra el staff (Manage Server)"
+                ), color=discord.Color.dark_red()),
                 "roles": discord.Embed(title="Roles", description=(
                     f"`{p}roleadd (@usuario) (@rol)` :: Otorga rol\n"
                     f"`{p}roleremove (@usuario) (@rol)` :: Quita rol\n"
@@ -3382,7 +3748,10 @@ async def prefixremove_error(ctx, error):
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    """Asigna automáticamente los autoroles configurados cuando alguien se une al servidor."""
+    """Antiraid + asignación automática de autoroles cuando alguien se une al servidor."""
+    # Antiraid: si el miembro fue castigado por el sistema, no se le aplican autoroles.
+    if await _antiraid_check(member):
+        return
     gid = str(member.guild.id)
     config = autoroles_db.get(gid)
     if not config:
@@ -4532,6 +4901,152 @@ async def slash_ipunban(interaction: discord.Interaction, usuario: discord.User)
     await enviar_logs(interaction.guild, embed)
 
 
+# ============================================================
+#  SLASH: /antiraid (grupo)
+# ============================================================
+
+antiraid_group = app_commands.Group(name="antiraid", description="Sistema antiraid (desactivado por defecto)")
+
+
+@antiraid_group.command(name="config", description="Muestra la configuración actual del antiraid")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_antiraid_config(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _antiraid_cfg(interaction.guild.id)
+    embed = _antiraid_status_embed(cfg)
+    embed.set_footer(text="Usa /antiraid on para activarlo. Nunca actúa contra el staff (Manage Server).")
+    await interaction.response.send_message(embed=embed)
+
+
+@antiraid_group.command(name="on", description="Activa el sistema antiraid")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_antiraid_on(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _antiraid_cfg(interaction.guild.id)
+    cfg["enabled"] = True
+    guardar_antiraid()
+    await interaction.response.send_message("✅ Antiraid **activado**. Nunca actúa contra el staff (Manage Server), el dueño del servidor ni contra mí.")
+
+
+@antiraid_group.command(name="off", description="Desactiva el sistema antiraid (estado por defecto)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_antiraid_off(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _antiraid_cfg(interaction.guild.id)
+    cfg["enabled"] = False
+    cfg["active"] = False
+    cfg["activated_at"] = None
+    cfg["manual"] = False
+    guardar_antiraid()
+    await interaction.response.send_message("🔴 Antiraid **desactivado** (estado por defecto). Modo raid cancelado si estaba activo.")
+
+
+@antiraid_group.command(name="set", description="Configura el umbral de detección de raid")
+@app_commands.describe(joins="Joins necesarios para considerar raid (2-100)", segundos="Ventana de tiempo en segundos (3-3600)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_antiraid_set(interaction: discord.Interaction, joins: int, segundos: int):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    if not (2 <= joins <= 100):
+        return await interaction.response.send_message("❌ El umbral debe estar entre 2 y 100 joins.", ephemeral=True)
+    if not (3 <= segundos <= 3600):
+        return await interaction.response.send_message("❌ La ventana debe estar entre 3 y 3600 segundos.", ephemeral=True)
+    cfg = _antiraid_cfg(interaction.guild.id)
+    cfg["threshold"] = joins
+    cfg["seconds"] = segundos
+    guardar_antiraid()
+    await interaction.response.send_message(f"✅ Detección de raid: **{joins} joins en {segundos}s**.")
+
+
+@antiraid_group.command(name="action", description="Acción contra los raiders")
+@app_commands.describe(accion="Acción a aplicar")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(accion=[
+    app_commands.Choice(name="ban", value="ban"),
+    app_commands.Choice(name="kick", value="kick"),
+    app_commands.Choice(name="mute (timeout 1h)", value="mute"),
+])
+async def slash_antiraid_action(interaction: discord.Interaction, accion: app_commands.Choice[str]):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _antiraid_cfg(interaction.guild.id)
+    cfg["action"] = accion.value
+    guardar_antiraid()
+    extra = f" (timeout de {ANTIRAID_MUTE_MINUTOS} min)" if cfg["action"] == "mute" else ""
+    await interaction.response.send_message(f"✅ Acción antiraid: **{cfg['action']}**{extra}.")
+
+
+@antiraid_group.command(name="punishnew", description="Castigar a quienes entren durante un raid activo")
+@app_commands.describe(valor="True = castigar a todos los que entren en raid")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_antiraid_punishnew(interaction: discord.Interaction, valor: bool):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _antiraid_cfg(interaction.guild.id)
+    cfg["punish_new"] = valor
+    guardar_antiraid()
+    extra = "" if valor else "\n(Con `false` solo se castiga al usuario que dispara el umbral)."
+    await interaction.response.send_message(f"✅ Castigar entradas durante raid: **{'Sí' if valor else 'No'}**.{extra}")
+
+
+@antiraid_group.command(name="minage", description="Edad mínima de la cuenta para entrar (anti-cuentas nuevas)")
+@app_commands.describe(minutos="Edad mínima en minutos (0 = desactivado, máx 43800)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_antiraid_minage(interaction: discord.Interaction, minutos: int):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    if not (0 <= minutos <= 43800):
+        return await interaction.response.send_message("❌ La edad mínima debe estar entre 0 (desactivado) y 43800 minutos (~1 mes).", ephemeral=True)
+    cfg = _antiraid_cfg(interaction.guild.id)
+    cfg["min_age"] = minutos
+    guardar_antiraid()
+    texto = f"**{minutos} min**" if minutos > 0 else "**desactivado**"
+    await interaction.response.send_message(f"✅ Edad mínima de cuenta: {texto}.")
+
+
+@antiraid_group.command(name="raidmode", description="Activa/desactiva el modo raid manualmente")
+@app_commands.describe(estado="on = castigar todas las entradas hasta que lo apagues")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(estado=[
+    app_commands.Choice(name="on", value="on"),
+    app_commands.Choice(name="off", value="off"),
+])
+async def slash_antiraid_raidmode(interaction: discord.Interaction, estado: app_commands.Choice[str]):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _antiraid_cfg(interaction.guild.id)
+    if estado.value == "on":
+        if not cfg.get("enabled"):
+            return await interaction.response.send_message("❌ El antiraid está desactivado. Actívalo primero con `/antiraid on`.", ephemeral=True)
+        cfg["active"] = True
+        cfg["activated_at"] = time.time()
+        cfg["manual"] = True
+        guardar_antiraid()
+        embed = discord.Embed(
+            title="🚨 Modo raid activado (manual)",
+            description="Todos los que entren ahora serán castigados hasta que lo desactives.",
+            color=discord.Color.dark_red(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text="Se mantiene activo hasta /antiraid raidmode off (no se desactiva solo).")
+        await interaction.response.send_message(embed=embed)
+        await enviar_logs(interaction.guild, embed)
+        return
+    cfg["active"] = False
+    cfg["activated_at"] = None
+    cfg["manual"] = False
+    guardar_antiraid()
+    embed = discord.Embed(title="✅ Modo raid desactivado", color=discord.Color.green(), timestamp=discord.utils.utcnow())
+    await interaction.response.send_message(embed=embed)
+    await enviar_logs(interaction.guild, embed)
+
+
+bot.tree.add_command(antiraid_group)
+
+
 
 # ============================================================
 #  SLASH: /soft /softban (baneo temporal)
@@ -4630,6 +5145,7 @@ async def slash_help(interaction: discord.Interaction):
         timestamp=discord.utils.utcnow(),
     )
     embed.add_field(name="🛡️ Moderación", value="`ban` `kick` `unban` `mute` `unmute` `softban`/`soft ban` `ipban` `ipunban`\n`purge` `nuke` `lock` `unlock` `rename` `namereset` `warn`/`warn add` `warnremove`/`warn remove` `warns`/`warn list`", inline=False)
+    embed.add_field(name="🚨 Antiraid", value="`antiraid` (ver config) `antiraid on`/`off` `antiraid set` `antiraid action` `antiraid punishnew` `antiraid minage` `antiraid raidmode`\nGrupo slash `/antiraid`: config, on, off, set, action, punishnew, minage, raidmode.\nDesactivado por defecto • Nunca actúa contra el staff (Manage Server)", inline=False)
     embed.add_field(name="👥 Roles", value="`roleadd`/`role add` `roleremove`/`role remove` `rolehuman`/`role human` `roleall`/`role all` `rolebot`/`role bot`\n`autorolehuman`/`autorole human` `autorolebot`/`autorole bot` `autorole`/`autorole general` `autorolelist`/`autorole list`", inline=False)
     embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
     embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
