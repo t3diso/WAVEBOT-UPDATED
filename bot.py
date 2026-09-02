@@ -717,6 +717,7 @@ def cargar_dashboard():
         token_env = str(os.environ.get("DASHBOARD_TOKEN", "")).strip()
         if token_env:
             dashboard_config["token"] = token_env
+            print(f"Dashboard: token de Railway activo ({len(token_env)} caracteres)")
         else:
             dashboard_config["enabled"] = False
             print("Dashboard DESACTIVADO en Railway: define la variable DASHBOARD_TOKEN para activarlo con seguridad.")
@@ -7795,12 +7796,18 @@ def _dash_buscar_guild(gid_texto: str):
 
 @dash_web.middleware
 async def _dash_auth(request, handler):
-    """Si hay token configurado en dashboard.json, exige ?token= o cabecera X-Dashboard-Token."""
+    """Exige token en todo excepto en la página principal (/), que muestra un login por UI."""
     token = dashboard_config.get("token", "")
-    if token:
+    if token and request.path != "/":
         provisto = request.query.get("token", "") or request.headers.get("X-Dashboard-Token", "")
         if provisto != token:
-            return dash_web.json_response({"error": "No autorizado: token incorrecto"}, status=401)
+            return dash_web.json_response({
+                "error": "No autorizado: token incorrecto o ausente",
+                "debug": {
+                    "token_recibido": "ausente (no lo enviaste)" if not provisto else f"{len(provisto)} caracteres",
+                    "token_esperado": f"{len(token)} caracteres",
+                },
+            }, status=401)
     return await handler(request)
 
 

@@ -178,6 +178,24 @@
   #toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
   #toast.ok { border-color: var(--verde); } #toast.err { border-color: var(--rojo); }
 
+  /* ===== Login del dashboard ===== */
+  #overlay-login {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, .78);
+    display: flex; align-items: center; justify-content: center; z-index: 200;
+  }
+  .login-card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+    padding: 26px 28px; width: min(400px, 92vw); text-align: center;
+  }
+  .login-card h2 { margin-bottom: 8px; }
+  .login-desc { color: var(--texto-2); font-size: 13px; margin-bottom: 16px; }
+  .login-debug { color: var(--naranja); font-size: 12px; margin-top: 12px; overflow-wrap: anywhere; }
+  #login-input {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--texto);
+    border-radius: 10px; padding: 11px 13px; font-size: 13.5px; margin-bottom: 12px;
+  }
+  #login-input:focus { outline: 1px solid var(--blurple); }
+
   .cargando { display: flex; align-items: center; gap: 10px; color: var(--texto-2); font-size: 14px; padding: 30px; justify-content: center; }
   .spinner {
     width: 18px; height: 18px; border: 2.5px solid var(--border); border-top-color: var(--blurple);
@@ -220,7 +238,8 @@
 <div id="toast"></div>
 
 <script>
-const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const TOKEN_URL = new URLSearchParams(location.search).get("token") || "";
+let TOKEN = TOKEN_URL || sessionStorage.getItem("dash_token") || "";
 let GUILDS = [];
 let GUILD_ACTUAL = null;
 let DATOS_GUILD = null;
@@ -232,11 +251,46 @@ function api(ruta, opciones = {}) {
   if (TOKEN) url.searchParams.set("token", TOKEN);
   const cfg = { ...opciones, headers: { "Content-Type": "application/json" } };
   return fetch(url, cfg).then(async r => {
-    if (r.status === 401) { throw new Error("Token incorrecto (401)"); }
+    if (r.status === 401) {
+      const datos = await r.json().catch(() => ({}));
+      mostrarLogin(datos);
+      throw new Error("Token requerido");
+    }
     const datos = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(datos.error || "Error " + r.status);
     return datos;
   });
+}
+
+function mostrarLogin(datos) {
+  if (document.getElementById("overlay-login")) return;
+  const div = document.createElement("div");
+  div.id = "overlay-login";
+  const debug = datos && datos.debug
+    ? `<div class="login-debug">Diagnóstico: recibido ${esc(datos.debug.token_recibido)} · esperado ${esc(datos.debug.token_esperado)}</div>`
+    : "";
+  div.innerHTML = `
+    <div class="login-card">
+      <h2>🔐 Token del dashboard</h2>
+      <div class="login-desc">Pega el valor de la variable <b>DASHBOARD_TOKEN</b> de Railway (o de <b>dashboard.json</b>). Se guarda en este navegador.</div>
+      <input id="login-input" type="password" placeholder="Pega aquí el token" autocomplete="off">
+      <button class="btn btn-primario" style="width:100%" onclick="entrarConToken()">Entrar</button>
+      ${debug}
+    </div>`;
+  document.body.appendChild(div);
+  const input = document.getElementById("login-input");
+  input.addEventListener("keydown", e => { if (e.key === "Enter") entrarConToken(); });
+  input.focus();
+}
+
+function entrarConToken() {
+  const valor = document.getElementById("login-input").value.trim();
+  if (!valor) return;
+  TOKEN = valor;
+  try { sessionStorage.setItem("dash_token", TOKEN); } catch (e) {}
+  const overlay = document.getElementById("overlay-login");
+  if (overlay) overlay.remove();
+  refrescarTodo();
 }
 
 function esc(t) {
@@ -246,6 +300,7 @@ function esc(t) {
 }
 
 function toast(msg, ok = true) {
+  if (document.getElementById("overlay-login")) return;
   const t = document.getElementById("toast");
   t.textContent = msg;
   t.className = "visible " + (ok ? "ok" : "err");
