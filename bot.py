@@ -8037,7 +8037,7 @@ async def _dash_leave(request):
         return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
     nombre, gid = guild.name, guild.id
     try:
-        await bot.leave_guild(guild)
+        await guild.leave()
     except (discord.Forbidden, discord.HTTPException) as e:
         return dash_web.json_response({"error": f"No pude salir del servidor: {e}"}, status=500)
     print(f"Dashboard: bot expulsado del servidor {nombre} (ID {gid})")
