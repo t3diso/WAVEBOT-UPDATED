@@ -366,12 +366,12 @@ function mostrarLogin(datos) {
       <h2>🔐 Acceder al dashboard</h2>
       <div class="login-desc">Entra con tu cuenta de Discord: verás únicamente los servidores donde tengas permisos de gestión, y podrás tocar solo lo que tu cargo permita.</div>
       <a class="btn btn-primario" style="display:block;text-decoration:none" href="/oauth/login">🔐 Entrar con Discord</a>
-      <div style="text-align:right;margin-top:16px">
-        <a href="#" onclick="mostrarTokenLogin(event)" style="font-size:11.5px;color:var(--texto-2)">Acceso con token maestro</a>
+      <div id="enlace-team" style="text-align:right;margin-top:16px">
+        <a href="#" onclick="mostrarTokenLogin(event)" style="font-size:11.5px;color:var(--texto-2)">¿Eres parte del equipo de Wave?</a>
       </div>
       <div id="token-box" style="display:none;margin-top:12px">
-        <input id="login-input" type="password" placeholder="Token maestro" autocomplete="off">
-        <button class="btn btn-primario" style="width:100%" onclick="entrarConToken()">Entrar con token</button>
+        <input id="login-input" type="password" placeholder="Clave del equipo" autocomplete="off">
+        <button class="btn btn-primario" style="width:100%" onclick="entrarConToken()">Entrar</button>
       </div>
       <div style="margin-top:18px;font-size:11px;color:var(--texto-2)">
         Al entrar aceptas los <a href="/terminos">Términos del Servicio</a> y la <a href="/privacidad">Política de Privacidad</a>.
@@ -379,6 +379,13 @@ function mostrarLogin(datos) {
       ${debug}
     </div>`;
   document.body.appendChild(div);
+  // El enlace del equipo solo se muestra si hay clave configurada (DASHBOARD_TOKEN en Railway).
+  fetch("/api/config").then(r => r.json()).then(c => {
+    if (!c.team_login) {
+      const enlace = document.getElementById("enlace-team");
+      if (enlace) enlace.style.display = "none";
+    }
+  }).catch(() => {});
   const input = document.getElementById("login-input");
   input.addEventListener("keydown", e => { if (e.key === "Enter") entrarConToken(); });
 }

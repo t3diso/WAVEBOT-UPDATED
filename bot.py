@@ -802,9 +802,7 @@ def cargar_dashboard():
     dashboard_config["token"] = str(dashboard_config.get("token", ""))
     dashboard_config["owner_id"] = str(dashboard_config.get("owner_id", "")).strip()
     # Detección de Railway: escuchar en 0.0.0.0 y usar el PORT de la plataforma.
-    # El token ya NO es obligatorio: los usuarios entran con Discord (OAuth) y
-    # solo ven lo que sus permisos les permiten. Si se define DASHBOARD_TOKEN,
-    # actúa como llave maestra (acceso total, para el owner del bot).
+    # Los usuarios entran con Discord (OAuth) y solo ven lo que sus permisos permiten.
     en_railway = bool(os.environ.get("RAILWAY_SERVICE_ID") or os.environ.get("RAILWAY_RUN_ID"))
     if en_railway:
         dashboard_config["host"] = "0.0.0.0"
@@ -812,10 +810,12 @@ def cargar_dashboard():
             dashboard_config["port"] = int(os.environ.get("PORT", dashboard_config["port"]))
         except (TypeError, ValueError):
             pass
-        token_env = str(os.environ.get("DASHBOARD_TOKEN", "")).strip()
-        if token_env:
-            dashboard_config["token"] = token_env
-            print(f"Dashboard: token maestro de Railway activo ({len(token_env)} caracteres)")
+    # Clave del equipo (acceso total): NUNCA se commitea en dashboard.json (repo público).
+    # Se define ÚNICAMENTE con la variable de entorno DASHBOARD_TOKEN (p. ej. en Railway).
+    token_env = str(os.environ.get("DASHBOARD_TOKEN", "")).strip()
+    if token_env:
+        dashboard_config["token"] = token_env
+        print(f"Dashboard: clave de equipo activa ({len(token_env)} caracteres)")
     # OAuth (entrar con Discord): client_id por defecto = ID del bot; secret por variable de entorno.
     dashboard_config["client_id"] = str(os.environ.get("DISCORD_CLIENT_ID", dashboard_config.get("client_id", "1488545785581797447"))).strip()
     dashboard_config["client_secret"] = str(os.environ.get("DISCORD_CLIENT_SECRET", "")).strip()
@@ -7914,7 +7914,7 @@ def _dash_buscar_guild(gid_texto: str):
 async def _dash_auth(request, handler):
     """Páginas públicas: dashboard (/), login OAuth y páginas legales. El resto exige sesión o token."""
     ruta = request.path
-    if ruta == "/" or ruta.startswith("/oauth/") or ruta in ("/terminos", "/terms", "/privacidad", "/privacy"):
+    if ruta == "/" or ruta.startswith("/oauth/") or ruta in ("/terminos", "/terms", "/privacidad", "/privacy", "/api/config"):
         return await handler(request)
     token_maestro = dashboard_config.get("token", "")
     if token_maestro:
@@ -7933,7 +7933,7 @@ async def _dash_auth(request, handler):
         request["dash_sesion"] = sesion
         return await handler(request)
     return dash_web.json_response(
-        {"error": "No autorizado: entra con Discord o usa el token maestro", "necesita_login": True},
+        {"error": "No autorizado: inicia sesión con Discord", "necesita_login": True},
         status=401,
     )
 
@@ -8190,6 +8190,11 @@ async def _dash_servir_pagina(request):
     except OSError:
         return dash_web.Response(text=f"{pagina} no se encontró junto a bot.py", status=500, content_type="text/plain")
     return dash_web.Response(text=html, content_type="text/html", charset="utf-8")
+
+
+async def _dash_config_public(request):
+    """GET /api/config — info mínima pública para la UI del login (si hay clave de equipo activa)."""
+    return dash_web.json_response({"team_login": bool(dashboard_config.get("token"))})
 
 
 async def _dash_status(request):
@@ -8979,6 +8984,7 @@ async def _iniciar_dashboard():
     """Arranca el servidor aiohttp del dashboard en el mismo event loop del bot."""
     app = dash_web.Application(middlewares=[_dash_auth])
     app.router.add_get("/", _dash_index)
+    app.router.add_get("/api/config", _dash_config_public)
     app.router.add_get("/oauth/login", _dash_oauth_login)
     app.router.add_get("/oauth/callback", _dash_oauth_callback)
     app.router.add_get("/oauth/logout", _dash_oauth_logout)
