@@ -525,6 +525,9 @@ const NAV_GRUPOS = [
     ["niveles", "Niveles / XP"],
     ["economia", "Economía"],
   ]],
+  ["🎫", "Soporte", [
+    ["tickets", "Tickets"],
+  ]],
   ["🛒", "Economía", [
     ["tienda", "Tienda"],
     ["items", "Items"],
@@ -614,6 +617,12 @@ function optsCanales(sel, conVacio) {
 function optsRoles(sel) {
   const g = DATOS_GUILD;
   return (g.roles || []).map(r => `<option value="${r.id}" ${sel === r.id ? "selected" : ""}>@${esc(r.nombre)}</option>`).join("");
+}
+
+function optsCategorias(sel) {
+  const g = DATOS_GUILD;
+  return `<option value="" ${!sel ? "selected" : ""}>— Sin categoría —</option>` +
+    (g.categorias || []).map(c => `<option value="${c.id}" ${sel === c.id ? "selected" : ""}>${esc(c.nombre)}</option>`).join("");
 }
 
 function notaRO(perm, nombrePerm) {
@@ -918,6 +927,79 @@ SECCIONES.automod = function () {
       </div>
       <div class="acciones-form">
         <button class="btn btn-primario" onclick="guardarAutomod()">💾 Guardar AutoMod</button>
+      </div>
+    </div>`;
+};
+
+SECCIONES.tickets = function () {
+  const g = DATOS_GUILD;
+  const tk = g.tickets || {};
+  const perms = g.permisos || {};
+  return `
+    <div class="card" id="card-tickets">
+      <h2>🎫 Tickets <span class="sub">sistema de soporte con paneles, preguntas y transcripts</span></h2>
+      ${notaRO(perms.manage_guild)}
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Sistema de tickets</div>
+          <div class="opcion-desc">Los paneles solo abren tickets si está activado. Los tickets ya abiertos siguen funcionando si lo apagas.</div></div>
+        <label class="switch"><input type="checkbox" id="tk-enabled" ${tk.enabled ? "checked" : ""}><span class="pista"></span></label>
+      </div>
+      <div class="grupo-titulo">🛡️ Roles de soporte (ven y atienden tickets)</div>
+      <div class="chips">
+        ${(tk.soporte || []).map(r => `<span class="chip">@${esc(r.nombre)}<button onclick="ticketSoporteRemove('${r.id}')" title="Quitar">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno (solo Manage Server)</span>'}
+      </div>
+      <div class="fila-inline" style="margin-bottom:16px">
+        <select id="tk-soporte">${optsRoles(null)}</select>
+        <button class="btn btn-primario" onclick="ticketSoporteAdd()">➕ Añadir rol</button>
+      </div>
+      <div class="grupo-titulo">📂 Dónde se crean los tickets</div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Categoría</div></div>
+        <select id="tk-categoria" style="width:230px">${optsCategorias(tk.categoria)}</select>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Canal de transcripts</div>
+          <div class="opcion-desc">Al cerrar un ticket se envía el transcript HTML aquí (y por MD al autor).</div></div>
+        <select id="tk-canal" style="width:230px">${optsCanales(tk.canal_logs, true)}</select>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Límite por usuario</div></div>
+        <input type="number" id="tk-limite" min="1" max="10" value="${tk.limite ?? 1}" style="width:80px">
+      </div>
+      <div class="grupo-titulo">💬 Preguntas al abrir (máx 5, vía formulario)</div>
+      <div class="chips">
+        ${(tk.preguntas || []).map((q, i) => `<span class="chip">${i + 1}. ${esc(q)}<button onclick="ticketPreguntaRemove(${i + 1})" title="Quitar">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Sin preguntas: al pulsar el botón se abre el ticket directo</span>'}
+      </div>
+      <div class="fila-inline" style="margin-bottom:16px">
+        <input id="tk-pregunta" placeholder="ej: ¿Cuál es tu problema?" style="width:230px" maxlength="45">
+        <button class="btn btn-primario" onclick="ticketPreguntaAdd()">➕ Añadir pregunta</button>
+      </div>
+      <div class="grupo-titulo">📋 Paneles (${(tk.paneles || []).length})</div>
+      ${(tk.paneles || []).map(pnl => `
+      <div class="dato-fila">
+        <span><b style="color:var(--texto)">#${pnl.id}</b> · #${esc(pnl.canal_nombre)} · ${esc(pnl.titulo)}</span>
+        <button class="btn btn-peligro" style="padding:5px 11px;font-size:12px" onclick="ticketPanelRemove(${pnl.id})">🗑</button>
+      </div>`).join("") || '<div style="color:var(--texto-2);font-size:12.5px">Ningún panel creado.</div>'}
+      <div class="grupo-titulo">➕ Crear panel</div>
+      <div class="fila-inline" style="margin-bottom:10px">
+        <select id="tk-panel-canal">${optsCanales(null, false)}</select>
+      </div>
+      <div class="fila-inline" style="margin-bottom:10px">
+        <input id="tk-panel-titulo" placeholder="título (ej: 🎫 Soporte)" style="width:210px">
+        <input id="tk-panel-boton" placeholder="texto del botón" style="width:170px">
+        <input id="tk-panel-emoji" placeholder="🎫" style="width:60px;text-align:center">
+      </div>
+      <div class="fila-inline" style="margin-bottom:4px">
+        <input id="tk-panel-desc" placeholder="descripción del panel (opcional)" style="flex:1;min-width:200px;width:auto">
+        <button class="btn btn-primario" onclick="ticketPanelAdd()">📋 Crear panel</button>
+      </div>
+      <div class="stats-mini">
+        <span class="mini-chip">🎟️ <b>${fmtNum((tk.stats || {}).abiertos_ahora)}</b> abiertos ahora</span>
+        <span class="mini-chip">🎫 <b>${fmtNum((tk.stats || {}).abiertos)}</b> abiertos (histórico)</span>
+        <span class="mini-chip">🔒 <b>${fmtNum((tk.stats || {}).cerrados)}</b> cerrados</span>
+      </div>
+      <div class="acciones-form">
+        <button class="btn btn-primario" onclick="guardarTickets()">💾 Guardar tickets</button>
       </div>
     </div>`;
 };
@@ -1263,6 +1345,84 @@ async function automodExcanalRemove(cid) {
   try {
     const r = await api("/api/guild/" + GUILD_ACTUAL + "/automod", { method: "POST", body: JSON.stringify({ excanal_remove: cid }) });
     toast(r.msg || "✅ Exención eliminada");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+/* ===== Tickets ===== */
+async function guardarTickets() {
+  const payload = {
+    enabled: document.getElementById("tk-enabled").checked,
+    categoria: document.getElementById("tk-categoria").value || null,
+    canal_logs: document.getElementById("tk-canal").value || null,
+    limite: parseInt(document.getElementById("tk-limite").value, 10) || 1,
+  };
+  try {
+    await api("/api/guild/" + GUILD_ACTUAL + "/tickets", { method: "POST", body: JSON.stringify(payload) });
+    toast("✅ Tickets guardados correctamente");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function ticketSoporteAdd() {
+  const rol = document.getElementById("tk-soporte").value;
+  if (!rol) return toast("Selecciona un rol primero", false);
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/tickets", { method: "POST", body: JSON.stringify({ soporte_add: rol }) });
+    toast(r.msg || "✅ Rol añadido");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function ticketSoporteRemove(rid) {
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/tickets", { method: "POST", body: JSON.stringify({ soporte_remove: rid }) });
+    toast(r.msg || "✅ Rol eliminado");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function ticketPreguntaAdd() {
+  const q = document.getElementById("tk-pregunta").value.trim();
+  if (!q) return toast("Escribe la pregunta primero", false);
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/tickets", { method: "POST", body: JSON.stringify({ pregunta_add: q }) });
+    toast(r.msg || "✅ Pregunta añadida");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function ticketPreguntaRemove(num) {
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/tickets", { method: "POST", body: JSON.stringify({ pregunta_remove: num }) });
+    toast(r.msg || "✅ Pregunta eliminada");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function ticketPanelAdd() {
+  const payload = {
+    panel_add: {
+      canal: document.getElementById("tk-panel-canal").value,
+      titulo: document.getElementById("tk-panel-titulo").value.trim(),
+      desc: document.getElementById("tk-panel-desc").value.trim(),
+      boton: document.getElementById("tk-panel-boton").value.trim(),
+      emoji: document.getElementById("tk-panel-emoji").value.trim(),
+    },
+  };
+  if (!payload.panel_add.canal) return toast("Selecciona el canal del panel", false);
+  try {
+    await api("/api/guild/" + GUILD_ACTUAL + "/tickets", { method: "POST", body: JSON.stringify(payload) });
+    toast("✅ Panel creado");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function ticketPanelRemove(pid) {
+  if (!confirm(`¿Eliminar el panel #${pid}?\nSe borrará el mensaje del panel del canal.`)) return;
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/tickets", { method: "POST", body: JSON.stringify({ panel_remove: pid }) });
+    toast(r.msg || "✅ Panel eliminado");
     await seleccionarGuild(GUILD_ACTUAL);
   } catch (e) { toast("❌ " + e.message, false); }
 }

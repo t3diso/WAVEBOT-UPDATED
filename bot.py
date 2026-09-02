@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import io
 import json
 import os
 import random
@@ -96,12 +97,16 @@ AUTOMOD_SPAM_CACHE = {}
 AUTOMOD_INVITE_REGEX = re.compile(r"(discord\.gg|discord\.com/invite)/[A-Za-z0-9]+", re.IGNORECASE)
 AUTOMOD_LINK_REGEX = re.compile(r"(https?://|www\.)\S+", re.IGNORECASE)
 
+# Tickets de soporte (estilo Ticket Tool; DESACTIVADO por defecto)
+TICKETS_PATH = ruta_datos("tickets.json")
+tickets_db = {}     # guild_id (str) -> config (ver _tickets_default)
+
 # Archivos de datos que el bot escribe en runtime (para migrar al volumen la primera vez).
 ARCHIVOS_DATOS = [
     "linkban_canal.json", "giveaways.json", "warns.json", "logs_channels.json",
     "honeypots.json", "xp_data.json", "level_roles.json", "autoroles.json",
     "prefixes.json", "reminders.json", "starboard.json", "antiraid.json",
-    "economy.json", "economy_shop.json", "automod.json",
+    "economy.json", "economy_shop.json", "automod.json", "tickets.json",
 ]
 
 
@@ -128,6 +133,7 @@ DASHBOARD_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 DASHBOARD_HTML_PATH = "dashboard.html"
 dashboard_config = {"enabled": True, "host": "127.0.0.1", "port": 8080, "token": ""}
 _dashboard_arrancado = False
+_tickets_vistas_registradas = False
 _INICIO_BOT = time.time()
 
 # Sesiones OAuth (entrar con Discord) del dashboard
@@ -817,6 +823,33 @@ def guardar_automod():
         print(f"Error guardando automod.json: {e}")
 
 
+def cargar_tickets():
+    global tickets_db
+    if os.path.exists(TICKETS_PATH):
+        try:
+            with open(TICKETS_PATH, "r", encoding="utf-8") as f:
+                tickets_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            tickets_db = {}
+    else:
+        tickets_db = {}
+    for cfg in tickets_db.values():
+        base = _tickets_default()
+        for clave, valor in base.items():
+            cfg.setdefault(clave, valor)
+        cfg["stats"].setdefault("abiertos", 0)
+        cfg["stats"].setdefault("cerrados", 0)
+    print(f"Tickets configs cargados: {len(tickets_db)} servidores.")
+
+
+def guardar_tickets():
+    try:
+        with open(TICKETS_PATH, "w", encoding="utf-8") as f:
+            json.dump(tickets_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando tickets.json: {e}")
+
+
 def cargar_dashboard():
     """Carga dashboard.json (opcional): enabled, host, port, token."""
     global dashboard_config
@@ -1151,8 +1184,21 @@ async def on_ready():
     cargar_shop()
     cargar_antiraid()
     cargar_automod()
+    cargar_tickets()
     cargar_dashboard()
     cargar_sesiones_dash()
+    # Registrar vistas persistentes de tickets (botones que sobreviven reinicios).
+    global _tickets_vistas_registradas
+    if not _tickets_vistas_registradas:
+        _tickets_vistas_registradas = True
+        try:
+            bot.add_view(TicketChannelView())
+            for t_gid, t_cfg in tickets_db.items():
+                for pnl in t_cfg.get("paneles", []):
+                    bot.add_view(TicketPanelView(t_gid, pnl.get("id", 0), pnl.get("emoji", "🎫"), pnl.get("boton", "Abrir ticket")))
+            print(f"Vistas de tickets registradas: {sum(len(c.get('paneles', [])) for c in tickets_db.values())} panel(es).")
+        except Exception as e:
+            print(f"Error registrando vistas de tickets: {e}")
     # Arrancar el dashboard web (una sola vez, aunque on_ready se repita al reconectar).
     global _dashboard_arrancado
     if dashboard_config["enabled"] and not _dashboard_arrancado:
@@ -3708,6 +3754,604 @@ async def automod_error(ctx, error):
 
 
 # ============================================================
+#  TICKETS DE SOPORTE (estilo Ticket Tool; DESACTIVADO por defecto)
+# ============================================================
+
+def _tickets_default():
+    """Config por defecto de tickets: todo desactivado."""
+    return {
+        "enabled": False,       # sistema desactivado por defecto
+        "soporte": [],          # IDs de roles de soporte (ven y atienden tickets)
+        "categoria": None,      # ID de la categoría donde se crean los canales de ticket
+        "canal_logs": None,     # ID del canal donde se envían los transcripts al cerrar
+        "limite": 1,            # máx. tickets abiertos por usuario
+        "preguntas": [],        # preguntas al abrir el ticket (máx 5, vía modal)
+        "paneles": [],          # [{"id", "canal", "msg", "titulo", "desc", "emoji", "boton"}]
+        "stats": {"abiertos": 0, "cerrados": 0},
+        "abiertos": {},         # channel_id (str) -> {"opener", "panel", "claimed", "creado"}
+    }
+
+
+def _tickets_cfg(guild_id):
+    """Devuelve (creándola si no existe) la config de tickets de un servidor."""
+    gid = str(guild_id)
+    cfg = tickets_db.setdefault(gid, _tickets_default())
+    base = _tickets_default()
+    for clave, valor in base.items():
+        cfg.setdefault(clave, valor)
+    cfg["stats"].setdefault("abiertos", 0)
+    cfg["stats"].setdefault("cerrados", 0)
+    return cfg
+
+
+def _ticket_es_soporte(member: discord.Member, cfg: dict) -> bool:
+    """True si el miembro es equipo de soporte (rol de soporte o Manage Server/Admin)."""
+    if member.guild_permissions.manage_guild or member.guild_permissions.administrator:
+        return True
+    soporte = {int(r) for r in cfg.get("soporte", []) if str(r).isdigit()}
+    return any(rol.id in soporte for rol in member.roles)
+
+
+def _tickets_status_embed(cfg: dict, guild: discord.Guild) -> discord.Embed:
+    """Embed con el estado/config de tickets (sin footer)."""
+    embed = discord.Embed(
+        title="🎫 Tickets de soporte",
+        color=discord.Color.green() if cfg.get("enabled") else discord.Color.dark_grey(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Estado", value="🟢 Activado" if cfg.get("enabled") else "🔴 Desactivado (por defecto)", inline=True)
+    embed.add_field(name="Abiertos ahora", value=str(len(cfg.get("abiertos", {}))), inline=True)
+    roles = [f"<@&{rid}>" for rid in cfg.get("soporte", [])]
+    embed.add_field(name="Roles de soporte", value=", ".join(roles) if roles else "Ninguno (solo Manage Server)", inline=False)
+    categoria = guild.get_channel(int(cfg["categoria"])) if cfg.get("categoria") else None
+    embed.add_field(name="Categoría", value=categoria.mention if categoria else "Sin configurar", inline=True)
+    canal_logs = guild.get_channel(int(cfg["canal_logs"])) if cfg.get("canal_logs") else None
+    embed.add_field(name="Canal de transcripts", value=canal_logs.mention if canal_logs else "Sin configurar", inline=True)
+    embed.add_field(name="Límite por usuario", value=str(cfg.get("limite", 1)), inline=True)
+    preguntas = [p for p in cfg.get("preguntas", []) if p]
+    embed.add_field(name="Preguntas al abrir", value="\n".join(f"• {p}" for p in preguntas[:5]) if preguntas else "Ninguna", inline=False)
+    paneles = cfg.get("paneles", [])
+    embed.add_field(
+        name=f"Paneles ({len(paneles)})",
+        value="\n".join(f"#{p['id']} → <#{p['canal']}> · {p.get('titulo', 'Soporte')}" for p in paneles[:10]) or "Ninguno",
+        inline=False,
+    )
+    stats = cfg.get("stats", {})
+    embed.add_field(name="Historial", value=f"🎟️ Abiertos: {stats.get('abiertos', 0)} • 🔒 Cerrados: {stats.get('cerrados', 0)}", inline=False)
+    return embed
+
+
+async def _ticket_transcript_html(canal: discord.TextChannel, ticket: dict, cerrado_por) -> str:
+    """Genera un transcript HTML del ticket (estilo Ticket Tool)."""
+    mensajes = []
+    try:
+        async for msg in canal.history(limit=500, oldest_first=True):
+            mensajes.append(msg)
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+    def h(t: str) -> str:
+        return str(t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    filas = []
+    for m in mensajes:
+        contenido = h(m.content)
+        adjuntos = "".join(f'<br><a href="{a.url}">📎 {h(a.filename)}</a>' for a in m.attachments)
+        if not contenido and not adjuntos:
+            continue
+        filas.append(
+            f'<div class="msg"><img src="{m.author.display_avatar.url}" alt="">'
+            f'<div><div class="autor">{h(str(m.author))} <span>{m.created_at.strftime("%d/%m/%Y %H:%M")} UTC</span></div>'
+            f'<div class="texto">{contenido}{adjuntos}</div></div></div>'
+        )
+    opener_id = (ticket or {}).get("opener", "")
+    return f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Transcript · {h(canal.name)}</title>
+<style>
+  body {{ background:#0b0e14; color:#e8eaf2; font-family:'Segoe UI',system-ui,sans-serif; margin:0; padding:24px; }}
+  .cabecera {{ max-width:820px; margin:0 auto 20px; background:#151a26; border:1px solid #262d40; border-radius:14px; padding:18px 22px; }}
+  .cabecera h1 {{ font-size:19px; margin:0 0 6px; }}
+  .cabecera p {{ color:#97a0b3; font-size:13px; margin:4px 0; }}
+  .msg {{ display:flex; gap:12px; max-width:820px; margin:0 auto 12px; background:#151a26; border:1px solid #262d40; border-radius:12px; padding:12px 16px; }}
+  .msg img {{ width:38px; height:38px; border-radius:50%; }}
+  .autor {{ font-weight:700; font-size:14px; }}
+  .autor span {{ color:#97a0b3; font-weight:400; font-size:11.5px; margin-left:8px; }}
+  .texto {{ font-size:13.5px; line-height:1.55; overflow-wrap:anywhere; }}
+  a {{ color:#8b7cf6; }}
+</style></head><body>
+<div class="cabecera">
+  <h1>🎫 Transcript · {h(canal.guild.name)} → {h(canal.name)}</h1>
+  <p>🎟️ Abierto por: <@{opener_id}> ({opener_id})</p>
+  <p>🔒 Cerrado por: {h(str(cerrado_por))} · {discord.utils.utcnow().strftime('%d/%m/%Y %H:%M')} UTC</p>
+  <p>💬 {len(filas)} mensajes</p>
+</div>
+{"".join(filas)}
+</body></html>"""
+
+
+async def _ticket_crear(interaction: discord.Interaction, respuestas, panel_id=None):
+    """Crea el canal del ticket tras pulsar el botón del panel (y responder el modal)."""
+    gid = str(interaction.guild_id)
+    cfg = tickets_db.get(gid)
+    if not cfg or not cfg.get("enabled"):
+        return await interaction.response.send_message("❌ Los tickets están desactivados en este servidor.", ephemeral=True)
+    guild = interaction.guild
+    miembro = interaction.user
+    abiertos_usuario = sum(1 for t in cfg.get("abiertos", {}).values() if t.get("opener") == str(miembro.id))
+    if abiertos_usuario >= max(int(cfg.get("limite", 1)), 1):
+        return await interaction.response.send_message(f"❌ Ya tienes {abiertos_usuario} ticket(s) abierto(s). Espera a que el equipo los cierre.", ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    base = re.sub(r"[^a-z0-9-]", "", (miembro.name or "user").lower())[:20] or "user"
+    nombre = f"ticket-{base}"
+    existentes = {c.name for c in guild.channels}
+    sufijo = 1
+    while nombre in existentes:
+        sufijo += 1
+        nombre = f"ticket-{base}-{sufijo}"[:90]
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, embed_links=True, attach_files=True, read_message_history=True),
+        miembro: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True, read_message_history=True),
+    }
+    for rid in cfg.get("soporte", []):
+        rol = guild.get_role(int(rid)) if str(rid).isdigit() else None
+        if rol is not None:
+            overwrites[rol] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, attach_files=True,
+                embed_links=True, read_message_history=True, manage_messages=True,
+            )
+    categoria = guild.get_channel(int(cfg["categoria"])) if cfg.get("categoria") and str(cfg.get("categoria")).isdigit() else None
+    if not isinstance(categoria, discord.CategoryChannel):
+        categoria = None
+    try:
+        canal = await guild.create_text_channel(nombre, category=categoria, overwrites=overwrites, reason=f"Ticket abierto por {miembro} (ID {miembro.id})")
+    except (discord.Forbidden, discord.HTTPException) as e:
+        return await interaction.followup.send(f"❌ No pude crear el canal del ticket: {e}", ephemeral=True)
+
+    cfg.setdefault("abiertos", {})[str(canal.id)] = {
+        "opener": str(miembro.id), "panel": panel_id, "claimed": None, "creado": time.time(),
+    }
+    stats = cfg.setdefault("stats", {})
+    stats["abiertos"] = int(stats.get("abiertos", 0)) + 1
+    guardar_tickets()
+
+    embed = discord.Embed(title="🎫 Ticket de soporte", color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+    embed.add_field(name="Abierto por", value=f"{miembro.mention} (`{miembro.id}`)", inline=False)
+    for etiqueta, valor in (respuestas or [])[:5]:
+        embed.add_field(name=str(etiqueta)[:256], value=(str(valor) or "—")[:1024], inline=False)
+    embed.set_footer(text="Equipo de soporte: usa los botones para reclamar o cerrar.")
+    try:
+        await canal.send(content=f"{miembro.mention}", embed=embed, view=TicketChannelView())
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    await interaction.followup.send(f"✅ Tu ticket está listo: {canal.mention}", ephemeral=True)
+
+    log = discord.Embed(
+        title="🎟️ Ticket abierto",
+        description=f"{canal.mention} · abierto por {miembro.mention}",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow(),
+    )
+    await enviar_logs(guild, log)
+
+
+async def _ticket_cerrar(guild: discord.Guild, canal: discord.TextChannel, usuario) -> None:
+    """Cierra un ticket: transcript HTML + limpieza del canal tras 10 segundos."""
+    gid = str(guild.id)
+    cfg = tickets_db.get(gid) or {}
+    ticket = cfg.get("abiertos", {}).get(str(canal.id), {})
+    opener = ticket.get("opener")
+
+    html_doc = None
+    try:
+        html_doc = await _ticket_transcript_html(canal, ticket, usuario)
+    except Exception as e:
+        print(f"Error generando transcript de ticket: {e}")
+
+    def _archivo():
+        if html_doc is None:
+            return None
+        return discord.File(io.BytesIO(html_doc.encode("utf-8")), filename=f"transcript-{canal.name}.html")
+
+    embed = discord.Embed(
+        title="🔒 Ticket cerrado",
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Canal", value=canal.mention, inline=True)
+    if opener:
+        embed.add_field(name="Abierto por", value=f"<@{opener}>", inline=True)
+    embed.add_field(name="Cerrado por", value=f"{usuario.mention}", inline=True)
+
+    destino = guild.get_channel(int(cfg["canal_logs"])) if cfg.get("canal_logs") and str(cfg.get("canal_logs")).isdigit() else None
+    if destino is None:
+        for cid in logs_channels:
+            c = guild.get_channel(cid)
+            if c is not None:
+                destino = c
+                break
+    if destino is not None:
+        try:
+            await destino.send(embed=embed, file=_archivo())
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    # DM del transcript al autor del ticket (como Ticket Tool).
+    if opener:
+        try:
+            usuario_opener = await bot.fetch_user(int(opener))
+            await usuario_opener.send(embed=embed, file=_archivo())
+        except (discord.Forbidden, discord.HTTPException, Exception):
+            pass
+
+    if str(canal.id) in cfg.get("abiertos", {}):
+        cfg["abiertos"].pop(str(canal.id), None)
+        stats = cfg.setdefault("stats", {})
+        stats["cerrados"] = int(stats.get("cerrados", 0)) + 1
+        guardar_tickets()
+    await enviar_logs(guild, embed)
+
+    try:
+        await canal.send(f"🔒 Ticket cerrado por {usuario.mention}. Este canal se eliminará en **10 segundos**.")
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    await asyncio.sleep(10)
+    try:
+        await canal.delete(reason=f"Ticket cerrado por {usuario} (ID {usuario.id})")
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        pass
+
+
+class TicketPreguntasModal(discord.ui.Modal, title="🎫 Abrir ticket"):
+    """Modal con las preguntas configuradas del panel (máx 5)."""
+
+    def __init__(self, preguntas, panel_id=None):
+        super().__init__(timeout=300)
+        self.panel_id = panel_id
+        for pregunta in [p for p in preguntas if p][:5]:
+            self.add_item(discord.ui.TextInput(
+                label=str(pregunta)[:45],
+                style=discord.TextStyle.paragraph,
+                required=False,
+                placeholder="Escribe aquí…",
+                max_length=500,
+            ))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        respuestas = [(item.label, item.value) for item in self.children if isinstance(item, discord.ui.TextInput)]
+        await _ticket_crear(interaction, respuestas, panel_id=self.panel_id)
+
+
+class TicketPanelView(discord.ui.View):
+    """Panel con el botón para abrir tickets (persistente: sobrevive reinicios)."""
+
+    def __init__(self, gid: str, panel_id: int, emoji: str = "🎫", etiqueta: str = "Abrir ticket"):
+        super().__init__(timeout=None)
+        self.gid = str(gid)
+        self.panel_id = int(panel_id)
+        boton = discord.ui.Button(
+            label=(etiqueta or "Abrir ticket")[:80],
+            emoji=emoji or None,
+            style=discord.ButtonStyle.success,
+            custom_id=f"ticket_open:{self.gid}:{self.panel_id}",
+        )
+        boton.callback = self.abrir
+        self.add_item(boton)
+
+    async def abrir(self, interaction: discord.Interaction):
+        cfg = tickets_db.get(self.gid)
+        if not cfg or not cfg.get("enabled"):
+            return await interaction.response.send_message("❌ Los tickets están desactivados en este servidor.", ephemeral=True)
+        preguntas = [p for p in cfg.get("preguntas", []) if p]
+        if preguntas:
+            return await interaction.response.send_modal(TicketPreguntasModal(preguntas, panel_id=self.panel_id))
+        await _ticket_crear(interaction, [], panel_id=self.panel_id)
+
+
+class TicketChannelView(discord.ui.View):
+    """Botones dentro del canal de ticket: cerrar y reclamar (persistente)."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Cerrar", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="ticket_cerrar")
+    async def cerrar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        gid = str(interaction.guild_id)
+        cfg = tickets_db.get(gid) or {}
+        ticket = cfg.get("abiertos", {}).get(str(interaction.channel_id))
+        if not ticket:
+            return await interaction.response.send_message("❌ Este canal no es un ticket.", ephemeral=True)
+        miembro = interaction.user
+        es_staff = isinstance(miembro, discord.Member) and _ticket_es_soporte(miembro, cfg)
+        if ticket.get("opener") != str(miembro.id) and not es_staff:
+            return await interaction.response.send_message("❌ Solo el autor del ticket o el equipo de soporte pueden cerrarlo.", ephemeral=True)
+        await interaction.response.send_message("🔒 Cerrando ticket…", ephemeral=True)
+        await _ticket_cerrar(interaction.guild, interaction.channel, miembro)
+
+    @discord.ui.button(label="Reclamar", emoji="✋", style=discord.ButtonStyle.primary, custom_id="ticket_claim")
+    async def reclamar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        gid = str(interaction.guild_id)
+        cfg = tickets_db.get(gid) or {}
+        ticket = cfg.get("abiertos", {}).get(str(interaction.channel_id))
+        if not ticket:
+            return await interaction.response.send_message("❌ Este canal no es un ticket.", ephemeral=True)
+        miembro = interaction.user
+        if not (isinstance(miembro, discord.Member) and _ticket_es_soporte(miembro, cfg)):
+            return await interaction.response.send_message("❌ Solo el equipo de soporte puede reclamar tickets.", ephemeral=True)
+        if ticket.get("claimed") == str(miembro.id):
+            ticket["claimed"] = None
+            guardar_tickets()
+            return await interaction.response.send_message(f"↩️ Ticket liberado por {miembro.mention}.")
+        ticket["claimed"] = str(miembro.id)
+        guardar_tickets()
+        return await interaction.response.send_message(f"✋ Ticket **reclamado** por {miembro.mention}: ahora gestiona este caso.")
+
+
+async def _ticket_panel_crear(guild, canal, titulo, desc, emoji, etiqueta, cfg):
+    """Crea (envía) un panel de tickets en un canal y lo registra. Devuelve (panel_id | None, error)."""
+    panel_id = max((pnl.get("id", 0) for pnl in cfg.get("paneles", [])), default=0) + 1
+    embed = discord.Embed(
+        title=titulo or "🎫 Soporte",
+        description=desc or "Pulsa el botón para abrir un ticket de soporte.\nEl equipo te atenderá lo antes posible.",
+        color=discord.Color.blurple(),
+    )
+    try:
+        msg = await canal.send(embed=embed, view=TicketPanelView(str(guild.id), panel_id, emoji, etiqueta))
+    except (discord.Forbidden, discord.HTTPException) as e:
+        return None, f"No pude enviar el panel a {canal.mention}: {e}"
+    cfg.setdefault("paneles", []).append({
+        "id": panel_id,
+        "canal": str(canal.id),
+        "msg": str(msg.id),
+        "titulo": titulo or "🎫 Soporte",
+        "desc": desc or "",
+        "emoji": emoji or "🎫",
+        "boton": etiqueta or "Abrir ticket",
+    })
+    guardar_tickets()
+    return panel_id, None
+
+
+async def _ticket_panel_borrar(guild, panel_id, cfg):
+    """Elimina el mensaje de un panel y lo quita de la config."""
+    for pnl in list(cfg.get("paneles", [])):
+        if pnl.get("id") == panel_id:
+            canal = guild.get_channel(int(pnl["canal"])) if str(pnl.get("canal", "")).isdigit() else None
+            if canal is not None and str(pnl.get("msg", "")).isdigit():
+                try:
+                    msg = await canal.fetch_message(int(pnl["msg"]))
+                    await msg.delete()
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                    pass
+            cfg["paneles"].remove(pnl)
+            guardar_tickets()
+            return True
+    return False
+
+
+@bot.command(name="tickets")
+@commands.has_permissions(manage_guild=True)
+async def tickets(ctx, *, args: str = ""):
+    """
+    Tickets de soporte estilo Ticket Tool (desactivado por defecto). Uso: .tickets [on|off|soporte|categoria|canal|limite|pregunta|panel|cerrar|claim|add|remove]
+    Sin argumentos muestra la configuración. Cerrar/claim/add/remove se usan dentro de un ticket.
+    """
+    cfg = _tickets_cfg(ctx.guild.id)
+    tokens = args.split()
+    sub = tokens[0].lower() if tokens else ""
+    p = ctx.prefix if ctx.prefix and not MENTION_REGEX.match(ctx.prefix) else DEFAULT_PREFIX
+
+    def ticket_actual():
+        return cfg.get("abiertos", {}).get(str(ctx.channel.id))
+
+    if sub in ("", "config", "status"):
+        embed = _tickets_status_embed(cfg, ctx.guild)
+        embed.set_footer(text=f"Usa {p}tickets on para activarlo y {p}tickets panel add <#canal> [título] para crear un panel.")
+        return await ctx.send(embed=embed)
+
+    if sub == "on":
+        cfg["enabled"] = True
+        guardar_tickets()
+        return await ctx.send("✅ Tickets **activados**. Crea un panel para que la gente pueda abrir tickets.")
+
+    if sub == "off":
+        cfg["enabled"] = False
+        guardar_tickets()
+        return await ctx.send("🔴 Tickets **desactivados** (estado por defecto). Los tickets ya abiertos siguen funcionando.")
+
+    if sub == "soporte":
+        if len(tokens) < 3 or tokens[1].lower() not in ("add", "remove"):
+            return await ctx.send(f"❌ Uso correcto: `{p}tickets soporte <add|remove> @rol`")
+        try:
+            rol = await commands.RoleConverter().convert(ctx, tokens[2])
+        except commands.RoleNotFound:
+            return await ctx.send("❌ Rol no encontrado.")
+        rid = str(rol.id)
+        if tokens[1].lower() == "add":
+            if rid in cfg["soporte"]:
+                return await ctx.send(f"ℹ️ @{rol.name} ya era rol de soporte.")
+            cfg["soporte"].append(rid)
+            guardar_tickets()
+            return await ctx.send(f"✅ Rol de soporte añadido: @{rol.name} (ve y atiende tickets).")
+        if rid not in cfg["soporte"]:
+            return await ctx.send(f"ℹ️ @{rol.name} no era rol de soporte.")
+        cfg["soporte"].remove(rid)
+        guardar_tickets()
+        return await ctx.send(f"✅ Rol de soporte eliminado: @{rol.name}.")
+
+    if sub == "categoria":
+        if len(tokens) < 2:
+            return await ctx.send(f"❌ Uso correcto: `{p}tickets categoria <#categoría>` o `{p}tickets categoria none`")
+        if tokens[1].lower() in ("none", "ninguna", "quitar"):
+            cfg["categoria"] = None
+            guardar_tickets()
+            return await ctx.send("✅ Categoría de tickets eliminada (se crearán sin categoría).")
+        try:
+            cat = await commands.CategoryChannelConverter().convert(ctx, tokens[1])
+        except (commands.ChannelNotFound, commands.BadArgument):
+            return await ctx.send("❌ Categoría no encontrada.")
+        cfg["categoria"] = str(cat.id)
+        guardar_tickets()
+        return await ctx.send(f"✅ Los tickets se crearán bajo {cat.mention}.")
+
+    if sub == "canal":
+        if len(tokens) < 2:
+            return await ctx.send(f"❌ Uso correcto: `{p}tickets canal <#canal>` o `{p}tickets canal none` (canal de transcripts)")
+        if tokens[1].lower() in ("none", "ninguno", "quitar"):
+            cfg["canal_logs"] = None
+            guardar_tickets()
+            return await ctx.send("✅ Canal de transcripts eliminado.")
+        try:
+            canal = await commands.TextChannelConverter().convert(ctx, tokens[1])
+        except (commands.ChannelNotFound, commands.BadArgument):
+            return await ctx.send("❌ Canal no encontrado.")
+        cfg["canal_logs"] = str(canal.id)
+        guardar_tickets()
+        return await ctx.send(f"✅ Los transcripts se enviarán a {canal.mention}.")
+
+    if sub == "limite":
+        if len(tokens) < 2:
+            return await ctx.send(f"❌ Uso correcto: `{p}tickets limite <1-10>`")
+        try:
+            limite = int(tokens[1])
+        except ValueError:
+            return await ctx.send("❌ El límite debe ser un número entero.")
+        if not (1 <= limite <= 10):
+            return await ctx.send("❌ El límite debe estar entre 1 y 10.")
+        cfg["limite"] = limite
+        guardar_tickets()
+        return await ctx.send(f"✅ Límite de tickets por usuario: **{limite}**.")
+
+    if sub in ("pregunta", "preguntas"):
+        if len(tokens) < 3 or tokens[1].lower() not in ("add", "remove"):
+            return await ctx.send(f"❌ Uso correcto: `{p}tickets pregunta add <texto>` o `{p}tickets pregunta remove <número>`")
+        if tokens[1].lower() == "add":
+            texto = " ".join(tokens[2:]).strip()
+            if not texto:
+                return await ctx.send("❌ La pregunta no puede estar vacía.")
+            if len(cfg["preguntas"]) >= 5:
+                return await ctx.send("❌ Máximo 5 preguntas.")
+            cfg["preguntas"].append(texto[:45])
+            cfg["preguntas"] = [q for q in cfg["preguntas"] if q]
+            guardar_tickets()
+            return await ctx.send(f"✅ Pregunta añadida ({len(cfg['preguntas'])}/5): {texto}")
+        try:
+            num = int(tokens[2])
+        except ValueError:
+            return await ctx.send("❌ Indica el número de la pregunta (verlas: `.tickets`).")
+        if not (1 <= num <= len(cfg["preguntas"])):
+            return await ctx.send(f"❌ Solo hay {len(cfg['preguntas'])} pregunta(s).")
+        quitada = cfg["preguntas"].pop(num - 1)
+        guardar_tickets()
+        return await ctx.send(f"✅ Pregunta eliminada: {quitada}")
+
+    if sub == "panel":
+        if len(tokens) < 2 or tokens[1].lower() not in ("add", "remove"):
+            return await ctx.send(f"❌ Uso correcto: `{p}tickets panel add <#canal> [título]` o `{p}tickets panel remove <id>`")
+        if tokens[1].lower() == "add":
+            if len(tokens) < 3:
+                return await ctx.send(f"❌ Uso correcto: `{p}tickets panel add <#canal> [título]`")
+            try:
+                canal = await commands.TextChannelConverter().convert(ctx, tokens[2])
+            except (commands.ChannelNotFound, commands.BadArgument):
+                return await ctx.send("❌ Canal no encontrado.")
+            titulo = " ".join(tokens[3:]).strip() or None
+            panel_id, err = await _ticket_panel_crear(ctx.guild, canal, titulo, None, "🎫", "Abrir ticket", cfg)
+            if err:
+                return await ctx.send(f"❌ {err}")
+            return await ctx.send(f"✅ Panel **#{panel_id}** creado en {canal.mention}.")
+        try:
+            pid = int(tokens[2])
+        except (ValueError, IndexError):
+            return await ctx.send(f"❌ Uso correcto: `{p}tickets panel remove <id>`")
+        ok = await _ticket_panel_borrar(ctx.guild, pid, cfg)
+        return await ctx.send(f"✅ Panel #{pid} eliminado." if ok else f"❌ No existe el panel #{pid}.")
+
+    if sub == "cerrar":
+        ticket = ticket_actual()
+        if not ticket:
+            return await ctx.send("❌ Este canal no es un ticket.")
+        if ticket.get("opener") != str(ctx.author.id) and not _ticket_es_soporte(ctx.author, cfg):
+            return await ctx.send("❌ Solo el autor del ticket o el equipo de soporte pueden cerrarlo.")
+        await ctx.send("🔒 Cerrando ticket…")
+        await _ticket_cerrar(ctx.guild, ctx.channel, ctx.author)
+        return
+
+    if sub == "claim":
+        ticket = ticket_actual()
+        if not ticket:
+            return await ctx.send("❌ Este canal no es un ticket.")
+        if not _ticket_es_soporte(ctx.author, cfg):
+            return await ctx.send("❌ Solo el equipo de soporte puede reclamar tickets.")
+        if ticket.get("claimed") == str(ctx.author.id):
+            ticket["claimed"] = None
+            guardar_tickets()
+            return await ctx.send(f"↩️ Ticket liberado por {ctx.author.mention}.")
+        ticket["claimed"] = str(ctx.author.id)
+        guardar_tickets()
+        return await ctx.send(f"✋ Ticket **reclamado** por {ctx.author.mention}: ahora gestiona este caso.")
+
+    if sub in ("add", "adduser", "añadir"):
+        ticket = ticket_actual()
+        if not ticket:
+            return await ctx.send("❌ Este canal no es un ticket.")
+        if not _ticket_es_soporte(ctx.author, cfg):
+            return await ctx.send("❌ Solo el equipo de soporte puede añadir gente al ticket.")
+        if len(tokens) < 2:
+            return await ctx.send(f"❌ Uso correcto: `{p}tickets add <@usuario>`")
+        try:
+            obj = await commands.MemberConverter().convert(ctx, tokens[1])
+        except commands.MemberNotFound:
+            return await ctx.send("❌ Usuario no encontrado en el servidor.")
+        try:
+            await ctx.channel.set_permissions(obj, view_channel=True, send_messages=True, attach_files=True, embed_links=True, read_message_history=True, reason=f"Añadido al ticket por {ctx.author}")
+        except (discord.Forbidden, discord.HTTPException):
+            return await ctx.send("❌ No tengo permisos para añadirlo.")
+        return await ctx.send(f"✅ {obj.mention} añadido al ticket.")
+
+    if sub in ("remove", "removeuser", "quitar"):
+        ticket = ticket_actual()
+        if not ticket:
+            return await ctx.send("❌ Este canal no es un ticket.")
+        if not _ticket_es_soporte(ctx.author, cfg):
+            return await ctx.send("❌ Solo el equipo de soporte puede quitar gente del ticket.")
+        if len(tokens) < 2:
+            return await ctx.send(f"❌ Uso correcto: `{p}tickets remove <@usuario>`")
+        try:
+            obj = await commands.MemberConverter().convert(ctx, tokens[1])
+        except commands.MemberNotFound:
+            return await ctx.send("❌ Usuario no encontrado en el servidor.")
+        if str(obj.id) == ticket.get("opener"):
+            return await ctx.send("❌ No puedes quitar al autor del ticket de su propio ticket.")
+        try:
+            await ctx.channel.set_permissions(obj, overwrite=None, reason=f"Quitado del ticket por {ctx.author}")
+        except (discord.Forbidden, discord.HTTPException):
+            return await ctx.send("❌ No tengo permisos para quitarlo.")
+        return await ctx.send(f"✅ {obj.mention} eliminado del ticket.")
+
+    return await ctx.send(
+        "❌ Subcomando desconocido. Usa:\n"
+        f"`{p}tickets` :: Ver configuración\n"
+        f"`{p}tickets on|off` :: Activar / desactivar\n"
+        f"`{p}tickets soporte <add|remove> (@rol)` :: Roles de soporte\n"
+        f"`{p}tickets categoria <#cat|none>` :: Dónde se crean los tickets\n"
+        f"`{p}tickets canal <#canal|none>` :: Canal de transcripts\n"
+        f"`{p}tickets limite <1-10>` :: Máx. por usuario\n"
+        f"`{p}tickets pregunta <add|remove> (texto|nº)` :: Preguntas al abrir\n"
+        f"`{p}tickets panel <add|remove> ...` :: Paneles\n"
+        f"`{p}tickets cerrar|claim|add|remove` :: Dentro de un ticket"
+    )
+
+
+@tickets.error
+async def tickets_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Server.")
+
+
+# ============================================================
 #  HONEYPOT
 # ============================================================
 
@@ -4028,6 +4672,7 @@ async def ayuda(ctx, *, comando: str = None):
         f"`{p}help mod` :: Moderación\n"
         f"`{p}help antiraid` :: Antiraid\n"
         f"`{p}help automod` :: Automod\n"
+        f"`{p}help tickets` :: Tickets de soporte\n"
         f"`{p}help roles` :: Roles\n"
         f"`{p}help niveles` :: Niveles / XP\n"
         f"`{p}help economia` :: Economía\n"
@@ -4047,6 +4692,7 @@ async def ayuda(ctx, *, comando: str = None):
                 discord.SelectOption(label="Moderación", value="mod", description="Ban, kick, mute, warn, purge, nuke, etc."),
                 discord.SelectOption(label="Antiraid", value="antiraid", description="Antiraid on/off, set, action, punishnew, minage, raidmode"),
                 discord.SelectOption(label="Automod", value="automod", description="Filtro de palabras, invites, links y spam"),
+                discord.SelectOption(label="Tickets", value="tickets", description="Paneles, soporte, claim, transcripts, límite"),
                 discord.SelectOption(label="Roles", value="roles", description="Roleadd, roleremove, rolehuman, autorole, etc."),
                 discord.SelectOption(label="Niveles / XP", value="niveles", description="Rank, level, leaderboard, level-config, etc."),
                 discord.SelectOption(label="Economía", value="economia", description="Balance, work, crime, rob, tienda, juegos, etc."),
@@ -4105,6 +4751,19 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}automod excanal <add|remove> (#canal)` :: Canales exentos\n\n"
                     f"Desactivado por defecto • El staff nunca es filtrado"
                 ), color=discord.Color.green()),
+                "tickets": discord.Embed(title="Tickets de soporte", description=(
+                    f"`{p}tickets` :: Ver configuración\n"
+                    f"`{p}tickets on/off` :: Activar / desactivar\n"
+                    f"`{p}tickets soporte <add|remove> (@rol)` :: Roles de soporte\n"
+                    f"`{p}tickets categoria <#cat|none>` :: Dónde se crean\n"
+                    f"`{p}tickets canal <#canal|none>` :: Canal de transcripts\n"
+                    f"`{p}tickets limite <1-10>` :: Máx. por usuario\n"
+                    f"`{p}tickets pregunta <add|remove> (texto|nº)` :: Preguntas al abrir\n"
+                    f"`{p}tickets panel add (#canal) [título]` :: Crear panel\n"
+                    f"`{p}tickets panel remove (id)` :: Eliminar panel\n"
+                    f"`{p}tickets cerrar|claim|add|remove` :: Dentro de un ticket\n\n"
+                    f"Desactivado por defecto • Transcript HTML al cerrar + DM al autor"
+                ), color=discord.Color.blurple()),
                 "roles": discord.Embed(title="Roles", description=(
                     f"`{p}roleadd (@usuario) (@rol)` :: Otorga rol\n"
                     f"`{p}roleremove (@usuario) (@rol)` :: Quita rol\n"
@@ -5769,6 +6428,252 @@ async def slash_automod_excanal(interaction: discord.Interaction, accion: app_co
 bot.tree.add_command(automod_group)
 
 
+# ============================================================
+#  SLASH: /tickets (grupo)
+# ============================================================
+
+tickets_group = app_commands.Group(name="tickets", description="Tickets de soporte (desactivado por defecto)")
+
+
+def _tickets_permiso(interaction: discord.Interaction) -> bool:
+    return isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild
+
+
+@tickets_group.command(name="config", description="Muestra la configuración de tickets")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_config(interaction: discord.Interaction):
+    if not _tickets_permiso(interaction):
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _tickets_cfg(interaction.guild.id)
+    embed = _tickets_status_embed(cfg, interaction.guild)
+    embed.set_footer(text="Usa /tickets on para activarlo y /tickets panel-add para crear un panel.")
+    await interaction.response.send_message(embed=embed)
+
+
+@tickets_group.command(name="on", description="Activa los tickets")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_on(interaction: discord.Interaction):
+    if not _tickets_permiso(interaction):
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _tickets_cfg(interaction.guild.id)
+    cfg["enabled"] = True
+    guardar_tickets()
+    await interaction.response.send_message("✅ Tickets **activados**. Crea un panel para que la gente pueda abrir tickets.")
+
+
+@tickets_group.command(name="off", description="Desactiva los tickets (estado por defecto)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_off(interaction: discord.Interaction):
+    if not _tickets_permiso(interaction):
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _tickets_cfg(interaction.guild.id)
+    cfg["enabled"] = False
+    guardar_tickets()
+    await interaction.response.send_message("🔴 Tickets **desactivados** (estado por defecto). Los abiertos siguen funcionando.")
+
+
+@tickets_group.command(name="soporte", description="Añade o quita un rol de soporte")
+@app_commands.describe(accion="Añadir o quitar", rol="Rol que ve y atiende tickets")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(accion=[
+    app_commands.Choice(name="add", value="add"),
+    app_commands.Choice(name="remove", value="remove"),
+])
+async def slash_tickets_soporte(interaction: discord.Interaction, accion: app_commands.Choice[str], rol: discord.Role):
+    if not _tickets_permiso(interaction):
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _tickets_cfg(interaction.guild.id)
+    rid = str(rol.id)
+    if accion.value == "add":
+        if rid in cfg["soporte"]:
+            return await interaction.response.send_message(f"ℹ️ @{rol.name} ya era rol de soporte.", ephemeral=True)
+        cfg["soporte"].append(rid)
+        guardar_tickets()
+        return await interaction.response.send_message(f"✅ Rol de soporte añadido: @{rol.name}.")
+    if rid not in cfg["soporte"]:
+        return await interaction.response.send_message(f"ℹ️ @{rol.name} no era rol de soporte.", ephemeral=True)
+    cfg["soporte"].remove(rid)
+    guardar_tickets()
+    await interaction.response.send_message(f"✅ Rol de soporte eliminado: @{rol.name}.")
+
+
+@tickets_group.command(name="categoria", description="Categoría donde se crean los tickets")
+@app_commands.describe(categoria="Categoría para los canales de ticket", quitar="True para quitar la categoría")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_categoria(interaction: discord.Interaction, categoria: discord.CategoryChannel = None, quitar: bool = False):
+    if not _tickets_permiso(interaction):
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _tickets_cfg(interaction.guild.id)
+    if quitar or categoria is None:
+        cfg["categoria"] = None
+        guardar_tickets()
+        return await interaction.response.send_message("✅ Categoría de tickets eliminada.")
+    cfg["categoria"] = str(categoria.id)
+    guardar_tickets()
+    await interaction.response.send_message(f"✅ Los tickets se crearán bajo {categoria.mention}.")
+
+
+@tickets_group.command(name="canal", description="Canal donde se envían los transcripts al cerrar")
+@app_commands.describe(canal="Canal de transcripts", quitar="True para quitar el canal")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_canal(interaction: discord.Interaction, canal: discord.TextChannel = None, quitar: bool = False):
+    if not _tickets_permiso(interaction):
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _tickets_cfg(interaction.guild.id)
+    if quitar or canal is None:
+        cfg["canal_logs"] = None
+        guardar_tickets()
+        return await interaction.response.send_message("✅ Canal de transcripts eliminado.")
+    cfg["canal_logs"] = str(canal.id)
+    guardar_tickets()
+    await interaction.response.send_message(f"✅ Los transcripts se enviarán a {canal.mention}.")
+
+
+@tickets_group.command(name="limite", description="Máximo de tickets abiertos por usuario")
+@app_commands.describe(limite="Entre 1 y 10")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_limite(interaction: discord.Interaction, limite: int):
+    if not _tickets_permiso(interaction):
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    if not (1 <= limite <= 10):
+        return await interaction.response.send_message("❌ El límite debe estar entre 1 y 10.", ephemeral=True)
+    cfg = _tickets_cfg(interaction.guild.id)
+    cfg["limite"] = limite
+    guardar_tickets()
+    await interaction.response.send_message(f"✅ Límite de tickets por usuario: **{limite}**.")
+
+
+@tickets_group.command(name="pregunta-add", description="Añade una pregunta al abrir ticket (máx 5)")
+@app_commands.describe(pregunta="Pregunta que se hará al abrir un ticket")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_pregunta_add(interaction: discord.Interaction, pregunta: str):
+    if not _tickets_permiso(interaction):
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _tickets_cfg(interaction.guild.id)
+    texto = pregunta.strip()
+    if not texto:
+        return await interaction.response.send_message("❌ La pregunta no puede estar vacía.", ephemeral=True)
+    if len(cfg["preguntas"]) >= 5:
+        return await interaction.response.send_message("❌ Máximo 5 preguntas.", ephemeral=True)
+    cfg["preguntas"].append(texto[:45])
+    guardar_tickets()
+    await interaction.response.send_message(f"✅ Pregunta añadida ({len(cfg['preguntas'])}/5): {texto[:45]}")
+
+
+@tickets_group.command(name="pregunta-remove", description="Elimina una pregunta por su número")
+@app_commands.describe(numero="Número de la pregunta (ver /tickets config)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_pregunta_remove(interaction: discord.Interaction, numero: int):
+    if not _tickets_permiso(interaction):
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _tickets_cfg(interaction.guild.id)
+    if not (1 <= numero <= len(cfg["preguntas"])):
+        return await interaction.response.send_message(f"❌ Solo hay {len(cfg['preguntas'])} pregunta(s).", ephemeral=True)
+    quitada = cfg["preguntas"].pop(numero - 1)
+    guardar_tickets()
+    await interaction.response.send_message(f"✅ Pregunta eliminada: {quitada}")
+
+
+@tickets_group.command(name="panel-add", description="Crea un panel de tickets en un canal")
+@app_commands.describe(canal="Canal donde enviar el panel", titulo="Título del panel", descripcion="Descripción del panel", emoji="Emoji del botón")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_panel_add(interaction: discord.Interaction, canal: discord.TextChannel, titulo: str = None, descripcion: str = None, emoji: str = "🎫"):
+    if not _tickets_permiso(interaction):
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _tickets_cfg(interaction.guild.id)
+    panel_id, err = await _ticket_panel_crear(interaction.guild, canal, titulo, descripcion, emoji, "Abrir ticket", cfg)
+    if err:
+        return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
+    await interaction.response.send_message(f"✅ Panel **#{panel_id}** creado en {canal.mention}.")
+
+
+@tickets_group.command(name="panel-remove", description="Elimina un panel por su ID")
+@app_commands.describe(panel_id="ID del panel (ver /tickets config)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_panel_remove(interaction: discord.Interaction, panel_id: int):
+    if not _tickets_permiso(interaction):
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _tickets_cfg(interaction.guild.id)
+    ok = await _ticket_panel_borrar(interaction.guild, panel_id, cfg)
+    await interaction.response.send_message(f"✅ Panel #{panel_id} eliminado." if ok else f"❌ No existe el panel #{panel_id}.", ephemeral=ok)
+
+
+@tickets_group.command(name="cerrar", description="Cierra el ticket (usar dentro del canal de ticket)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_cerrar(interaction: discord.Interaction):
+    cfg = tickets_db.get(str(interaction.guild_id)) or {}
+    ticket = cfg.get("abiertos", {}).get(str(interaction.channel_id))
+    if not ticket:
+        return await interaction.response.send_message("❌ Este canal no es un ticket.", ephemeral=True)
+    if ticket.get("opener") != str(interaction.user.id) and not (
+        isinstance(interaction.user, discord.Member) and _ticket_es_soporte(interaction.user, cfg)
+    ):
+        return await interaction.response.send_message("❌ Solo el autor del ticket o el equipo de soporte pueden cerrarlo.", ephemeral=True)
+    await interaction.response.send_message("🔒 Cerrando ticket…", ephemeral=True)
+    await _ticket_cerrar(interaction.guild, interaction.channel, interaction.user)
+
+
+@tickets_group.command(name="claim", description="Reclama/libera el ticket (solo soporte)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_claim(interaction: discord.Interaction):
+    cfg = tickets_db.get(str(interaction.guild_id)) or {}
+    ticket = cfg.get("abiertos", {}).get(str(interaction.channel_id))
+    if not ticket:
+        return await interaction.response.send_message("❌ Este canal no es un ticket.", ephemeral=True)
+    if not (isinstance(interaction.user, discord.Member) and _ticket_es_soporte(interaction.user, cfg)):
+        return await interaction.response.send_message("❌ Solo el equipo de soporte puede reclamar tickets.", ephemeral=True)
+    if ticket.get("claimed") == str(interaction.user.id):
+        ticket["claimed"] = None
+        guardar_tickets()
+        return await interaction.response.send_message(f"↩️ Ticket liberado por {interaction.user.mention}.")
+    ticket["claimed"] = str(interaction.user.id)
+    guardar_tickets()
+    await interaction.response.send_message(f"✋ Ticket **reclamado** por {interaction.user.mention}.")
+
+
+@tickets_group.command(name="add", description="Añade un usuario al ticket (solo soporte)")
+@app_commands.describe(usuario="Usuario a añadir al canal del ticket")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_add(interaction: discord.Interaction, usuario: discord.Member):
+    cfg = tickets_db.get(str(interaction.guild_id)) or {}
+    ticket = cfg.get("abiertos", {}).get(str(interaction.channel_id))
+    if not ticket:
+        return await interaction.response.send_message("❌ Este canal no es un ticket.", ephemeral=True)
+    if not (isinstance(interaction.user, discord.Member) and _ticket_es_soporte(interaction.user, cfg)):
+        return await interaction.response.send_message("❌ Solo el equipo de soporte puede añadir gente.", ephemeral=True)
+    try:
+        await interaction.channel.set_permissions(
+            usuario, view_channel=True, send_messages=True, attach_files=True,
+            embed_links=True, read_message_history=True,
+            reason=f"Añadido al ticket por {interaction.user}",
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        return await interaction.response.send_message("❌ No tengo permisos para añadirlo.", ephemeral=True)
+    await interaction.response.send_message(f"✅ {usuario.mention} añadido al ticket.")
+
+
+@tickets_group.command(name="remove", description="Quita un usuario del ticket (solo soporte)")
+@app_commands.describe(usuario="Usuario a quitar del canal del ticket")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_tickets_remove(interaction: discord.Interaction, usuario: discord.Member):
+    cfg = tickets_db.get(str(interaction.guild_id)) or {}
+    ticket = cfg.get("abiertos", {}).get(str(interaction.channel_id))
+    if not ticket:
+        return await interaction.response.send_message("❌ Este canal no es un ticket.", ephemeral=True)
+    if not (isinstance(interaction.user, discord.Member) and _ticket_es_soporte(interaction.user, cfg)):
+        return await interaction.response.send_message("❌ Solo el equipo de soporte puede quitar gente.", ephemeral=True)
+    if str(usuario.id) == ticket.get("opener"):
+        return await interaction.response.send_message("❌ No puedes quitar al autor de su propio ticket.", ephemeral=True)
+    try:
+        await interaction.channel.set_permissions(usuario, overwrite=None, reason=f"Quitado del ticket por {interaction.user}")
+    except (discord.Forbidden, discord.HTTPException):
+        return await interaction.response.send_message("❌ No tengo permisos para quitarlo.", ephemeral=True)
+    await interaction.response.send_message(f"✅ {usuario.mention} eliminado del ticket.")
+
+
+bot.tree.add_command(tickets_group)
+
+
 
 # ============================================================
 #  SLASH: /soft /softban (baneo temporal)
@@ -5869,6 +6774,7 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(name="🛡️ Moderación", value="`ban` `kick` `unban` `mute` `unmute` `softban`/`soft ban` `ipban` `ipunban`\n`purge` `nuke` `lock` `unlock` `rename` `namereset` `warn`/`warn add` `warnremove`/`warn remove` `warns`/`warn list`", inline=False)
     embed.add_field(name="🚨 Antiraid", value="`antiraid` (ver config) `antiraid on`/`off` `antiraid set` `antiraid action` `antiraid punishnew` `antiraid minage` `antiraid raidmode`\nGrupo slash `/antiraid`: config, on, off, set, action, punishnew, minage, raidmode.\nDesactivado por defecto • Nunca actúa contra el staff (Manage Server)", inline=False)
     embed.add_field(name="🤖 Automod", value="`automod` (ver config) `automod on`/`off` `automod add`/`remove` `automod invites` `automod links` `automod spam` `automod accion` `automod exrol` `automod excanal`\nGrupo slash `/automod`: config, on, off, add, remove, invites, links, spam, accion, exrol, excanal.\nFiltro de palabras, invites, links y spam • Desactivado por defecto", inline=False)
+    embed.add_field(name="🎫 Tickets", value="`tickets` (ver config) `tickets on`/`off` `tickets soporte` `tickets categoria` `tickets canal` `tickets limite` `tickets pregunta-add`/`pregunta-remove` `tickets panel-add`/`panel-remove` `tickets cerrar` `tickets claim` `tickets add`/`remove`\nGrupo slash `/tickets` completo.\nPaneles con botón, preguntas al abrir, claim, transcript HTML y DM al autor • Desactivado por defecto", inline=False)
     embed.add_field(name="👥 Roles", value="`roleadd`/`role add` `roleremove`/`role remove` `rolehuman`/`role human` `roleall`/`role all` `rolebot`/`role bot`\n`autorolehuman`/`autorole human` `autorolebot`/`autorole bot` `autorole`/`autorole general` `autorolelist`/`autorole list`", inline=False)
     embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
     embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
@@ -8502,6 +9408,46 @@ def _automod_public(cfg: dict, guild: discord.Guild = None):
     }
 
 
+def _tickets_public(cfg: dict, guild: discord.Guild = None):
+    """Serializa la config de tickets para la API del dashboard (resuelve nombres)."""
+    def nombre_rol(rid):
+        if guild is not None and str(rid).isdigit():
+            rol = guild.get_role(int(rid))
+            if rol is not None:
+                return rol.name
+        return "rol eliminado"
+
+    def nombre_canal(cid):
+        if guild is not None and str(cid).isdigit():
+            canal = guild.get_channel(int(cid))
+            if canal is not None:
+                return canal.name
+        return "canal eliminado"
+
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "soporte": [{"id": str(r), "nombre": nombre_rol(r)} for r in cfg.get("soporte", [])],
+        "categoria": str(cfg["categoria"]) if cfg.get("categoria") else None,
+        "canal_logs": str(cfg["canal_logs"]) if cfg.get("canal_logs") else None,
+        "limite": int(cfg.get("limite", 1)),
+        "preguntas": [p for p in cfg.get("preguntas", []) if p],
+        "paneles": [
+            {
+                "id": int(p.get("id", 0)),
+                "canal": str(p.get("canal", "")),
+                "canal_nombre": nombre_canal(p.get("canal")),
+                "titulo": p.get("titulo", "Soporte"),
+            }
+            for p in cfg.get("paneles", [])
+        ],
+        "stats": {
+            "abiertos": int(cfg.get("stats", {}).get("abiertos", 0)),
+            "cerrados": int(cfg.get("stats", {}).get("cerrados", 0)),
+            "abiertos_ahora": len(cfg.get("abiertos", {})),
+        },
+    }
+
+
 def _dash_buscar_guild(gid_texto: str):
     """Devuelve el Guild a partir del parámetro de ruta, o None."""
     if not gid_texto.isdigit():
@@ -8940,6 +9886,7 @@ async def _dash_guild(request):
         "permisos": permisos,
         "antiraid": _antiraid_public(_antiraid_cfg(gid)),
         "automod": _automod_public(_automod_cfg(gid), guild),
+        "tickets": _tickets_public(_tickets_cfg(gid), guild),
         "moderacion": {
             "warns_totales": warns_totales,
             "usuarios_con_warns": usuarios_warns,
@@ -8949,6 +9896,7 @@ async def _dash_guild(request):
             "autoroles": autoroles_count,
         },
         "canales": [{"id": str(c.id), "nombre": c.name} for c in sorted(guild.text_channels, key=lambda x: x.position)],
+        "categorias": [{"id": str(c.id), "nombre": c.name} for c in guild.categories],
         "roles": [{"id": str(r.id), "nombre": r.name} for r in guild.roles if not r.is_default() and not r.managed],
         "starboard": {
             "enabled": bool(sb.get("enabled", False)),
@@ -9214,6 +10162,117 @@ async def _dash_automod_set(request):
         )
         await enviar_logs(guild, embed)
     return dash_web.json_response({"ok": True, "automod": _automod_public(cfg, guild)})
+
+
+async def _dash_tickets_set(request):
+    """POST /api/guild/<id>/tickets — misma validación que el comando .tickets (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_puede_configurar(request, guild):
+        return dash_web.json_response({"error": "Necesitas permiso de administración (Manage Server) en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    cfg = _tickets_cfg(guild.id)
+    cambios = []
+
+    if "enabled" in data:
+        if not isinstance(data["enabled"], bool):
+            return dash_web.json_response({"error": "enabled debe ser true/false."}, status=400)
+        cfg["enabled"] = data["enabled"]
+        cambios.append("sistema " + ("activado" if data["enabled"] else "desactivado"))
+    if "soporte_add" in data:
+        rid = str(data["soporte_add"])
+        rol = guild.get_role(int(rid)) if rid.isdigit() else None
+        if rol is None or rol.is_default() or rol.managed:
+            return dash_web.json_response({"error": "Rol no válido."}, status=400)
+        if rid in cfg["soporte"]:
+            return dash_web.json_response({"error": f"@{rol.name} ya era rol de soporte."}, status=400)
+        cfg["soporte"].append(rid)
+        cambios.append(f"rol de soporte: @{rol.name}")
+    if "soporte_remove" in data:
+        rid = str(data["soporte_remove"])
+        if rid not in cfg["soporte"]:
+            return dash_web.json_response({"error": "Ese rol no era de soporte."}, status=400)
+        cfg["soporte"].remove(rid)
+        cambios.append("rol de soporte eliminado")
+    if "categoria" in data:
+        v = data["categoria"]
+        if v is None:
+            cfg["categoria"] = None
+            cambios.append("categoría: ninguna")
+        elif isinstance(v, str) and v.isdigit() and isinstance(guild.get_channel(int(v)), discord.CategoryChannel):
+            cfg["categoria"] = v
+            cambios.append("categoría actualizada")
+        else:
+            return dash_web.json_response({"error": "Categoría no válida."}, status=400)
+    if "canal_logs" in data:
+        v = data["canal_logs"]
+        if v is None:
+            cfg["canal_logs"] = None
+            cambios.append("canal de transcripts: ninguno")
+        elif isinstance(v, str) and v.isdigit() and guild.get_channel(int(v)) is not None:
+            cfg["canal_logs"] = v
+            cambios.append("canal de transcripts actualizado")
+        else:
+            return dash_web.json_response({"error": "Canal no encontrado."}, status=400)
+    if "limite" in data:
+        v, e = _dash_int(data["limite"], 1, 10)
+        if e:
+            return dash_web.json_response({"error": f"El límite {e} (1-10)."}, status=400)
+        cfg["limite"] = v
+        cambios.append(f"límite: {v}")
+    if "pregunta_add" in data:
+        texto = str(data["pregunta_add"]).strip()
+        if not texto:
+            return dash_web.json_response({"error": "La pregunta no puede estar vacía."}, status=400)
+        if len(cfg["preguntas"]) >= 5:
+            return dash_web.json_response({"error": "Máximo 5 preguntas."}, status=400)
+        cfg["preguntas"].append(texto[:45])
+        cambios.append(f"pregunta añadida: {texto[:45]}")
+    if "pregunta_remove" in data:
+        num, e = _dash_int(data["pregunta_remove"], 1)
+        if e or num > len(cfg["preguntas"]):
+            return dash_web.json_response({"error": f"No existe la pregunta #{num}."}, status=400)
+        quitada = cfg["preguntas"].pop(num - 1)
+        cambios.append(f"pregunta eliminada: {quitada}")
+    if "panel_add" in data:
+        panel = data["panel_add"] if isinstance(data["panel_add"], dict) else {}
+        cid = str(panel.get("canal", ""))
+        canal = guild.get_channel(int(cid)) if cid.isdigit() else None
+        if canal is None:
+            return dash_web.json_response({"error": "Canal no encontrado en este servidor."}, status=400)
+        panel_id, err_panel = await _ticket_panel_crear(
+            guild, canal,
+            str(panel.get("titulo", "")).strip() or None,
+            str(panel.get("desc", "")).strip() or None,
+            str(panel.get("emoji", "🎫")).strip() or "🎫",
+            str(panel.get("boton", "Abrir ticket")).strip() or "Abrir ticket",
+            cfg,
+        )
+        if err_panel:
+            return dash_web.json_response({"error": err_panel}, status=400)
+        cambios.append(f"panel #{panel_id} en #{canal.name}")
+    if "panel_remove" in data:
+        pid, e = _dash_int(data["panel_remove"], 1)
+        if e:
+            return dash_web.json_response({"error": "ID de panel inválido."}, status=400)
+        ok = await _ticket_panel_borrar(guild, pid, cfg)
+        if not ok:
+            return dash_web.json_response({"error": f"No existe el panel #{pid}."}, status=400)
+        cambios.append(f"panel #{pid} eliminado")
+
+    guardar_tickets()
+    if cambios:
+        embed = discord.Embed(
+            title="🎫 Tickets actualizados desde el dashboard",
+            description=" • ".join(cambios)[:4096],
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        await enviar_logs(guild, embed)
+    return dash_web.json_response({"ok": True, "tickets": _tickets_public(cfg, guild)})
 
 
 async def _dash_leave(request):
@@ -9741,6 +10800,7 @@ async def _iniciar_dashboard():
     app.router.add_post("/api/guild/{gid}/antiraid", _dash_antiraid_set)
     app.router.add_post("/api/guild/{gid}/raidmode", _dash_raidmode)
     app.router.add_post("/api/guild/{gid}/automod", _dash_automod_set)
+    app.router.add_post("/api/guild/{gid}/tickets", _dash_tickets_set)
     app.router.add_post("/api/guild/{gid}/leave", _dash_leave)
     app.router.add_post("/api/sync", _dash_sync)
     app.router.add_post("/api/guild/{gid}/economy", _dash_economy_set)
