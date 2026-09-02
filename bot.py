@@ -8,6 +8,7 @@ import time
 import discord
 from discord import app_commands
 from discord.ext import commands
+from aiohttp import web as dash_web
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -61,6 +62,13 @@ ANTIRAID_PATH = "antiraid.json"
 antiraid_db = {}    # guild_id (str) -> config (ver _antiraid_default)
 # Joins recientes en memoria: guild_id (str) -> [timestamps]
 ANTIRAID_JOINS = {}
+
+# Dashboard web (aiohttp, corre junto al bot; se configura en dashboard.json)
+DASHBOARD_CONFIG_PATH = "dashboard.json"
+DASHBOARD_HTML_PATH = "dashboard.html"
+dashboard_config = {"enabled": True, "host": "127.0.0.1", "port": 8080, "token": ""}
+_dashboard_arrancado = False
+_INICIO_BOT = time.time()
 
 DEFAULT_PREFIX = "."
 
@@ -677,6 +685,28 @@ def guardar_antiraid():
         print(f"Error guardando antiraid.json: {e}")
 
 
+def cargar_dashboard():
+    """Carga dashboard.json (opcional): enabled, host, port, token."""
+    global dashboard_config
+    if os.path.exists(DASHBOARD_CONFIG_PATH):
+        try:
+            with open(DASHBOARD_CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                dashboard_config.update(data)
+        except (json.JSONDecodeError, OSError):
+            pass
+    dashboard_config["enabled"] = bool(dashboard_config.get("enabled", True))
+    dashboard_config["host"] = str(dashboard_config.get("host", "127.0.0.1"))
+    try:
+        dashboard_config["port"] = int(dashboard_config.get("port", 8080))
+    except (TypeError, ValueError):
+        dashboard_config["port"] = 8080
+    dashboard_config["token"] = str(dashboard_config.get("token", ""))
+    estado = "activado" if dashboard_config["enabled"] else "desactivado"
+    print(f"Dashboard: {estado} -> http://{dashboard_config['host']}:{dashboard_config['port']}")
+
+
 async def enviar_logs(guild: discord.Guild, embed: discord.Embed):
     """Envía un embed de logs a todos los canales configurados en el servidor."""
     for canal_id in list(logs_channels):
@@ -964,6 +994,15 @@ async def on_ready():
     cargar_economy()
     cargar_shop()
     cargar_antiraid()
+    cargar_dashboard()
+    # Arrancar el dashboard web (una sola vez, aunque on_ready se repita al reconectar).
+    global _dashboard_arrancado
+    if dashboard_config["enabled"] and not _dashboard_arrancado:
+        _dashboard_arrancado = True
+        try:
+            await _iniciar_dashboard()
+        except OSError as e:
+            print(f"Error arrancando el dashboard: {e}")
     await bot.change_presence(status=discord.Status.online, activity=discord.Game(name=".help | created by fakepy"))
     print(f"Conectado como {bot.user} (ID: {bot.user.id})")
     print(f"Servidores: {len(bot.guilds)}")
@@ -3665,6 +3704,7 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}prefix` :: Ver prefijos activos\n"
                     f"`{p}prefixremove (carácter)` :: Quita prefijo\n"
                     f"`{p}sync` :: Sincroniza slash commands (owner)\n"
+                    f"`{p}dashboard` :: URL del panel web\n"
                     f"`{p}help [comando]` :: Esta ayuda"
                 ), color=discord.Color.dark_gray()),
             }
@@ -5151,7 +5191,7 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
     embed.add_field(name="🎉 Sorteos y utilidades", value="`gcreate`/`giveaway create` `glist`/`giveaway list` `gdelete`/`giveaway delete` `greroll`/`giveaway reroll` `avatar` `banner` `remindme`/`remind`", inline=False)
     embed.add_field(name="🔗 Canales y links", value="`linkban`/`link ban` `linkunban`/`link unban` `linkbanlist`/`link list` `logchannel`/`log channel` `logunchannel`/`log unchannel` `logschannels`/`log channels`", inline=False)
-    embed.add_field(name="⚙️ Configuración", value=f"`setprefix`/`/setprefix` `prefix` `prefixremove` `sync` `help`", inline=False)
+    embed.add_field(name="⚙️ Configuración", value=f"`setprefix`/`/setprefix` `prefix` `prefixremove` `sync` `dashboard` `help`", inline=False)
     embed.set_footer(text="Todos funcionan con el prefix indicado y con slash commands.")
     await interaction.response.send_message(embed=embed)
 
@@ -7698,6 +7738,346 @@ async def slash_reset_economy(interaction: discord.Interaction, confirmar: bool 
     if not confirmar:
         return await interaction.response.send_message("⚠️ Esto BORRARÁ todo el dinero de todos los usuarios. Marca `confirmar: True` para confirmar.")
     await interaction.response.send_message(**_eco_reset(interaction.guild))
+
+
+# ============================================================
+#  DASHBOARD WEB (aiohttp, corre junto al bot en el mismo loop)
+#  Config en dashboard.json: enabled, host, port, token
+# ============================================================
+
+def _dashboard_html_path():
+    """Ruta de dashboard.html junto al script (igual que token.txt)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), DASHBOARD_HTML_PATH)
+
+
+def _antiraid_public(cfg: dict):
+    """Serializa la config antiraid para la API del dashboard."""
+    stats = cfg.get("stats", {})
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "action": str(cfg.get("action", "kick")),
+        "threshold": int(cfg.get("threshold", 5)),
+        "seconds": int(cfg.get("seconds", 10)),
+        "punish_new": bool(cfg.get("punish_new", True)),
+        "min_age": int(cfg.get("min_age", 0)),
+        "active": bool(cfg.get("active", False)),
+        "manual": bool(cfg.get("manual", False)),
+        "stats": {
+            "raids": int(stats.get("raids", 0)),
+            "punished": int(stats.get("punished", 0)),
+        },
+    }
+
+
+def _dash_buscar_guild(gid_texto: str):
+    """Devuelve el Guild a partir del parámetro de ruta, o None."""
+    if not gid_texto.isdigit():
+        return None
+    return bot.get_guild(int(gid_texto))
+
+
+@dash_web.middleware
+async def _dash_auth(request, handler):
+    """Si hay token configurado en dashboard.json, exige ?token= o cabecera X-Dashboard-Token."""
+    token = dashboard_config.get("token", "")
+    if token:
+        provisto = request.query.get("token", "") or request.headers.get("X-Dashboard-Token", "")
+        if provisto != token:
+            return dash_web.json_response({"error": "No autorizado: token incorrecto"}, status=401)
+    return await handler(request)
+
+
+async def _dash_index(request):
+    """Sirve la página del dashboard (se lee de disco en cada petición: editable en caliente)."""
+    try:
+        with open(_dashboard_html_path(), "r", encoding="utf-8") as f:
+            html = f.read()
+    except OSError:
+        return dash_web.Response(text="dashboard.html no se encontró junto a bot.py", status=500, content_type="text/plain")
+    return dash_web.Response(text=html, content_type="text/html", charset="utf-8")
+
+
+async def _dash_status(request):
+    ping = bot.latency
+    ping_ms = round(ping * 1000) if ping == ping else None  # latency puede ser NaN antes del primer latido
+    conectado = bot.user is not None and not bot.is_closed()
+    usuarios = sum(g.member_count if g.member_count is not None else len(g.members) for g in bot.guilds)
+    return dash_web.json_response({
+        "estado": "online" if conectado else "offline",
+        "servidores": len(bot.guilds),
+        "usuarios": usuarios,
+        "ping_ms": ping_ms,
+        "uptime_seg": int(time.time() - _INICIO_BOT),
+        "bot": {
+            "nombre": str(bot.user) if bot.user else "WAVEBOT",
+            "id": bot.user.id if bot.user else None,
+            "avatar": str(bot.user.display_avatar.url) if bot.user else None,
+        },
+    })
+
+
+async def _dash_guilds(request):
+    datos = []
+    for g in sorted(bot.guilds, key=lambda x: -(x.member_count if x.member_count is not None else len(x.members))):
+        datos.append({
+            "id": g.id,
+            "nombre": g.name,
+            "icono": str(g.icon.url) if g.icon else None,
+            "miembros": g.member_count if g.member_count is not None else len(g.members),
+        })
+    return dash_web.json_response(datos)
+
+
+async def _dash_guild(request):
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    gid = str(guild.id)
+
+    def nombres_canales(ids):
+        nombres = []
+        for cid in ids:
+            canal = guild.get_channel(cid)
+            if canal is not None:
+                nombres.append("#" + canal.name)
+        return nombres
+
+    honeypots_nombres = []
+    for cid in honeypots_db.get(gid, {}):
+        canal = guild.get_channel(int(cid))
+        if canal is not None:
+            honeypots_nombres.append("#" + canal.name)
+
+    autor_cfg = autoroles_db.get(gid, {})
+    autoroles_count = sum(len(autor_cfg.get(k, [])) for k in ("all", "human", "bot"))
+
+    warns_listas = [v for v in warns_db.values() if isinstance(v, list)]
+    warns_totales = sum(len(v) for v in warns_listas)
+    usuarios_warns = sum(1 for v in warns_listas if v)
+
+    sb = starboard_db.get(gid, {})
+    xpc = xp_config_db.get(gid, {})
+    ec_cfg = econ_config_db.get(gid, {})
+    ec_users = economy_db.get(gid, {})
+    dinero_total = sum(int(u.get("cash", 0)) + int(u.get("bank", 0)) for u in ec_users.values() if isinstance(u, dict))
+
+    return dash_web.json_response({
+        "id": guild.id,
+        "nombre": guild.name,
+        "icono": str(guild.icon.url) if guild.icon else None,
+        "miembros": guild.member_count if guild.member_count is not None else len(guild.members),
+        "bots": sum(1 for m in guild.members if m.bot),
+        "owner_id": guild.owner_id,
+        "owner_nombre": str(guild.owner) if guild.owner else None,
+        "creado_texto": guild.created_at.strftime("%d/%m/%Y"),
+        "prefijos": _get_prefixes_sync(guild.id),
+        "antiraid": _antiraid_public(_antiraid_cfg(gid)),
+        "moderacion": {
+            "warns_totales": warns_totales,
+            "usuarios_con_warns": usuarios_warns,
+            "canales_logs": nombres_canales(logs_channels),
+            "linkban": nombres_canales(linkban_canal),
+            "honeypots": honeypots_nombres,
+            "autoroles": autoroles_count,
+        },
+        "starboard": {
+            "enabled": bool(sb.get("enabled", False)),
+            "threshold": int(sb.get("threshold", 5)),
+        },
+        "xp": {
+            "enabled": bool(xpc.get("enabled", False)),
+            "xp_min": int(xpc.get("xp_min", 0) or 0),
+            "xp_max": int(xpc.get("xp_max", 0) or 0),
+            "cooldown": int(xpc.get("cooldown", 0) or 0),
+            "usuarios": len(xp_db.get(gid, {})),
+        },
+        "economia": {
+            "moneda": ec_cfg.get("currency", "$"),
+            "usuarios": len(ec_users),
+            "dinero_total": dinero_total,
+            "items_tienda": len(shop_db.get(gid, {})),
+        },
+    })
+
+
+async def _dash_antiraid_set(request):
+    """POST /api/guild/<id>/antiraid — misma validación que el comando .antiraid."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    try:
+        data = await request.json()
+    except Exception:
+        return dash_web.json_response({"error": "JSON inválido"}, status=400)
+    if not isinstance(data, dict):
+        return dash_web.json_response({"error": "El cuerpo debe ser un objeto JSON"}, status=400)
+
+    gid = str(guild.id)
+    cfg = _antiraid_cfg(gid)
+    cambios = []
+
+    if "enabled" in data:
+        if not isinstance(data["enabled"], bool):
+            return dash_web.json_response({"error": "enabled debe ser true/false"}, status=400)
+        cfg["enabled"] = data["enabled"]
+        cambios.append("sistema " + ("activado" if data["enabled"] else "desactivado"))
+        if not data["enabled"]:
+            cfg["active"] = False
+            cfg["activated_at"] = None
+            cfg["manual"] = False
+
+    if "threshold" in data:
+        v = data["threshold"]
+        if isinstance(v, bool) or not isinstance(v, int) or not (2 <= v <= 100):
+            return dash_web.json_response({"error": "El umbral debe estar entre 2 y 100 joins"}, status=400)
+        cfg["threshold"] = v
+        cambios.append(f"umbral {v} joins")
+    if "seconds" in data:
+        v = data["seconds"]
+        if isinstance(v, bool) or not isinstance(v, int) or not (3 <= v <= 3600):
+            return dash_web.json_response({"error": "La ventana debe estar entre 3 y 3600 segundos"}, status=400)
+        cfg["seconds"] = v
+        cambios.append(f"ventana {v}s")
+    if "action" in data:
+        v = data["action"]
+        if v not in ("ban", "kick", "mute"):
+            return dash_web.json_response({"error": "La acción debe ser ban, kick o mute"}, status=400)
+        cfg["action"] = v
+        cambios.append(f"acción {v}")
+    if "punish_new" in data:
+        if not isinstance(data["punish_new"], bool):
+            return dash_web.json_response({"error": "punish_new debe ser true/false"}, status=400)
+        cfg["punish_new"] = data["punish_new"]
+        cambios.append("castigar entradas: " + ("sí" if data["punish_new"] else "no"))
+    if "min_age" in data:
+        v = data["min_age"]
+        if isinstance(v, bool) or not isinstance(v, int) or not (0 <= v <= 43800):
+            return dash_web.json_response({"error": "La edad mínima debe estar entre 0 y 43800 minutos"}, status=400)
+        cfg["min_age"] = v
+        cambios.append(f"edad mínima {v} min")
+
+    guardar_antiraid()
+
+    if cambios:
+        embed = discord.Embed(
+            title="⚙️ Antiraid actualizado desde el dashboard",
+            description=" • ".join(cambios),
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        await enviar_logs(guild, embed)
+
+    return dash_web.json_response({"ok": True, "antiraid": _antiraid_public(cfg)})
+
+
+async def _dash_raidmode(request):
+    """POST /api/guild/<id>/raidmode — misma lógica que .antiraid raidmode."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    try:
+        data = await request.json()
+    except Exception:
+        return dash_web.json_response({"error": "JSON inválido"}, status=400)
+    estado = data.get("estado")
+    if estado not in ("on", "off"):
+        return dash_web.json_response({"error": "estado debe ser on u off"}, status=400)
+
+    gid = str(guild.id)
+    cfg = _antiraid_cfg(gid)
+
+    if estado == "on":
+        if not cfg.get("enabled"):
+            return dash_web.json_response({"error": "El antiraid está desactivado. Actívalo primero."}, status=400)
+        cfg["active"] = True
+        cfg["activated_at"] = time.time()
+        cfg["manual"] = True
+        guardar_antiraid()
+        embed = discord.Embed(
+            title="🚨 Modo raid activado (dashboard)",
+            description="Todos los que entren ahora serán castigados hasta que se desactive.",
+            color=discord.Color.dark_red(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text="Se mantiene activo hasta apagarlo (dashboard o .antiraid raidmode off).")
+        await enviar_logs(guild, embed)
+        return dash_web.json_response({"ok": True, "antiraid": _antiraid_public(cfg)})
+
+    cfg["active"] = False
+    cfg["activated_at"] = None
+    cfg["manual"] = False
+    guardar_antiraid()
+    embed = discord.Embed(title="✅ Modo raid desactivado (dashboard)", color=discord.Color.green(), timestamp=discord.utils.utcnow())
+    await enviar_logs(guild, embed)
+    return dash_web.json_response({"ok": True, "antiraid": _antiraid_public(cfg)})
+
+
+async def _iniciar_dashboard():
+    """Arranca el servidor aiohttp del dashboard en el mismo event loop del bot."""
+    app = dash_web.Application(middlewares=[_dash_auth])
+    app.router.add_get("/", _dash_index)
+    app.router.add_get("/api/status", _dash_status)
+    app.router.add_get("/api/guilds", _dash_guilds)
+    app.router.add_get("/api/guild/{gid}", _dash_guild)
+    app.router.add_post("/api/guild/{gid}/antiraid", _dash_antiraid_set)
+    app.router.add_post("/api/guild/{gid}/raidmode", _dash_raidmode)
+    runner = dash_web.AppRunner(app)
+    await runner.setup()
+    site = dash_web.TCPSite(runner, dashboard_config["host"], dashboard_config["port"])
+    await site.start()
+    host = dashboard_config["host"]
+    if host in ("0.0.0.0", "::"):
+        host = "localhost"
+    print(f"🚀 Dashboard disponible en: http://{host}:{dashboard_config['port']}")
+
+
+@bot.command(name="dashboard")
+@commands.has_permissions(manage_guild=True)
+async def dashboard(ctx):
+    """Muestra la URL del panel web del bot. Uso: .dashboard"""
+    if not dashboard_config.get("enabled"):
+        return await ctx.send("🔴 El dashboard está desactivado. Edita `dashboard.json` (`enabled`) y reinicia el bot.")
+    host = dashboard_config["host"]
+    if host in ("0.0.0.0", "::"):
+        host = "localhost"
+    url = f"http://{host}:{dashboard_config['port']}"
+    embed = discord.Embed(
+        title="📊 Panel web del bot",
+        description=f"Controla el bot desde el navegador:\n**{url}**",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Qué puedes hacer", value="Ver estado en vivo, servidores, moderación, economía y configurar el **antiraid**.", inline=False)
+    embed.set_footer(text="Si configuraste un token en dashboard.json, añade ?token=TUTOKEN a la URL.")
+    await ctx.send(embed=embed)
+
+
+@dashboard.error
+async def dashboard_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Server.")
+
+
+@bot.tree.command(name="dashboard", description="Muestra la URL del panel web del bot")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_dashboard(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    if not dashboard_config.get("enabled"):
+        return await interaction.response.send_message("🔴 El dashboard está desactivado. Edita `dashboard.json` (`enabled`) y reinicia el bot.", ephemeral=True)
+    host = dashboard_config["host"]
+    if host in ("0.0.0.0", "::"):
+        host = "localhost"
+    url = f"http://{host}:{dashboard_config['port']}"
+    embed = discord.Embed(
+        title="📊 Panel web del bot",
+        description=f"Controla el bot desde el navegador:\n**{url}**",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Qué puedes hacer", value="Ver estado en vivo, servidores, moderación, economía y configurar el **antiraid**.", inline=False)
+    embed.set_footer(text="Si configuraste un token en dashboard.json, añade ?token=TUTOKEN a la URL.")
+    await interaction.response.send_message(embed=embed)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WAVEBOT · Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #16181e;
+    --panel-2: #1c1f26;
+    --border: #2a2d36;
+    --texto: #e7e9ee;
+    --texto-2: #9aa1ad;
+    --blurple: #5865F2;
+    --verde: #23a55a;
+    --rojo: #f23f43;
+    --naranja: #f0b232;
+    --radio: 14px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--texto);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+  }
+  a { color: var(--blurple); text-decoration: none; }
+
+  /* ===== Header ===== */
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 14px 22px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+    flex-wrap: wrap;
+  }
+  .bot-avatar { width: 46px; height: 46px; border-radius: 50%; background: var(--panel-2); }
+  .bot-nombre { font-size: 18px; font-weight: 700; }
+  .bot-sub { color: var(--texto-2); font-size: 12.5px; margin-top: 2px; }
+  .estado-punto {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--verde); margin-right: 5px; vertical-align: 1px;
+  }
+  .estado-punto.off { background: var(--rojo); }
+  .stats-header { display: flex; gap: 18px; margin-left: auto; flex-wrap: wrap; }
+  .stat-chip {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 6px 14px; text-align: center;
+  }
+  .stat-chip b { display: block; font-size: 15px; }
+  .stat-chip span { font-size: 11px; color: var(--texto-2); text-transform: uppercase; letter-spacing: .5px; }
+  .btn-refrescar {
+    background: var(--blurple); color: #fff; border: 0; border-radius: 10px;
+    padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .btn-refrescar:hover { filter: brightness(1.12); }
+
+  /* ===== Layout ===== */
+  .contenedor { display: flex; gap: 18px; padding: 18px 22px; align-items: flex-start; }
+  aside {
+    width: 280px; min-width: 240px; position: sticky; top: 84px;
+    max-height: calc(100vh - 110px); overflow-y: auto;
+  }
+  #buscar-guild {
+    width: 100%; background: var(--panel); border: 1px solid var(--border);
+    color: var(--texto); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; margin-bottom: 10px;
+  }
+  #buscar-guild:focus { outline: 1px solid var(--blurple); }
+  .lista-guilds { display: flex; flex-direction: column; gap: 6px; }
+  .guild-btn {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 9px 11px; cursor: pointer; color: var(--texto); text-align: left;
+    font-size: 13.5px; transition: border-color .15s;
+  }
+  .guild-btn:hover { border-color: var(--blurple); }
+  .guild-btn.activo { border-color: var(--blurple); background: var(--panel-2); }
+  .guild-icono { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; background: var(--panel-2);
+    display: flex; align-items: center; justify-content: center; font-size: 14px; color: var(--texto-2); }
+  .guild-info { overflow: hidden; }
+  .guild-nombre { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .guild-miembros { font-size: 11.5px; color: var(--texto-2); }
+
+  main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radio); padding: 18px 20px;
+  }
+  .card h2 { font-size: 15.5px; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+  .grid-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 1100px) { .grid-cards { grid-template-columns: 1fr; } aside { display: none; } }
+
+  /* ===== Hero servidor ===== */
+  .hero { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .hero img { width: 64px; height: 64px; border-radius: 16px; background: var(--panel-2); }
+  .hero-iniciales {
+    width: 64px; height: 64px; border-radius: 16px; background: var(--blurple);
+    display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 800;
+  }
+  .hero h1 { font-size: 20px; }
+  .hero-meta { color: var(--texto-2); font-size: 13px; margin-top: 4px; }
+  .hero-tags { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  .etiqueta {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px;
+    padding: 5px 12px; font-size: 12px; color: var(--texto-2);
+  }
+  .etiqueta b { color: var(--texto); }
+
+  /* ===== Formularios antiraid ===== */
+  .fila-opcion { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px dashed var(--border); }
+  .fila-opcion:last-of-type { border-bottom: 0; }
+  .opcion-label { font-size: 13.5px; }
+  .opcion-desc { font-size: 11.5px; color: var(--texto-2); margin-top: 2px; max-width: 340px; }
+
+  .switch { position: relative; width: 46px; height: 26px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .pista {
+    position: absolute; inset: 0; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 999px; cursor: pointer; transition: .2s;
+  }
+  .switch .pista::after {
+    content: ""; position: absolute; width: 18px; height: 18px; border-radius: 50%;
+    background: var(--texto-2); top: 3px; left: 3px; transition: .2s;
+  }
+  .switch input:checked + .pista { background: var(--verde); border-color: var(--verde); }
+  .switch input:checked + .pista::after { left: 23px; background: #fff; }
+
+  input[type=number], select {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--texto);
+    border-radius: 9px; padding: 8px 10px; font-size: 13.5px; width: 110px;
+  }
+  select { width: 150px; cursor: pointer; }
+  input[type=number]:focus, select:focus { outline: 1px solid var(--blurple); }
+
+  .acciones-form { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  .btn {
+    border: 0; border-radius: 10px; padding: 10px 18px; font-size: 13.5px;
+    font-weight: 600; cursor: pointer; color: #fff;
+  }
+  .btn-primario { background: var(--blurple); }
+  .btn-primario:hover { filter: brightness(1.12); }
+  .btn-peligro { background: var(--rojo); }
+  .btn-peligro:hover { filter: brightness(1.12); }
+  .btn-verde { background: var(--verde); }
+  .btn-verde:hover { filter: brightness(1.12); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+  .banner-raid {
+    display: none; margin-bottom: 14px; padding: 11px 14px; border-radius: 10px;
+    background: rgba(240, 178, 50, .12); border: 1px solid var(--naranja);
+    color: var(--naranja); font-size: 13px; font-weight: 600;
+  }
+  .banner-raid.visible { display: block; }
+
+  .stats-mini { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  .mini-chip { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 7px 13px; font-size: 12.5px; color: var(--texto-2); }
+  .mini-chip b { color: var(--texto); font-size: 14px; margin-right: 4px; }
+
+  /* ===== Cards de datos ===== */
+  .dato-fila { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 13.5px; }
+  .dato-fila:last-child { border-bottom: 0; }
+  .dato-fila span { color: var(--texto-2); }
+  .dato-fila b { text-align: right; max-width: 60%; overflow-wrap: anywhere; }
+  .verde { color: var(--verde); } .rojo { color: var(--rojo); } .naranja { color: var(--naranja); }
+
+  .vacio { color: var(--texto-2); font-size: 13.5px; text-align: center; padding: 40px 10px; }
+
+  /* ===== Toast ===== */
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--texto);
+    padding: 12px 22px; border-radius: 12px; font-size: 13.5px; opacity: 0;
+    pointer-events: none; transition: .25s; z-index: 100; max-width: 90vw;
+  }
+  #toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.ok { border-color: var(--verde); } #toast.err { border-color: var(--rojo); }
+
+  .cargando { display: flex; align-items: center; gap: 10px; color: var(--texto-2); font-size: 14px; padding: 30px; justify-content: center; }
+  .spinner {
+    width: 18px; height: 18px; border: 2.5px solid var(--border); border-top-color: var(--blurple);
+    border-radius: 50%; animation: girar .8s linear infinite;
+  }
+  @keyframes girar { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <img id="bot-avatar" class="bot-avatar" alt="">
+  <div>
+    <div class="bot-nombre"><span id="bot-estado" class="estado-punto"></span><span id="bot-nombre">Cargando…</span></div>
+    <div class="bot-sub" id="bot-sub">Conectando con el bot…</div>
+  </div>
+  <div class="stats-header">
+    <div class="stat-chip"><b id="h-servidores">–</b><span>Servidores</span></div>
+    <div class="stat-chip"><b id="h-usuarios">–</b><span>Usuarios</span></div>
+    <div class="stat-chip"><b id="h-ping">–</b><span>Ping</span></div>
+    <div class="stat-chip"><b id="h-uptime">–</b><span>Uptime</span></div>
+  </div>
+  <button class="btn-refrescar" onclick="refrescarTodo()">↻ Refrescar</button>
+</header>
+
+<div class="contenedor">
+  <aside>
+    <input id="buscar-guild" type="text" placeholder="🔎 Buscar servidor…" oninput="pintarGuilds()">
+    <div class="lista-guilds" id="lista-guilds">
+      <div class="cargando"><div class="spinner"></div> Cargando servidores…</div>
+    </div>
+  </aside>
+
+  <main id="principal">
+    <div class="cargando"><div class="spinner"></div> Cargando datos del bot…</div>
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+let GUILDS = [];
+let GUILD_ACTUAL = null;
+let DATOS_GUILD = null;
+let REFRESCO_AUTO = null;
+
+function api(ruta, opciones = {}) {
+  const url = new URL(ruta, location.origin);
+  if (TOKEN) url.searchParams.set("token", TOKEN);
+  const cfg = { ...opciones, headers: { "Content-Type": "application/json" } };
+  return fetch(url, cfg).then(async r => {
+    if (r.status === 401) { throw new Error("Token incorrecto (401)"); }
+    const datos = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(datos.error || "Error " + r.status);
+    return datos;
+  });
+}
+
+function esc(t) {
+  return String(t ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[c]);
+}
+
+function toast(msg, ok = true) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "visible " + (ok ? "ok" : "err");
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.className = "", 3200);
+}
+
+function fmtNum(n) { return Number(n || 0).toLocaleString("es-ES"); }
+
+function fmtUptime(seg) {
+  seg = Math.floor(seg || 0);
+  const d = Math.floor(seg / 86400), h = Math.floor(seg % 86400 / 3600), m = Math.floor(seg % 3600 / 60);
+  if (d > 0) return d + "d " + h + "h";
+  if (h > 0) return h + "h " + m + "m";
+  return m + "m " + (seg % 60) + "s";
+}
+
+/* ===== Estado del bot (header) ===== */
+async function cargarEstado() {
+  try {
+    const s = await api("/api/status");
+    document.getElementById("bot-nombre").textContent = s.bot.nombre || "WAVEBOT";
+    document.getElementById("bot-sub").textContent = "ID " + (s.bot.id || "–") + " · " + (s.estado === "online" ? "En línea" : "Sin conexión");
+    document.getElementById("bot-estado").className = "estado-punto" + (s.estado === "online" ? "" : " off");
+    document.getElementById("h-servidores").textContent = fmtNum(s.servidores);
+    document.getElementById("h-usuarios").textContent = fmtNum(s.usuarios);
+    document.getElementById("h-ping").textContent = s.ping_ms != null ? s.ping_ms + " ms" : "–";
+    document.getElementById("h-uptime").textContent = fmtUptime(s.uptime_seg);
+    const av = document.getElementById("bot-avatar");
+    if (s.bot.avatar) { av.src = s.bot.avatar; av.style.display = ""; } else { av.style.display = "none"; }
+  } catch (e) {
+    toast("Error cargando estado: " + e.message, false);
+  }
+}
+
+/* ===== Lista de servidores ===== */
+async function cargarGuilds() {
+  try {
+    GUILDS = await api("/api/guilds");
+    pintarGuilds();
+    if (!GUILD_ACTUAL && GUILDS.length) seleccionarGuild(GUILDS[0].id);
+    if (!GUILDS.length) {
+      document.getElementById("principal").innerHTML =
+        '<div class="card"><div class="vacio">El bot no está en ningún servidor todavía.</div></div>';
+    }
+  } catch (e) {
+    document.getElementById("lista-guilds").innerHTML = "";
+    toast("Error cargando servidores: " + e.message, false);
+  }
+}
+
+function pintarGuilds() {
+  const filtro = document.getElementById("buscar-guild").value.toLowerCase();
+  const cont = document.getElementById("lista-guilds");
+  cont.innerHTML = GUILDS
+    .filter(g => g.nombre.toLowerCase().includes(filtro))
+    .map(g => `
+      <button class="guild-btn ${g.id === GUILD_ACTUAL ? "activo" : ""}" onclick="seleccionarGuild('${g.id}')">
+        ${g.icono
+          ? `<img class="guild-icono" src="${esc(g.icono)}" alt="">`
+          : `<div class="guild-icono">${esc(g.nombre.slice(0, 2).toUpperCase())}</div>`}
+        <div class="guild-info">
+          <div class="guild-nombre">${esc(g.nombre)}</div>
+          <div class="guild-miembros">👥 ${fmtNum(g.miembros)} miembros</div>
+        </div>
+      </button>`).join("");
+}
+
+/* ===== Detalle de servidor ===== */
+async function seleccionarGuild(id) {
+  GUILD_ACTUAL = id;
+  pintarGuilds();
+  const main = document.getElementById("principal");
+  main.innerHTML = '<div class="cargando"><div class="spinner"></div> Cargando servidor…</div>';
+  try {
+    DATOS_GUILD = await api("/api/guild/" + id);
+    pintarGuild();
+  } catch (e) {
+    main.innerHTML = '<div class="card"><div class="vacio">❌ ' + esc(e.message) + "</div></div>";
+  }
+}
+
+function pintarGuild() {
+  const g = DATOS_GUILD;
+  const ar = g.antiraid;
+  const RaidActivo = ar.active;
+
+  document.getElementById("principal").innerHTML = `
+    <div class="card hero-card">
+      <div class="hero">
+        ${g.icono
+          ? `<img src="${esc(g.icono)}" alt="">`
+          : `<div class="hero-iniciales">${esc(g.nombre.slice(0, 2).toUpperCase())}</div>`}
+        <div>
+          <h1>${esc(g.nombre)}</h1>
+          <div class="hero-meta">👑 ${esc(g.owner_nombre || "Desconocido")} · 🗓️ Creado el ${esc(g.creado_texto)}</div>
+        </div>
+        <div class="hero-tags">
+          <span class="etiqueta">👥 <b>${fmtNum(g.miembros)}</b> miembros</span>
+          <span class="etiqueta">⌨️ Prefijos: <b>${esc(g.prefijos.join(" · "))}</b></span>
+          <span class="etiqueta">🤖 Bots: <b>${fmtNum(g.bots)}</b></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-cards">
+      <div class="card" id="card-antiraid">
+        <h2>🚨 Antiraid</h2>
+        <div class="banner-raid ${RaidActivo ? "visible" : ""}">
+          ${RaidActivo ? "MODO RAID ACTIVO — todas las entradas están siendo castigadas (" + (ar.manual ? "manual, no se desactiva solo" : "automático") + ")" : ""}
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Sistema antiraid</div>
+            <div class="opcion-desc">Desactivado por defecto. Detecta joins masivos y castiga a los raiders.</div></div>
+          <label class="switch"><input type="checkbox" id="ar-enabled" ${ar.enabled ? "checked" : ""}><span class="pista"></span></label>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Umbral de detección</div>
+            <div class="opcion-desc">Joins necesarios dentro de la ventana para considerar raid.</div></div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="number" id="ar-threshold" min="2" max="100" value="${ar.threshold}" title="Joins">
+            <span style="color:var(--texto-2)">en</span>
+            <input type="number" id="ar-seconds" min="3" max="3600" value="${ar.seconds}" title="Segundos">
+            <span style="color:var(--texto-2)">s</span>
+          </div>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Acción contra raiders</div>
+            <div class="opcion-desc">castigo aplicado al detectar un raid${ar.action === "mute" ? " (timeout de 60 min)" : ""}.</div></div>
+          <select id="ar-action">
+            <option value="kick" ${ar.action === "kick" ? "selected" : ""}>kick (expulsar)</option>
+            <option value="ban" ${ar.action === "ban" ? "selected" : ""}>ban (banear)</option>
+            <option value="mute" ${ar.action === "mute" ? "selected" : ""}>mute (timeout 1h)</option>
+          </select>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Castigar entradas durante raid</div>
+            <div class="opcion-desc">Si está en No, solo se castiga al usuario que dispara el umbral.</div></div>
+          <label class="switch"><input type="checkbox" id="ar-punishnew" ${ar.punish_new ? "checked" : ""}><span class="pista"></span></label>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Edad mínima de cuenta</div>
+            <div class="opcion-desc">En minutos. 0 = desactivado. Castiga cuentas recién creadas.</div></div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="number" id="ar-minage" min="0" max="43800" value="${ar.min_age}">
+            <span style="color:var(--texto-2)">min</span>
+          </div>
+        </div>
+        <div class="stats-mini">
+          <span class="mini-chip">🚨 <b>${fmtNum(ar.stats.raids)}</b> raids detectados</span>
+          <span class="mini-chip">⚔️ <b>${fmtNum(ar.stats.punished)}</b> castigados</span>
+        </div>
+        <div class="acciones-form">
+          <button class="btn btn-primario" onclick="guardarAntiraid()">💾 Guardar cambios</button>
+          ${RaidActivo
+            ? '<button class="btn btn-verde" onclick="toggleRaidmode(\'off\')">✅ Apagar modo raid</button>'
+            : '<button class="btn btn-peligro" onclick="toggleRaidmode(\'on\')">🚨 Activar modo raid manual</button>'}
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>🛡️ Moderación</h2>
+        <div class="dato-fila"><span>⚠️ Warns totales</span><b>${fmtNum(g.moderacion.warns_totales)} <span style="color:var(--texto-2);font-weight:400">(${fmtNum(g.moderacion.usuarios_con_warns)} usuarios)</span></b></div>
+        <div class="dato-fila"><span>📜 Canales de logs</span><b>${g.moderacion.canales_logs.length ? esc(g.moderacion.canales_logs.join(", ")) : "Ninguno"}</b></div>
+        <div class="dato-fila"><span>🔗 Canales sin links (linkban)</span><b>${g.moderacion.linkban.length ? esc(g.moderacion.linkban.join(", ")) : "Ninguno"}</b></div>
+        <div class="dato-fila"><span>🍯 Honeypots</span><b>${g.moderacion.honeypots.length ? esc(g.moderacion.honeypots.join(", ")) : "Ninguno"}</b></div>
+        <div class="dato-fila"><span>🧑‍💼 Autoroles</span><b>${fmtNum(g.moderacion.autoroles)} configurados</b></div>
+      </div>
+
+      <div class="card">
+        <h2>⭐ Starboard y niveles</h2>
+        <div class="dato-fila"><span>Starboard</span><b class="${g.starboard.enabled ? "verde" : "rojo"}">${g.starboard.enabled ? "Activado" : "Desactivado"}</b></div>
+        <div class="dato-fila"><span>⭐ Estrellas necesarias</span><b>${fmtNum(g.starboard.threshold)}</b></div>
+        <div class="dato-fila"><span>📊 Sistema de XP</span><b class="${g.xp.enabled ? "verde" : "rojo"}">${g.xp.enabled ? "Activado" : "Desactivado"}</b></div>
+        <div class="dato-fila"><span>⚡ XP por mensaje</span><b>${g.xp.xp_min} – ${g.xp.xp_max} (cooldown ${g.xp.cooldown}s)</b></div>
+        <div class="dato-fila"><span>🎓 Usuarios con nivel</span><b>${fmtNum(g.xp.usuarios)}</b></div>
+      </div>
+
+      <div class="card">
+        <h2>💰 Economía</h2>
+        <div class="dato-fila"><span>Moneda</span><b>${esc(g.economia.moneda)}</b></div>
+        <div class="dato-fila"><span>👤 Usuarios con cuenta</span><b>${fmtNum(g.economia.usuarios)}</b></div>
+        <div class="dato-fila"><span>🏦 Dinero total (cash + banco)</span><b>${esc(g.economia.moneda)}${fmtNum(g.economia.dinero_total)}</b></div>
+        <div class="dato-fila"><span>🛒 Items en la tienda</span><b>${fmtNum(g.economia.items_tienda)}</b></div>
+      </div>
+    </div>`;
+}
+
+/* ===== Acciones ===== */
+async function guardarAntiraid() {
+  const payload = {
+    enabled: document.getElementById("ar-enabled").checked,
+    threshold: parseInt(document.getElementById("ar-threshold").value, 10),
+    seconds: parseInt(document.getElementById("ar-seconds").value, 10),
+    action: document.getElementById("ar-action").value,
+    punish_new: document.getElementById("ar-punishnew").checked,
+    min_age: parseInt(document.getElementById("ar-minage").value, 10),
+  };
+  try {
+    await api("/api/guild/" + GUILD_ACTUAL + "/antiraid", { method: "POST", body: JSON.stringify(payload) });
+    toast("✅ Antiraid guardado correctamente");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) {
+    toast("❌ " + e.message, false);
+  }
+}
+
+async function toggleRaidmode(estado) {
+  if (estado === "on" && !confirm("¿Activar el modo raid manual?\n\nTODOS los que entren al servidor serán castigados hasta que lo apagues. El staff (Manage Server) queda exento.")) return;
+  try {
+    await api("/api/guild/" + GUILD_ACTUAL + "/raidmode", { method: "POST", body: JSON.stringify({ estado }) });
+    toast(estado === "on" ? "🚨 Modo raid ACTIVADO" : "✅ Modo raid desactivado");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) {
+    toast("❌ " + e.message, false);
+  }
+}
+
+/* ===== Inicio ===== */
+function refrescarTodo() {
+  cargarEstado();
+  cargarGuilds();
+  if (GUILD_ACTUAL) seleccionarGuild(GUILD_ACTUAL);
+}
+
+cargarEstado();
+cargarGuilds();
+REFRESCO_AUTO = setInterval(cargarEstado, 30000);
+</script>
+</body>
+</html>
