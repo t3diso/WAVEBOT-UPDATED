@@ -964,7 +964,7 @@ async def on_ready():
     cargar_economy()
     cargar_shop()
     cargar_antiraid()
-    await bot.change_presence(status=discord.Status.online, activity=discord.Game(name=".help | created by ck9h"))
+    await bot.change_presence(status=discord.Status.online, activity=discord.Game(name=".help | created by fakepy"))
     print(f"Conectado como {bot.user} (ID: {bot.user.id})")
     print(f"Servidores: {len(bot.guilds)}")
     # Intentar sync global primero.
