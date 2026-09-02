@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WAVEBOT · Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
     --bg: #0b0e14;
@@ -25,8 +28,9 @@
   body {
     background: var(--bg);
     color: var(--texto);
-    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
     display: flex; flex-direction: column; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
   }
   a { color: var(--acento); text-decoration: none; }
 
@@ -43,7 +47,7 @@
   .estado-punto.off { background: var(--rojo); }
   .chips-top { display: flex; gap: 10px; margin-left: auto; flex-wrap: wrap; align-items: center; }
   .stat-chip { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 5px 13px; text-align: center; }
-  .stat-chip b { display: block; font-size: 14px; }
+  .stat-chip b { display: block; font-size: 14px; font-variant-numeric: tabular-nums; }
   .stat-chip span { font-size: 10.5px; color: var(--texto-2); text-transform: uppercase; letter-spacing: .5px; }
   .btn-refrescar { background: var(--acento); color: #fff; border: 0; border-radius: 10px; padding: 8px 15px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
   .btn-refrescar:hover { filter: brightness(1.12); }
@@ -119,7 +123,7 @@
   /* Tiles de resumen */
   .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
   .tile { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
-  .tile .num { font-size: 21px; font-weight: 800; margin-top: 5px; }
+  .tile .num { font-size: 21px; font-weight: 800; margin-top: 5px; font-variant-numeric: tabular-nums; }
   .tile .lbl { font-size: 11px; color: var(--texto-2); text-transform: uppercase; letter-spacing: .5px; }
   .modulos { display: flex; flex-wrap: wrap; gap: 10px; }
   .modulo-pill {
