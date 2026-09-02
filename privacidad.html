@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WAVEBOT · Política de Privacidad</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0e14; --bg-2: #0f131c; --panel: #151a26; --panel-2: #1b2130;
+    --border: #262d40; --texto: #e8eaf2; --texto-2: #97a0b3;
+    --acento: #8b7cf6; --acento-suave: rgba(139, 124, 246, .14);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--texto);
+    font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; min-height: 100vh;
+    display: flex; flex-direction: column;
+  }
+  a { color: var(--acento); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 14px 22px; background: var(--bg-2); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 5;
+  }
+  .marca { font-weight: 800; font-size: 16px; }
+  .marca span { color: var(--acento); }
+  .selector-idioma { margin-left: auto; display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 4px; }
+  .btn-lang { background: transparent; border: 0; color: var(--texto-2); font-weight: 700; font-size: 12.5px; padding: 6px 14px; border-radius: 7px; cursor: pointer; font-family: inherit; }
+  .btn-lang.activo { background: var(--acento-suave); color: var(--acento); }
+  main { max-width: 820px; width: 100%; margin: 0 auto; padding: 36px 20px 60px; flex: 1; }
+  h1 { font-size: 26px; margin-bottom: 6px; }
+  .actualizado { color: var(--texto-2); font-size: 13px; margin-bottom: 28px; }
+  h2 { font-size: 16.5px; margin: 26px 0 8px; color: var(--acento); }
+  p, li { font-size: 14px; line-height: 1.65; color: var(--texto); }
+  ul { padding-left: 20px; margin: 6px 0; }
+  footer {
+    padding: 18px 22px; border-top: 1px solid var(--border); background: var(--bg-2);
+    color: var(--texto-2); font-size: 12.5px; display: flex; gap: 14px; flex-wrap: wrap; justify-content: center;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="marca">WAVE<span>BOT</span></div>
+  <div class="selector-idioma">
+    <button class="btn-lang" data-lang="es" onclick="setLang('es')">ES</button>
+    <button class="btn-lang" data-lang="en" onclick="setLang('en')">EN</button>
+  </div>
+</header>
+
+<main>
+  <div class="lang-es">
+    <h1>Política de Privacidad</h1>
+    <p class="actualizado">Última actualización: septiembre de 2026</p>
+
+    <h2>1. Datos que recopilamos</h2>
+    <p>Para que WaveBot funcione, procesamos los siguientes datos a través de la API de Discord:</p>
+    <ul>
+      <li><strong>Datos de identidad</strong>: identificador (ID) de usuario, nombre de usuario y avatar, obtenidos al iniciar sesión en el panel web con Discord.</li>
+      <li><strong>Datos de servidores</strong>: ID, nombre e icono de los servidores en los que estás y en los que está el bot, junto con tus permisos en ellos (necesario para mostrar solo lo que puedes gestionar).</li>
+      <li><strong>Datos de configuración</strong>: ajustes definidos por la administración de cada servidor (antiraid, autoroles, warns y sus motivos, honeypots, canales de logs, starboard, prefijos, niveles/XP y economía, incluidos saldos e inventarios).</li>
+      <li><strong>Contenido de mensajes</strong>: procesado en memoria únicamente para ejecutar comandos y funciones de moderación (por ejemplo, motivos de warns o mensajes eliminados en sanciones). No se almacena el historial de conversaciones.</li>
+    </ul>
+
+    <h2>2. Cómo usamos los datos</h2>
+    <p>Los datos se utilizan exclusivamente para: ejecutar las funciones del bot (moderación, niveles, economía), mostrar y aplicar la configuración del panel web, y mantener tu sesión iniciada. No usamos los datos para publicidad ni perfiles de comportamiento.</p>
+
+    <h2>3. Sesiones y cookies</h2>
+    <p>Al entrar al dashboard con Discord, creamos una sesión y guardamos una cookie técnica (<code>dash_session</code>) en tu navegador para mantenerte conectado. Caduca tras 30 días de inactividad. No usamos cookies de análisis ni de terceros para seguimiento.</p>
+
+    <h2>4. Almacenamiento</h2>
+    <p>Los datos de configuración se guardan en archivos JSON en el servidor de alojamiento del bot, en un volumen persistente. Solo la administración del bot tiene acceso a esos archivos. Las sesiones del panel se guardan de forma anonimizada mediante identificadores aleatorios.</p>
+
+    <h2>5. Compartición de datos</h2>
+    <p>No vendemos ni cedemos tus datos a nadie. Solo se comunican con <strong>Discord</strong> (su API es imprescindible para que el bot funcione) y con los proveedores de infraestructura necesarios para prestar el servicio (alojamiento). El nombre y avatar que tú muestras en el panel provienen de tu propio perfil público de Discord.</p>
+
+    <h2>6. Servicios de terceros</h2>
+    <ul>
+      <li><a href="https://discord.com" target="_blank" rel="noopener">Discord</a>: plataforma y API del bot.</li>
+      <li>Proveedor de alojamiento (Railway): ejecución del bot y almacenamiento de datos.</li>
+      <li><a href="https://fonts.googleapis.com" target="_blank" rel="noopener">Google Fonts</a>: tipografía de las páginas web (no recopila datos personales del servicio).</li>
+    </ul>
+
+    <h2>7. Retención y eliminación</h2>
+    <p>Los datos de un servidor se conservan mientras el bot permanezca en él. Los datos de tu sesión se eliminan al cerrar sesión o tras 30 días de inactividad. Puedes solicitar la eliminación de tus datos personales (warns, economía, niveles, sesión) en cualquier momento contactando con el equipo.</p>
+
+    <h2>8. Tus derechos</h2>
+    <p>Dependiendo de tu jurisdicción, puedes tener derecho a acceder, rectificar, eliminar u oponerte al tratamiento de tus datos personales. Para ejercer estos derechos, contacta con el equipo de WaveBot por Discord (<strong>fakepy</strong>) indicando tu ID de usuario.</p>
+
+    <h2>9. Menores</h2>
+    <p>El servicio no está dirigido a menores de la edad mínima de Discord. Si crees que un menor nos ha facilitado datos personales, contáctanos para eliminarlos.</p>
+
+    <h2>10. Cambios en esta política</h2>
+    <p>Podemos actualizar esta política en cualquier momento. Los cambios entrarán en vigor al publicarse en esta página, con la fecha de actualización indicada arriba.</p>
+
+    <h2>11. Contacto</h2>
+    <p>Para cualquier consulta de privacidad, contacta con el equipo de WaveBot a través de Discord (<strong>fakepy</strong>) o del servidor de soporte oficial del bot.</p>
+  </div>
+
+  <div class="lang-en" style="display:none">
+    <h1>Privacy Policy</h1>
+    <p class="actualizado">Last updated: September 2026</p>
+
+    <h2>1. Data we collect</h2>
+    <p>For WaveBot to work, we process the following data through the Discord API:</p>
+    <ul>
+      <li><strong>Identity data</strong>: user ID, username, and avatar, obtained when you sign in to the web dashboard with Discord.</li>
+      <li><strong>Server data</strong>: ID, name, and icon of the servers you are in where the bot is present, along with your permissions in them (needed to show only what you can manage).</li>
+      <li><strong>Configuration data</strong>: settings defined by each server's administration (anti-raid, autoroles, warns and their reasons, honeypots, log channels, starboard, prefixes, leveling/XP, and economy, including balances and inventories).</li>
+      <li><strong>Message content</strong>: processed in memory only to run commands and moderation features (for example, warn reasons or messages deleted by sanctions). Conversation history is not stored.</li>
+    </ul>
+
+    <h2>2. How we use the data</h2>
+    <p>Data is used exclusively to: run the bot's features (moderation, leveling, economy), display and apply the web dashboard configuration, and keep you logged in. We do not use data for advertising or behavioral profiling.</p>
+
+    <h2>3. Sessions and cookies</h2>
+    <p>When you sign in to the dashboard with Discord, we create a session and store a technical cookie (<code>dash_session</code>) in your browser to keep you logged in. It expires after 30 days of inactivity. We do not use analytics or third-party tracking cookies.</p>
+
+    <h2>4. Storage</h2>
+    <p>Configuration data is stored in JSON files on the bot's hosting server, on a persistent volume. Only the bot's administration has access to those files. Dashboard sessions are stored using random anonymous identifiers.</p>
+
+    <h2>5. Data sharing</h2>
+    <p>We do not sell or transfer your data to anyone. Data is only exchanged with <strong>Discord</strong> (its API is essential for the bot to work) and with the infrastructure providers required to deliver the service (hosting). The name and avatar shown in the panel come from your own public Discord profile.</p>
+
+    <h2>6. Third-party services</h2>
+    <ul>
+      <li><a href="https://discord.com" target="_blank" rel="noopener">Discord</a>: platform and bot API.</li>
+      <li>Hosting provider (Railway): bot execution and data storage.</li>
+      <li><a href="https://fonts.googleapis.com" target="_blank" rel="noopener">Google Fonts</a>: typography for the web pages (it does not collect personal data from the service).</li>
+    </ul>
+
+    <h2>7. Retention and deletion</h2>
+    <p>A server's data is kept as long as the bot remains in it. Your session data is deleted when you log out or after 30 days of inactivity. You can request deletion of your personal data (warns, economy, levels, session) at any time by contacting the team.</p>
+
+    <h2>8. Your rights</h2>
+    <p>Depending on your jurisdiction, you may have the right to access, rectify, delete, or object to the processing of your personal data. To exercise these rights, contact the WaveBot team on Discord (<strong>fakepy</strong>) including your user ID.</p>
+
+    <h2>9. Minors</h2>
+    <p>The service is not directed at people under Discord's minimum age. If you believe a minor has provided us with personal data, contact us so we can delete it.</p>
+
+    <h2>10. Changes to this policy</h2>
+    <p>We may update this policy at any time. Changes take effect upon publication on this page, with the updated date shown above.</p>
+
+    <h2>11. Contact</h2>
+    <p>For any privacy questions, contact the WaveBot team via Discord (<strong>fakepy</strong>) or through the bot's official support server.</p>
+  </div>
+</main>
+
+<footer>
+  <a href="/">← Dashboard</a>
+  <a href="/terminos">Términos del Servicio / Terms of Service</a>
+</footer>
+
+<script>
+function setLang(l) {
+  try { localStorage.setItem("legal_lang", l); } catch (e) {}
+  document.querySelectorAll(".lang-es, .lang-en").forEach(el => { el.style.display = "none"; });
+  document.querySelectorAll(".lang-" + l).forEach(el => { el.style.display = ""; });
+  document.querySelectorAll(".btn-lang").forEach(b => b.classList.toggle("activo", b.dataset.lang === l));
+}
+let pref = null;
+try { pref = localStorage.getItem("legal_lang"); } catch (e) {}
+if (!pref) pref = (navigator.language || "").toLowerCase().startsWith("es") ? "es" : "en";
+setLang(pref);
+</script>
+</body>
+</html>

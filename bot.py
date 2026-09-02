@@ -7912,9 +7912,9 @@ def _dash_buscar_guild(gid_texto: str):
 
 @dash_web.middleware
 async def _dash_auth(request, handler):
-    """La página (/) y el login OAuth son públicos. El resto exige sesión OAuth o token maestro."""
+    """Páginas públicas: dashboard (/), login OAuth y páginas legales. El resto exige sesión o token."""
     ruta = request.path
-    if ruta == "/" or ruta.startswith("/oauth/"):
+    if ruta == "/" or ruta.startswith("/oauth/") or ruta in ("/terminos", "/terms", "/privacidad", "/privacy"):
         return await handler(request)
     token_maestro = dashboard_config.get("token", "")
     if token_maestro:
@@ -8168,6 +8168,25 @@ async def _dash_index(request):
             html = f.read()
     except OSError:
         return dash_web.Response(text="dashboard.html no se encontró junto a bot.py", status=500, content_type="text/plain")
+    return dash_web.Response(text=html, content_type="text/html", charset="utf-8")
+
+
+async def _dash_servir_pagina(request):
+    """Sirve una página legal estática (términos / privacidad) según la ruta."""
+    pagina = {
+        "/terminos": "terminos.html",
+        "/terms": "terminos.html",
+        "/privacidad": "privacidad.html",
+        "/privacy": "privacidad.html",
+    }.get(request.path)
+    if pagina is None:
+        return dash_web.Response(text="Página no encontrada", status=404, content_type="text/plain")
+    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), pagina)
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            html = f.read()
+    except OSError:
+        return dash_web.Response(text=f"{pagina} no se encontró junto a bot.py", status=500, content_type="text/plain")
     return dash_web.Response(text=html, content_type="text/html", charset="utf-8")
 
 
@@ -8961,6 +8980,10 @@ async def _iniciar_dashboard():
     app.router.add_get("/oauth/login", _dash_oauth_login)
     app.router.add_get("/oauth/callback", _dash_oauth_callback)
     app.router.add_get("/oauth/logout", _dash_oauth_logout)
+    app.router.add_get("/terminos", _dash_servir_pagina)
+    app.router.add_get("/terms", _dash_servir_pagina)
+    app.router.add_get("/privacidad", _dash_servir_pagina)
+    app.router.add_get("/privacy", _dash_servir_pagina)
     app.router.add_get("/api/status", _dash_status)
     app.router.add_get("/api/guilds", _dash_guilds)
     app.router.add_get("/api/guild/{gid}", _dash_guild)
