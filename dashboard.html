@@ -62,8 +62,7 @@
     overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
   }
   .titulo-columna { font-size: 10.5px; font-weight: 700; color: var(--texto-2); text-transform: uppercase; letter-spacing: .6px; padding: 0 6px; }
-  #buscar-guild { width: 100%; background: var(--panel); border: 1px solid var(--border); color: var(--texto); border-radius: 10px; padding: 9px 12px; font-size: 13px; }
-  #buscar-guild:focus { outline: 1px solid var(--acento); }
+  #buscar-guild { width: 100%; padding: 9px 12px; font-size: 13px; }
   .lista-guilds { display: flex; flex-direction: column; gap: 6px; }
   .guild-btn {
     display: flex; align-items: center; gap: 10px; width: 100%;
@@ -147,12 +146,23 @@
   .switch .pista::after { content: ""; position: absolute; width: 18px; height: 18px; border-radius: 50%; background: var(--texto-2); top: 3px; left: 3px; transition: .2s; }
   .switch input:checked + .pista { background: var(--verde); border-color: var(--verde); }
   .switch input:checked + .pista::after { left: 23px; background: #fff; }
-  input[type=number], input[type=text], select {
-    background: var(--panel-2); border: 1px solid var(--border); color: var(--texto);
-    border-radius: 9px; padding: 8px 10px; font-size: 13.5px; width: 110px;
+  input:not([type="checkbox"]), select {
+    background: linear-gradient(180deg, var(--panel-2), #151a27);
+    border: 1px solid var(--border); color: var(--texto);
+    border-radius: 10px; padding: 8px 12px; font-size: 13.5px; width: 110px;
+    transition: border-color .15s, box-shadow .15s, background .15s;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, .22);
   }
+  input:not([type="checkbox"])::placeholder { color: #5d6679; font-style: italic; }
+  input:not([type="checkbox"]):hover, select:hover { border-color: #39425a; }
+  input:not([type="checkbox"]):focus, select:focus {
+    outline: none; border-color: var(--acento);
+    box-shadow: 0 0 0 3px var(--acento-suave), inset 0 1px 3px rgba(0, 0, 0, .25);
+    background: #1c2333;
+  }
+  ::selection { background: var(--acento); color: #fff; }
   select { width: 170px; cursor: pointer; }
-  input:focus, select:focus { outline: 1px solid var(--acento); }
+  select option { background: var(--panel-2); color: var(--texto); }
   input.mini-input { width: 78px !important; }
   .acciones-form { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
   .btn { border: 0; border-radius: 10px; padding: 10px 18px; font-size: 13.5px; font-weight: 600; cursor: pointer; color: #fff; }
@@ -217,13 +227,24 @@
   .owner-flotante b { color: var(--texto); overflow: hidden; text-overflow: ellipsis; }
 
   /* ===== Login ===== */
-  #overlay-login { position: fixed; inset: 0; background: rgba(5, 7, 12, .82); display: flex; align-items: center; justify-content: center; z-index: 200; }
-  .login-card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 26px 28px; width: min(400px, 92vw); text-align: center; }
+  #overlay-login {
+    position: fixed; inset: 0; z-index: 200;
+    background:
+      radial-gradient(ellipse at 50% 38%, rgba(139, 124, 246, .1), transparent 62%),
+      #0b0e14;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .login-card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 18px;
+    padding: 28px 30px; width: min(410px, 92vw); text-align: center;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, .55), 0 0 0 1px rgba(139, 124, 246, .12);
+    animation: aparecer .28s ease-out;
+  }
+  @keyframes aparecer { from { opacity: 0; transform: translateY(14px) scale(.96); } to { opacity: 1; transform: none; } }
   .login-card h2 { margin-bottom: 8px; }
   .login-desc { color: var(--texto-2); font-size: 13px; margin-bottom: 16px; }
   .login-debug { color: var(--naranja); font-size: 12px; margin-top: 12px; overflow-wrap: anywhere; }
-  #login-input { width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--texto); border-radius: 10px; padding: 11px 13px; font-size: 13.5px; margin-bottom: 12px; }
-  #login-input:focus { outline: 1px solid var(--acento); }
+  #login-input { width: 100%; padding: 11px 13px; margin-bottom: 12px; }
 
   /* ===== Responsive ===== */
   @media (max-width: 1150px) { .nav-secciones { width: 64px; min-width: 64px; } .nav-btn { justify-content: center; padding: 10px 0; } .nav-btn .texto-nav, .nav-btn .candado { display: none; } }
