@@ -5,6 +5,7 @@ import os
 import random
 import re
 import time
+import sys
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -703,6 +704,7 @@ def cargar_dashboard():
     except (TypeError, ValueError):
         dashboard_config["port"] = 8080
     dashboard_config["token"] = str(dashboard_config.get("token", ""))
+    dashboard_config["owner_id"] = str(dashboard_config.get("owner_id", "")).strip()
     estado = "activado" if dashboard_config["enabled"] else "desactivado"
     print(f"Dashboard: {estado} -> http://{dashboard_config['host']}:{dashboard_config['port']}")
 
@@ -7802,15 +7804,28 @@ async def _dash_status(request):
     ping_ms = round(ping * 1000) if ping == ping else None  # latency puede ser NaN antes del primer latido
     conectado = bot.user is not None and not bot.is_closed()
     usuarios = sum(g.member_count if g.member_count is not None else len(g.members) for g in bot.guilds)
+    # Info del owner del bot (si está configurado en dashboard.json).
+    owner = None
+    owner_id = dashboard_config.get("owner_id", "")
+    if owner_id.isdigit():
+        usuario_owner = bot.get_user(int(owner_id))
+        if usuario_owner is None:
+            try:
+                usuario_owner = await bot.fetch_user(int(owner_id))
+            except (discord.NotFound, discord.HTTPException):
+                usuario_owner = None
+        if usuario_owner is not None:
+            owner = {"id": str(usuario_owner.id), "nombre": str(usuario_owner), "avatar": str(usuario_owner.display_avatar.url)}
     return dash_web.json_response({
         "estado": "online" if conectado else "offline",
         "servidores": len(bot.guilds),
         "usuarios": usuarios,
         "ping_ms": ping_ms,
         "uptime_seg": int(time.time() - _INICIO_BOT),
+        "owner": owner,
         "bot": {
             "nombre": str(bot.user) if bot.user else "WAVEBOT",
-            "id": bot.user.id if bot.user else None,
+            "id": str(bot.user.id) if bot.user else None,
             "avatar": str(bot.user.display_avatar.url) if bot.user else None,
         },
     })
@@ -7820,7 +7835,7 @@ async def _dash_guilds(request):
     datos = []
     for g in sorted(bot.guilds, key=lambda x: -(x.member_count if x.member_count is not None else len(x.members))):
         datos.append({
-            "id": g.id,
+            "id": str(g.id),  # como texto: los snowflakes superan la precisión de JS (53 bits)
             "nombre": g.name,
             "icono": str(g.icon.url) if g.icon else None,
             "miembros": g.member_count if g.member_count is not None else len(g.members),
@@ -7862,12 +7877,12 @@ async def _dash_guild(request):
     dinero_total = sum(int(u.get("cash", 0)) + int(u.get("bank", 0)) for u in ec_users.values() if isinstance(u, dict))
 
     return dash_web.json_response({
-        "id": guild.id,
+        "id": str(guild.id),  # como texto: los snowflakes superan la precisión de JS (53 bits)
         "nombre": guild.name,
         "icono": str(guild.icon.url) if guild.icon else None,
         "miembros": guild.member_count if guild.member_count is not None else len(guild.members),
         "bots": sum(1 for m in guild.members if m.bot),
-        "owner_id": guild.owner_id,
+        "owner_id": str(guild.owner_id),
         "owner_nombre": str(guild.owner) if guild.owner else None,
         "creado_texto": guild.created_at.strftime("%d/%m/%Y"),
         "prefijos": _get_prefixes_sync(guild.id),
@@ -8012,6 +8027,35 @@ async def _dash_raidmode(request):
     return dash_web.json_response({"ok": True, "antiraid": _antiraid_public(cfg)})
 
 
+async def _dash_leave(request):
+    """POST /api/guild/<id>/leave — el bot abandona ese servidor (solo owner)."""
+    owner_id = str(dashboard_config.get("owner_id", ""))
+    if not owner_id:
+        return dash_web.json_response({"error": "No hay owner configurado (owner_id en dashboard.json)"}, status=403)
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    nombre, gid = guild.name, guild.id
+    try:
+        await bot.leave_guild(guild)
+    except (discord.Forbidden, discord.HTTPException) as e:
+        return dash_web.json_response({"error": f"No pude salir del servidor: {e}"}, status=500)
+    print(f"Dashboard: bot expulsado del servidor {nombre} (ID {gid})")
+    return dash_web.json_response({"ok": True, "salido": nombre})
+
+
+async def _dash_sync(request):
+    """POST /api/sync — sincroniza los slash commands (solo owner)."""
+    owner_id = str(dashboard_config.get("owner_id", ""))
+    if not owner_id:
+        return dash_web.json_response({"error": "No hay owner configurado (owner_id en dashboard.json)"}, status=403)
+    try:
+        sincronizados = await bot.tree.sync()
+    except Exception as e:
+        return dash_web.json_response({"error": f"Error sincronizando: {e}"}, status=500)
+    return dash_web.json_response({"ok": True, "sincronizados": len(sincronizados)})
+
+
 async def _iniciar_dashboard():
     """Arranca el servidor aiohttp del dashboard en el mismo event loop del bot."""
     app = dash_web.Application(middlewares=[_dash_auth])
@@ -8021,6 +8065,8 @@ async def _iniciar_dashboard():
     app.router.add_get("/api/guild/{gid}", _dash_guild)
     app.router.add_post("/api/guild/{gid}/antiraid", _dash_antiraid_set)
     app.router.add_post("/api/guild/{gid}/raidmode", _dash_raidmode)
+    app.router.add_post("/api/guild/{gid}/leave", _dash_leave)
+    app.router.add_post("/api/sync", _dash_sync)
     runner = dash_web.AppRunner(app)
     await runner.setup()
     site = dash_web.TCPSite(runner, dashboard_config["host"], dashboard_config["port"])
@@ -8082,6 +8128,13 @@ async def slash_dashboard(interaction: discord.Interaction):
 
 if __name__ == "__main__":
     import os
+    # Evitar UnicodeEncodeError en consolas de Windows (cp1252) al imprimir emojis.
+    for _flujo in (sys.stdout, sys.stderr):
+        if _flujo is not None and hasattr(_flujo, "reconfigure"):
+            try:
+                _flujo.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+            except Exception:
+                pass
     # Buscar token.txt SIEMPRE junto al script, sin importar el directorio de trabajo.
     _dir_script = os.path.dirname(os.path.abspath(__file__))
     _token_path = os.path.join(_dir_script, "token.txt")
