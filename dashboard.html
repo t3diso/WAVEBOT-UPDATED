@@ -199,6 +199,7 @@
     <div class="stat-chip"><b id="h-usuarios">–</b><span>Usuarios</span></div>
     <div class="stat-chip"><b id="h-ping">–</b><span>Ping</span></div>
     <div class="stat-chip"><b id="h-uptime">–</b><span>Uptime</span></div>
+    <div class="stat-chip" id="chip-owner" style="display:none"><b id="h-owner">–</b><span>Owner</span></div>
   </div>
   <button class="btn-refrescar" onclick="refrescarTodo()">↻ Refrescar</button>
 </header>
@@ -223,6 +224,7 @@ const TOKEN = new URLSearchParams(location.search).get("token") || "";
 let GUILDS = [];
 let GUILD_ACTUAL = null;
 let DATOS_GUILD = null;
+let ESTADO = null;
 let REFRESCO_AUTO = null;
 
 function api(ruta, opciones = {}) {
@@ -265,6 +267,7 @@ function fmtUptime(seg) {
 async function cargarEstado() {
   try {
     const s = await api("/api/status");
+    ESTADO = s;
     document.getElementById("bot-nombre").textContent = s.bot.nombre || "WAVEBOT";
     document.getElementById("bot-sub").textContent = "ID " + (s.bot.id || "–") + " · " + (s.estado === "online" ? "En línea" : "Sin conexión");
     document.getElementById("bot-estado").className = "estado-punto" + (s.estado === "online" ? "" : " off");
@@ -272,6 +275,13 @@ async function cargarEstado() {
     document.getElementById("h-usuarios").textContent = fmtNum(s.usuarios);
     document.getElementById("h-ping").textContent = s.ping_ms != null ? s.ping_ms + " ms" : "–";
     document.getElementById("h-uptime").textContent = fmtUptime(s.uptime_seg);
+    const chipOwner = document.getElementById("chip-owner");
+    if (s.owner) {
+      document.getElementById("h-owner").textContent = s.owner.nombre;
+      chipOwner.style.display = "";
+    } else {
+      chipOwner.style.display = "none";
+    }
     const av = document.getElementById("bot-avatar");
     if (s.bot.avatar) { av.src = s.bot.avatar; av.style.display = ""; } else { av.style.display = "none"; }
   } catch (e) {
@@ -429,6 +439,17 @@ function pintarGuild() {
         <div class="dato-fila"><span>🏦 Dinero total (cash + banco)</span><b>${esc(g.economia.moneda)}${fmtNum(g.economia.dinero_total)}</b></div>
         <div class="dato-fila"><span>🛒 Items en la tienda</span><b>${fmtNum(g.economia.items_tienda)}</b></div>
       </div>
+
+      ${ESTADO && ESTADO.owner ? `
+      <div class="card">
+        <h2>👑 Owner del bot</h2>
+        <div class="dato-fila"><span>Propietario</span><b>${esc(ESTADO.owner.nombre)}</b></div>
+        <div class="dato-fila"><span>ID</span><b>${ESTADO.owner.id}</b></div>
+        <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-peligro" onclick="expulsarBot()">🚪 Expulsar bot de este servidor</button>
+          <button class="btn btn-primario" onclick="sincronizarSlash()">🔄 Sincronizar slash commands</button>
+        </div>
+      </div>` : ""}
     </div>`;
 }
 
@@ -457,6 +478,30 @@ async function toggleRaidmode(estado) {
     await api("/api/guild/" + GUILD_ACTUAL + "/raidmode", { method: "POST", body: JSON.stringify({ estado }) });
     toast(estado === "on" ? "🚨 Modo raid ACTIVADO" : "✅ Modo raid desactivado");
     await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) {
+    toast("❌ " + e.message, false);
+  }
+}
+
+/* ===== Acciones de owner ===== */
+async function expulsarBot() {
+  const g = DATOS_GUILD;
+  if (!confirm('¿EXPULSAR al bot de "' + (g ? g.nombre : "este servidor") + '"?\n\nEl bot saldrá del servidor y dejará de funcionar ahí (antiraid, warns, economía...). Esta acción no se puede deshacer.')) return;
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/leave", { method: "POST", body: JSON.stringify({}) });
+    toast("🚪 Bot expulsado de " + r.salido);
+    GUILD_ACTUAL = null;
+    DATOS_GUILD = null;
+    await cargarGuilds();
+  } catch (e) {
+    toast("❌ " + e.message, false);
+  }
+}
+
+async function sincronizarSlash() {
+  try {
+    const r = await api("/api/sync", { method: "POST", body: JSON.stringify({}) });
+    toast("🔄 Slash commands sincronizados: " + fmtNum(r.sincronizados));
   } catch (e) {
     toast("❌ " + e.message, false);
   }
