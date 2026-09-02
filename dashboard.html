@@ -215,7 +215,6 @@
   .owner-flotante:hover { opacity: 1; border-color: var(--acento); }
   .owner-flotante img { width: 38px; height: 38px; border-radius: 50%; display: block; }
   .owner-flotante b { color: var(--texto); overflow: hidden; text-overflow: ellipsis; }
-  .owner-corona { position: absolute; top: -8px; left: -6px; font-size: 14px; }
 
   /* ===== Login ===== */
   #overlay-login { position: fixed; inset: 0; background: rgba(5, 7, 12, .82); display: flex; align-items: center; justify-content: center; z-index: 200; }
@@ -398,11 +397,9 @@ async function cargarEstado() {
     const flotante = document.getElementById("owner-flotante");
     if (s.owner) {
       flotante.innerHTML = `
-        <span style="position:relative;display:inline-flex">
-          <img src="${esc(s.owner.avatar)}" alt="owner">
-          <span class="owner-corona">👑</span>
-        </span>
-        <span><b>${esc(s.owner.nombre)}</b> · owner</span>`;
+        <img src="${esc(s.owner.avatar)}" alt="owner">
+        <span><b>! FⴷKE</b></span>`;
+      flotante.title = "Owner del bot";
       flotante.style.display = "";
     } else {
       flotante.style.display = "none";
