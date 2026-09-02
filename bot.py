@@ -8060,9 +8060,11 @@ async def _dash_oauth_login(request):
             DASH_OAUTH_STATES.pop(k, None)
     state = secrets.token_hex(16)
     DASH_OAUTH_STATES[state] = ahora
+    uri_redirect = _dash_redirect_uri(request)
+    print(f"OAuth login desde {request.host} -> redirect_uri: {uri_redirect}")
     params = {
         "client_id": dashboard_config["client_id"],
-        "redirect_uri": _dash_redirect_uri(request),
+        "redirect_uri": uri_redirect,
         "response_type": "code",
         "scope": "identify guilds",
         "state": state,
