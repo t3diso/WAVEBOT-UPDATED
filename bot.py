@@ -1195,7 +1195,7 @@ async def on_ready():
             bot.add_view(TicketChannelView())
             for t_gid, t_cfg in tickets_db.items():
                 for pnl in t_cfg.get("paneles", []):
-                    bot.add_view(TicketPanelView(t_gid, pnl.get("id", 0), pnl.get("emoji", "🎫"), pnl.get("boton", "Abrir ticket")))
+                    bot.add_view(TicketPanelView(t_gid, pnl.get("id", 0), pnl.get("emoji", "🎫"), pnl.get("boton", "Abrir ticket"), pnl.get("estilo", "verde")))
             print(f"Vistas de tickets registradas: {sum(len(c.get('paneles', [])) for c in tickets_db.values())} panel(es).")
         except Exception as e:
             print(f"Error registrando vistas de tickets: {e}")
@@ -3792,6 +3792,30 @@ def _ticket_es_soporte(member: discord.Member, cfg: dict) -> bool:
     return any(rol.id in soporte for rol in member.roles)
 
 
+# Estilos del botón del panel (con alias en inglés)
+ESTILOS_BOTON = {
+    "verde": discord.ButtonStyle.success,
+    "blurple": discord.ButtonStyle.primary,
+    "gris": discord.ButtonStyle.secondary,
+    "rojo": discord.ButtonStyle.danger,
+}
+ALIAS_ESTILOS = {
+    "success": "verde", "green": "verde",
+    "primary": "blurple",
+    "secondary": "gris", "gray": "gris",
+    "danger": "rojo", "red": "rojo",
+}
+CAMPOS_PANEL_EDITABLES = (
+    "titulo", "desc", "color", "imagen", "miniatura",
+    "footer", "footer_icono", "autor", "autor_icono",
+    "emoji", "boton", "estilo",
+)
+
+
+def _url_valida(url) -> bool:
+    return isinstance(url, str) and (url.startswith("http://") or url.startswith("https://"))
+
+
 def _tickets_status_embed(cfg: dict, guild: discord.Guild) -> discord.Embed:
     """Embed con el estado/config de tickets (sin footer)."""
     embed = discord.Embed(
@@ -4027,14 +4051,14 @@ class TicketPreguntasModal(discord.ui.Modal, title="🎫 Abrir ticket"):
 class TicketPanelView(discord.ui.View):
     """Panel con el botón para abrir tickets (persistente: sobrevive reinicios)."""
 
-    def __init__(self, gid: str, panel_id: int, emoji: str = "🎫", etiqueta: str = "Abrir ticket"):
+    def __init__(self, gid: str, panel_id: int, emoji: str = "🎫", etiqueta: str = "Abrir ticket", estilo: str = "verde"):
         super().__init__(timeout=None)
         self.gid = str(gid)
         self.panel_id = int(panel_id)
         boton = discord.ui.Button(
             label=(etiqueta or "Abrir ticket")[:80],
             emoji=emoji or None,
-            style=discord.ButtonStyle.success,
+            style=ESTILOS_BOTON.get(ALIAS_ESTILOS.get(str(estilo).lower(), str(estilo).lower()), discord.ButtonStyle.success),
             custom_id=f"ticket_open:{self.gid}:{self.panel_id}",
         )
         boton.callback = self.abrir
@@ -4089,29 +4113,130 @@ class TicketChannelView(discord.ui.View):
         return await interaction.response.send_message(f"✋ Ticket **reclamado** por {miembro.mention}: ahora gestiona este caso.")
 
 
-async def _ticket_panel_crear(guild, canal, titulo, desc, emoji, etiqueta, cfg):
-    """Crea (envía) un panel de tickets en un canal y lo registra. Devuelve (panel_id | None, error)."""
-    panel_id = max((pnl.get("id", 0) for pnl in cfg.get("paneles", [])), default=0) + 1
+def _ticket_panel_embed(pnl: dict) -> discord.Embed:
+    """Construye el embed del panel con TODA la personalización aplicada."""
+    color = None
+    if pnl.get("color"):
+        try:
+            color = discord.Color(int(str(pnl["color"]).lstrip("#"), 16))
+        except ValueError:
+            color = None
     embed = discord.Embed(
-        title=titulo or "🎫 Soporte",
-        description=desc or "Pulsa el botón para abrir un ticket de soporte.\nEl equipo te atenderá lo antes posible.",
-        color=discord.Color.blurple(),
+        title=pnl.get("titulo") or "🎫 Soporte",
+        description=pnl.get("desc") or "Pulsa el botón para abrir un ticket de soporte.\nEl equipo te atenderá lo antes posible.",
+        color=color or discord.Color.blurple(),
     )
-    try:
-        msg = await canal.send(embed=embed, view=TicketPanelView(str(guild.id), panel_id, emoji, etiqueta))
-    except (discord.Forbidden, discord.HTTPException) as e:
-        return None, f"No pude enviar el panel a {canal.mention}: {e}"
-    cfg.setdefault("paneles", []).append({
+    if pnl.get("autor"):
+        embed.set_author(name=str(pnl["autor"])[:256], icon_url=pnl.get("autor_icono") if _url_valida(pnl.get("autor_icono")) else None)
+    if _url_valida(pnl.get("miniatura")):
+        embed.set_thumbnail(url=pnl["miniatura"])
+    if _url_valida(pnl.get("imagen")):
+        embed.set_image(url=pnl["imagen"])
+    if pnl.get("footer"):
+        embed.set_footer(
+            text=str(pnl["footer"])[:2048],
+            icon_url=pnl.get("footer_icono") if _url_valida(pnl.get("footer_icono")) else None,
+        )
+    return embed
+
+
+async def _ticket_panel_crear(guild, canal, titulo, desc, emoji, etiqueta, cfg,
+                              color=None, imagen=None, miniatura=None, footer=None,
+                              autor=None, estilo="verde"):
+    """Crea (envía) un panel de tickets con personalización completa. Devuelve (panel_id | None, error)."""
+    panel_id = max((pnl.get("id", 0) for pnl in cfg.get("paneles", [])), default=0) + 1
+    pnl = {
         "id": panel_id,
         "canal": str(canal.id),
-        "msg": str(msg.id),
-        "titulo": titulo or "🎫 Soporte",
-        "desc": desc or "",
+        "msg": None,
+        "titulo": (titulo or "🎫 Soporte")[:256],
+        "desc": (desc or "")[:4096],
+        "color": str(color).strip().lstrip("#").lower() if color else None,
+        "imagen": imagen if _url_valida(imagen) else None,
+        "miniatura": miniatura if _url_valida(miniatura) else None,
+        "footer": (footer or None) if footer else None,
+        "autor": (autor or None) if autor else None,
         "emoji": emoji or "🎫",
-        "boton": etiqueta or "Abrir ticket",
-    })
+        "boton": (etiqueta or "Abrir ticket")[:80],
+        "estilo": ALIAS_ESTILOS.get(str(estilo or "verde").lower(), str(estilo or "verde").lower()),
+    }
+    try:
+        msg = await canal.send(
+            embed=_ticket_panel_embed(pnl),
+            view=TicketPanelView(str(guild.id), panel_id, pnl["emoji"], pnl["boton"], pnl["estilo"]),
+        )
+    except (discord.Forbidden, discord.HTTPException) as e:
+        return None, f"No pude enviar el panel a {canal.mention}: {e}"
+    pnl["msg"] = str(msg.id)
+    cfg.setdefault("paneles", []).append(pnl)
     guardar_tickets()
     return panel_id, None
+
+
+def _panel_normalizar_campo(campo: str, valor):
+    """Valida y normaliza un campo de panel. Devuelve (campo, valor_limpio) o (None, mensaje_error)."""
+    if campo not in CAMPOS_PANEL_EDITABLES:
+        return None, f"Campo desconocido: `{campo}`. Válidos: {', '.join(CAMPOS_PANEL_EDITABLES)}"
+    texto = str(valor or "").strip()
+    limpiar = texto.lower() in ("none", "ninguno", "quitar", "off", "reset")
+    if campo == "color":
+        if limpiar or not texto:
+            return campo, None
+        hexa = texto.lstrip("#")
+        if len(hexa) == 6 and all(c in "0123456789abcdef" for c in hexa.lower()):
+            return campo, hexa.lower()
+        return None, "Color inválido: usa hex, ej: `8b7cf6` o `#ff00aa`."
+    if campo in ("imagen", "miniatura", "footer_icono", "autor_icono"):
+        return campo, (texto if _url_valida(texto) else None)
+    if campo == "estilo":
+        if limpiar or not texto:
+            return campo, "verde"
+        est = ALIAS_ESTILOS.get(texto.lower(), texto.lower())
+        if est not in ESTILOS_BOTON:
+            return None, "Estilo inválido: verde, blurple, gris o rojo."
+        return campo, est
+    if campo == "titulo":
+        return campo, (texto[:256] or "🎫 Soporte")
+    if campo == "desc":
+        return campo, texto[:4096]
+    if campo == "footer":
+        return campo, (texto[:2048] or None)
+    if campo == "autor":
+        return campo, (texto[:256] or None)
+    if campo == "emoji":
+        return campo, (texto or "🎫")
+    if campo == "boton":
+        return campo, (texto[:80] or "Abrir ticket")
+    return campo, texto
+
+
+async def _ticket_panel_aplicar(guild, panel_id: int, campos: dict, cfg):
+    """Edita campos de un panel existente y actualiza su mensaje en Discord. Devuelve (ok, mensaje)."""
+    pnl = next((c for c in cfg.get("paneles", []) if c.get("id") == panel_id), None)
+    if pnl is None:
+        return False, f"No existe el panel #{panel_id}."
+    limpios = {}
+    for campo, valor in (campos or {}).items():
+        clave, valor_limpio = _panel_normalizar_campo(str(campo).lower(), valor)
+        if clave is None:
+            return False, valor_limpio
+        limpios[clave] = valor_limpio
+    if not limpios:
+        return False, "No indicaste ningún campo para editar."
+    pnl.update(limpios)
+    guardar_tickets()
+    aviso = ""
+    canal = guild.get_channel(int(pnl["canal"])) if str(pnl.get("canal", "")).isdigit() else None
+    if canal is not None and str(pnl.get("msg", "")).isdigit():
+        try:
+            msg = await canal.fetch_message(int(pnl["msg"]))
+            await msg.edit(
+                embed=_ticket_panel_embed(pnl),
+                view=TicketPanelView(str(guild.id), pnl["id"], pnl.get("emoji", "🎫"), pnl.get("boton", "Abrir ticket"), pnl.get("estilo", "verde")),
+            )
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            aviso = " (no pude editar el mensaje: ¿lo borraron? La configuración quedó guardada)"
+    return True, f"✅ Panel #{panel_id} actualizado.{aviso}"
 
 
 async def _ticket_panel_borrar(guild, panel_id, cfg):
@@ -4248,8 +4373,12 @@ async def tickets(ctx, *, args: str = ""):
         return await ctx.send(f"✅ Pregunta eliminada: {quitada}")
 
     if sub == "panel":
-        if len(tokens) < 2 or tokens[1].lower() not in ("add", "remove"):
-            return await ctx.send(f"❌ Uso correcto: `{p}tickets panel add <#canal> [título]` o `{p}tickets panel remove <id>`")
+        if len(tokens) < 2 or tokens[1].lower() not in ("add", "remove", "edit"):
+            return await ctx.send(
+                f"❌ Uso correcto: `{p}tickets panel add <#canal> [título]` · `{p}tickets panel remove <id>` · "
+                f"`{p}tickets panel edit <id> <campo> <valor>`\n"
+                f"Campos editables: {', '.join(CAMPOS_PANEL_EDITABLES)}"
+            )
         if tokens[1].lower() == "add":
             if len(tokens) < 3:
                 return await ctx.send(f"❌ Uso correcto: `{p}tickets panel add <#canal> [título]`")
@@ -4261,7 +4390,21 @@ async def tickets(ctx, *, args: str = ""):
             panel_id, err = await _ticket_panel_crear(ctx.guild, canal, titulo, None, "🎫", "Abrir ticket", cfg)
             if err:
                 return await ctx.send(f"❌ {err}")
-            return await ctx.send(f"✅ Panel **#{panel_id}** creado en {canal.mention}.")
+            return await ctx.send(f"✅ Panel **#{panel_id}** creado en {canal.mention}. Personalízalo con `{p}tickets panel edit {panel_id} <campo> <valor>`.")
+        if tokens[1].lower() == "edit":
+            if len(tokens) < 5:
+                return await ctx.send(
+                    f"❌ Uso correcto: `{p}tickets panel edit <id> <campo> <valor>`\n"
+                    f"Campos: {', '.join(CAMPOS_PANEL_EDITABLES)} · usa `none` como valor para quitar imágenes/color/footer."
+                )
+            try:
+                pid = int(tokens[2])
+            except ValueError:
+                return await ctx.send("❌ ID de panel inválido.")
+            campo = tokens[3].lower()
+            valor = " ".join(tokens[4:]).strip()
+            ok, mensaje = await _ticket_panel_aplicar(ctx.guild, pid, {campo: valor}, cfg)
+            return await ctx.send(mensaje if ok else f"❌ {mensaje}")
         try:
             pid = int(tokens[2])
         except (ValueError, IndexError):
@@ -4760,9 +4903,10 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}tickets limite <1-10>` :: Máx. por usuario\n"
                     f"`{p}tickets pregunta <add|remove> (texto|nº)` :: Preguntas al abrir\n"
                     f"`{p}tickets panel add (#canal) [título]` :: Crear panel\n"
+                    f"`{p}tickets panel edit (id) (campo) (valor)` :: Personalizar panel\n"
                     f"`{p}tickets panel remove (id)` :: Eliminar panel\n"
                     f"`{p}tickets cerrar|claim|add|remove` :: Dentro de un ticket\n\n"
-                    f"Desactivado por defecto • Transcript HTML al cerrar + DM al autor"
+                    f"Paneles 100% personalizables (color, imagen, miniatura, autor, footer, botón)"
                 ), color=discord.Color.blurple()),
                 "roles": discord.Embed(title="Roles", description=(
                     f"`{p}roleadd (@usuario) (@rol)` :: Otorga rol\n"
@@ -6574,17 +6718,55 @@ async def slash_tickets_pregunta_remove(interaction: discord.Interaction, numero
     await interaction.response.send_message(f"✅ Pregunta eliminada: {quitada}")
 
 
-@tickets_group.command(name="panel-add", description="Crea un panel de tickets en un canal")
-@app_commands.describe(canal="Canal donde enviar el panel", titulo="Título del panel", descripcion="Descripción del panel", emoji="Emoji del botón")
+@tickets_group.command(name="panel-add", description="Crea un panel de tickets personalizado")
+@app_commands.describe(
+    canal="Canal donde enviar el panel", titulo="Título del panel", descripcion="Descripción del panel",
+    emoji="Emoji del botón", estilo="Estilo del botón", color="Color del embed en hex (ej: 8b7cf6)",
+    imagen="URL de imagen grande (banner)", miniatura="URL de miniatura (esquina)",
+    autor="Nombre de autor del embed", footer="Texto del footer",
+)
 @app_commands.default_permissions(manage_guild=True)
-async def slash_tickets_panel_add(interaction: discord.Interaction, canal: discord.TextChannel, titulo: str = None, descripcion: str = None, emoji: str = "🎫"):
+@app_commands.choices(estilo=[
+    app_commands.Choice(name="verde", value="verde"),
+    app_commands.Choice(name="blurple", value="blurple"),
+    app_commands.Choice(name="gris", value="gris"),
+    app_commands.Choice(name="rojo", value="rojo"),
+])
+async def slash_tickets_panel_add(interaction: discord.Interaction, canal: discord.TextChannel, titulo: str = None, descripcion: str = None, emoji: str = "🎫", estilo: app_commands.Choice[str] = None, color: str = None, imagen: str = None, miniatura: str = None, autor: str = None, footer: str = None):
     if not _tickets_permiso(interaction):
         return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
     cfg = _tickets_cfg(interaction.guild.id)
-    panel_id, err = await _ticket_panel_crear(interaction.guild, canal, titulo, descripcion, emoji, "Abrir ticket", cfg)
+    panel_id, err = await _ticket_panel_crear(
+        interaction.guild, canal, titulo, descripcion, emoji, "Abrir ticket", cfg,
+        color=color, imagen=imagen, miniatura=miniatura, footer=footer,
+        autor=autor, estilo=(estilo.value if estilo else "verde"),
+    )
     if err:
         return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
     await interaction.response.send_message(f"✅ Panel **#{panel_id}** creado en {canal.mention}.")
+
+
+@tickets_group.command(name="panel-edit", description="Edita un campo de un panel (usa none para quitar)")
+@app_commands.describe(panel_id="ID del panel", campo="Campo a editar", valor="Nuevo valor (none = quitar)")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(campo=[
+    app_commands.Choice(name="titulo", value="titulo"),
+    app_commands.Choice(name="desc", value="desc"),
+    app_commands.Choice(name="color", value="color"),
+    app_commands.Choice(name="imagen", value="imagen"),
+    app_commands.Choice(name="miniatura", value="miniatura"),
+    app_commands.Choice(name="footer", value="footer"),
+    app_commands.Choice(name="autor", value="autor"),
+    app_commands.Choice(name="emoji", value="emoji"),
+    app_commands.Choice(name="boton", value="boton"),
+    app_commands.Choice(name="estilo", value="estilo"),
+])
+async def slash_tickets_panel_edit(interaction: discord.Interaction, panel_id: int, campo: app_commands.Choice[str], valor: str):
+    if not _tickets_permiso(interaction):
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _tickets_cfg(interaction.guild.id)
+    ok, mensaje = await _ticket_panel_aplicar(interaction.guild, panel_id, {campo.value: valor}, cfg)
+    await interaction.response.send_message(mensaje if ok else f"❌ {mensaje}", ephemeral=not ok)
 
 
 @tickets_group.command(name="panel-remove", description="Elimina un panel por su ID")
@@ -6774,7 +6956,7 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(name="🛡️ Moderación", value="`ban` `kick` `unban` `mute` `unmute` `softban`/`soft ban` `ipban` `ipunban`\n`purge` `nuke` `lock` `unlock` `rename` `namereset` `warn`/`warn add` `warnremove`/`warn remove` `warns`/`warn list`", inline=False)
     embed.add_field(name="🚨 Antiraid", value="`antiraid` (ver config) `antiraid on`/`off` `antiraid set` `antiraid action` `antiraid punishnew` `antiraid minage` `antiraid raidmode`\nGrupo slash `/antiraid`: config, on, off, set, action, punishnew, minage, raidmode.\nDesactivado por defecto • Nunca actúa contra el staff (Manage Server)", inline=False)
     embed.add_field(name="🤖 Automod", value="`automod` (ver config) `automod on`/`off` `automod add`/`remove` `automod invites` `automod links` `automod spam` `automod accion` `automod exrol` `automod excanal`\nGrupo slash `/automod`: config, on, off, add, remove, invites, links, spam, accion, exrol, excanal.\nFiltro de palabras, invites, links y spam • Desactivado por defecto", inline=False)
-    embed.add_field(name="🎫 Tickets", value="`tickets` (ver config) `tickets on`/`off` `tickets soporte` `tickets categoria` `tickets canal` `tickets limite` `tickets pregunta-add`/`pregunta-remove` `tickets panel-add`/`panel-remove` `tickets cerrar` `tickets claim` `tickets add`/`remove`\nGrupo slash `/tickets` completo.\nPaneles con botón, preguntas al abrir, claim, transcript HTML y DM al autor • Desactivado por defecto", inline=False)
+    embed.add_field(name="🎫 Tickets", value="`tickets` (ver config) `tickets on`/`off` `tickets soporte` `tickets categoria` `tickets canal` `tickets limite` `tickets pregunta-add`/`pregunta-remove` `tickets panel-add`/`panel-edit`/`panel-remove` `tickets cerrar` `tickets claim` `tickets add`/`remove`\nGrupo slash `/tickets` completo.\nPaneles personalizables (color, imagen, footer, botón) • Transcript HTML y DM al autor • Desactivado por defecto", inline=False)
     embed.add_field(name="👥 Roles", value="`roleadd`/`role add` `roleremove`/`role remove` `rolehuman`/`role human` `roleall`/`role all` `rolebot`/`role bot`\n`autorolehuman`/`autorole human` `autorolebot`/`autorole bot` `autorole`/`autorole general` `autorolelist`/`autorole list`", inline=False)
     embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
     embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
@@ -9437,6 +9619,15 @@ def _tickets_public(cfg: dict, guild: discord.Guild = None):
                 "canal": str(p.get("canal", "")),
                 "canal_nombre": nombre_canal(p.get("canal")),
                 "titulo": p.get("titulo", "Soporte"),
+                "desc": p.get("desc", ""),
+                "color": p.get("color"),
+                "imagen": p.get("imagen"),
+                "miniatura": p.get("miniatura"),
+                "footer": p.get("footer"),
+                "autor": p.get("autor"),
+                "emoji": p.get("emoji", "🎫"),
+                "boton": p.get("boton", "Abrir ticket"),
+                "estilo": p.get("estilo", "verde"),
             }
             for p in cfg.get("paneles", [])
         ],
@@ -10250,10 +10441,28 @@ async def _dash_tickets_set(request):
             str(panel.get("emoji", "🎫")).strip() or "🎫",
             str(panel.get("boton", "Abrir ticket")).strip() or "Abrir ticket",
             cfg,
+            color=str(panel.get("color", "")).strip() or None,
+            imagen=str(panel.get("imagen", "")).strip() or None,
+            miniatura=str(panel.get("miniatura", "")).strip() or None,
+            footer=str(panel.get("footer", "")).strip() or None,
+            autor=str(panel.get("autor", "")).strip() or None,
+            estilo=str(panel.get("estilo", "verde")).strip() or "verde",
         )
         if err_panel:
             return dash_web.json_response({"error": err_panel}, status=400)
         cambios.append(f"panel #{panel_id} en #{canal.name}")
+    if "panel_edit" in data:
+        pe = data["panel_edit"] if isinstance(data["panel_edit"], dict) else {}
+        pid, e = _dash_int(pe.get("id"), 1)
+        if e:
+            return dash_web.json_response({"error": "ID de panel inválido."}, status=400)
+        campos = {campo: pe[campo] for campo in CAMPOS_PANEL_EDITABLES if campo in pe}
+        if not campos:
+            return dash_web.json_response({"error": "No indicaste ningún campo para editar."}, status=400)
+        ok_panel, msg_panel = await _ticket_panel_aplicar(guild, pid, campos, cfg)
+        if not ok_panel:
+            return dash_web.json_response({"error": msg_panel}, status=400)
+        cambios.append(f"panel #{pid} personalizado")
     if "panel_remove" in data:
         pid, e = _dash_int(data["panel_remove"], 1)
         if e:

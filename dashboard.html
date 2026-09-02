@@ -979,18 +979,71 @@ SECCIONES.tickets = function () {
       <div class="dato-fila">
         <span><b style="color:var(--texto)">#${pnl.id}</b> · #${esc(pnl.canal_nombre)} · ${esc(pnl.titulo)}</span>
         <button class="btn btn-peligro" style="padding:5px 11px;font-size:12px" onclick="ticketPanelRemove(${pnl.id})">🗑</button>
-      </div>`).join("") || '<div style="color:var(--texto-2);font-size:12.5px">Ningún panel creado.</div>'}
+      </div>
+      <details style="margin:-6px 0 12px">
+        <summary style="cursor:pointer;color:var(--acento);font-size:12px">✏️ Personalizar panel #${pnl.id}</summary>
+        <div class="fila-inline" style="margin-top:10px">
+          <input id="pe-${pnl.id}-titulo" placeholder="título" value="${esc(pnl.titulo || "")}" style="width:170px">
+          <input id="pe-${pnl.id}-emoji" placeholder="🎫" value="${esc(pnl.emoji || "")}" style="width:56px;text-align:center">
+          <input id="pe-${pnl.id}-boton" placeholder="texto botón" value="${esc(pnl.boton || "")}" style="width:140px">
+          <select id="pe-${pnl.id}-estilo" style="width:120px">
+            <option value="verde" ${pnl.estilo === "verde" ? "selected" : ""}>verde</option>
+            <option value="blurple" ${pnl.estilo === "blurple" ? "selected" : ""}>blurple</option>
+            <option value="gris" ${pnl.estilo === "gris" ? "selected" : ""}>gris</option>
+            <option value="rojo" ${pnl.estilo === "rojo" ? "selected" : ""}>rojo</option>
+          </select>
+        </div>
+        <div class="fila-inline" style="margin-top:8px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--texto-2)">
+            <input type="color" id="pe-${pnl.id}-colorpicker" value="#${esc(pnl.color || "5865f2")}" oninput="document.getElementById('pe-${pnl.id}-color').value=this.value.replace('#','')" style="width:34px;height:30px;padding:0;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer">
+            color embed
+          </label>
+          <input id="pe-${pnl.id}-color" placeholder="hex (vacío = por defecto)" value="${esc(pnl.color || "")}" style="width:170px">
+        </div>
+        <div class="fila-inline" style="margin-top:8px">
+          <input id="pe-${pnl.id}-imagen" placeholder="URL imagen grande (banner)" value="${esc(pnl.imagen || "")}" style="flex:1;min-width:220px;width:auto">
+        </div>
+        <div class="fila-inline" style="margin-top:8px">
+          <input id="pe-${pnl.id}-miniatura" placeholder="URL miniatura (esquina)" value="${esc(pnl.miniatura || "")}" style="flex:1;min-width:220px;width:auto">
+        </div>
+        <div class="fila-inline" style="margin-top:8px">
+          <input id="pe-${pnl.id}-autor" placeholder="autor (línea superior)" value="${esc(pnl.autor || "")}" style="width:170px">
+          <input id="pe-${pnl.id}-footer" placeholder="footer (línea inferior)" value="${esc(pnl.footer || "")}" style="flex:1;min-width:170px;width:auto">
+        </div>
+        <div class="fila-inline" style="margin-top:8px">
+          <input id="pe-${pnl.id}-desc" placeholder="descripción" value="${esc(pnl.desc || "")}" style="flex:1;min-width:220px;width:auto">
+          <button class="btn btn-primario" onclick="ticketPanelEdit(${pnl.id})">💾 Guardar panel</button>
+        </div>
+      </details>`).join("") || '<div style="color:var(--texto-2);font-size:12.5px">Ningún panel creado.</div>'}
       <div class="grupo-titulo">➕ Crear panel</div>
       <div class="fila-inline" style="margin-bottom:10px">
         <select id="tk-panel-canal">${optsCanales(null, false)}</select>
       </div>
       <div class="fila-inline" style="margin-bottom:10px">
         <input id="tk-panel-titulo" placeholder="título (ej: 🎫 Soporte)" style="width:210px">
-        <input id="tk-panel-boton" placeholder="texto del botón" style="width:170px">
-        <input id="tk-panel-emoji" placeholder="🎫" style="width:60px;text-align:center">
+        <input id="tk-panel-boton" placeholder="texto del botón" style="width:150px">
+        <input id="tk-panel-emoji" placeholder="🎫" style="width:56px;text-align:center">
+        <select id="tk-panel-estilo" style="width:120px">
+          <option value="verde" selected>verde</option>
+          <option value="blurple">blurple</option>
+          <option value="gris">gris</option>
+          <option value="rojo">rojo</option>
+        </select>
+      </div>
+      <div class="fila-inline" style="margin-bottom:10px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--texto-2)">
+          <input type="color" id="tk-panel-colorpicker" value="#8b7cf6" style="width:34px;height:30px;padding:0;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer">
+          color embed
+        </label>
+        <input id="tk-panel-desc" placeholder="descripción del panel (opcional)" style="flex:1;min-width:200px;width:auto">
+      </div>
+      <div class="fila-inline" style="margin-bottom:10px">
+        <input id="tk-panel-imagen" placeholder="URL imagen grande / banner (opcional)" style="flex:1;min-width:220px;width:auto">
+        <input id="tk-panel-miniatura" placeholder="URL miniatura (opcional)" style="flex:1;min-width:180px;width:auto">
       </div>
       <div class="fila-inline" style="margin-bottom:4px">
-        <input id="tk-panel-desc" placeholder="descripción del panel (opcional)" style="flex:1;min-width:200px;width:auto">
+        <input id="tk-panel-autor" placeholder="autor (opcional)" style="width:180px">
+        <input id="tk-panel-footer" placeholder="footer (opcional)" style="flex:1;min-width:160px;width:auto">
         <button class="btn btn-primario" onclick="ticketPanelAdd()">📋 Crear panel</button>
       </div>
       <div class="stats-mini">
@@ -1408,12 +1461,42 @@ async function ticketPanelAdd() {
       desc: document.getElementById("tk-panel-desc").value.trim(),
       boton: document.getElementById("tk-panel-boton").value.trim(),
       emoji: document.getElementById("tk-panel-emoji").value.trim(),
+      estilo: document.getElementById("tk-panel-estilo").value,
+      color: document.getElementById("tk-panel-colorpicker").value.replace("#", ""),
+      imagen: document.getElementById("tk-panel-imagen").value.trim(),
+      miniatura: document.getElementById("tk-panel-miniatura").value.trim(),
+      autor: document.getElementById("tk-panel-autor").value.trim(),
+      footer: document.getElementById("tk-panel-footer").value.trim(),
     },
   };
   if (!payload.panel_add.canal) return toast("Selecciona el canal del panel", false);
   try {
     await api("/api/guild/" + GUILD_ACTUAL + "/tickets", { method: "POST", body: JSON.stringify(payload) });
     toast("✅ Panel creado");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function ticketPanelEdit(pid) {
+  const val = campo => (document.getElementById("pe-" + pid + "-" + campo) || {}).value || "";
+  const payload = {
+    panel_edit: {
+      id: pid,
+      titulo: val("titulo").trim(),
+      desc: val("desc").trim(),
+      color: val("color").trim(),
+      imagen: val("imagen").trim(),
+      miniatura: val("miniatura").trim(),
+      autor: val("autor").trim(),
+      footer: val("footer").trim(),
+      emoji: val("emoji").trim(),
+      boton: val("boton").trim(),
+      estilo: val("estilo"),
+    },
+  };
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/tickets", { method: "POST", body: JSON.stringify(payload) });
+    toast(r.msg || "✅ Panel actualizado");
     await seleccionarGuild(GUILD_ACTUAL);
   } catch (e) { toast("❌ " + e.message, false); }
 }
