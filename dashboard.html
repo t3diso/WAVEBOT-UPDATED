@@ -49,9 +49,9 @@
   .stat-chip { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 5px 13px; text-align: center; }
   .stat-chip b { display: block; font-size: 14px; font-variant-numeric: tabular-nums; }
   .stat-chip span { font-size: 10.5px; color: var(--texto-2); text-transform: uppercase; letter-spacing: .5px; }
-  .btn-refrescar { background: var(--acento); color: #fff; border: 0; border-radius: 10px; padding: 8px 15px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .btn-refrescar { background: var(--acento); color: #fff; border: 0; border-radius: 10px; padding: 8px 15px; font-size: 12.5px; font-weight: 500; cursor: pointer; }
   .btn-refrescar:hover { filter: brightness(1.12); }
-  .btn-invitar { background: var(--verde); color: #fff; border: 0; border-radius: 11px; padding: 10px 20px; font-size: 14px; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-block; }
+  .btn-invitar { background: var(--verde); color: #fff; border: 0; border-radius: 11px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; }
   .btn-invitar:hover { filter: brightness(1.1); text-decoration: none; }
 
   /* ===== Layout ===== */
@@ -77,7 +77,7 @@
   .guild-icono { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; background: var(--panel-2); display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--texto-2); overflow: hidden; }
   .guild-icono img { width: 100%; height: 100%; object-fit: cover; }
   .guild-info { overflow: hidden; }
-  .guild-nombre { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .guild-nombre { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .guild-miembros { font-size: 11px; color: var(--texto-2); }
 
   /* Zona del guild */
@@ -107,7 +107,7 @@
   .nav-btn {
     display: flex; align-items: center; gap: 10px; width: 100%;
     background: transparent; border: 0; border-radius: 10px; padding: 9px 12px;
-    color: var(--texto-2); font-size: 13.5px; font-weight: 600; cursor: pointer; text-align: left;
+    color: var(--texto-2); font-size: 13.5px; font-weight: 500; cursor: pointer; text-align: left;
     transition: background .12s, color .12s;
   }
   .nav-btn:hover { background: var(--panel); color: var(--texto); }
@@ -131,7 +131,7 @@
   .modulos { display: flex; flex-wrap: wrap; gap: 10px; }
   .modulo-pill {
     display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--border);
-    border-radius: 12px; padding: 11px 16px; cursor: pointer; font-size: 13.5px; font-weight: 600;
+    border-radius: 12px; padding: 11px 16px; cursor: pointer; font-size: 13.5px; font-weight: 500;
     transition: border-color .12s;
   }
   .modulo-pill:hover { border-color: var(--acento); }
@@ -169,7 +169,7 @@
   select option { background: var(--panel-2); color: var(--texto); }
   input.mini-input { width: 78px !important; }
   .acciones-form { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
-  .btn { border: 0; border-radius: 10px; padding: 10px 18px; font-size: 13.5px; font-weight: 600; cursor: pointer; color: #fff; }
+  .btn { border: 0; border-radius: 10px; padding: 10px 18px; font-size: 13.5px; font-weight: 500; cursor: pointer; color: #fff; }
   .btn-primario { background: var(--acento); }
   .btn-primario:hover { filter: brightness(1.12); }
   .btn-peligro { background: var(--rojo); }
@@ -442,7 +442,7 @@ async function cargarEstado() {
       ub.innerHTML = `
         <div style="display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--border);border-radius:999px;padding:4px 8px 4px 5px">
           ${s.usuario.avatar ? `<img src="${esc(s.usuario.avatar)}" style="width:26px;height:26px;border-radius:50%" alt="">` : ""}
-          <span style="font-size:13px;font-weight:600">${esc(s.usuario.nombre)}${s.usuario.staff ? " 🛠️" : (s.usuario.es_bot_owner ? " 👑" : "")}</span>
+          <span style="font-size:13px;font-weight:500">${esc(s.usuario.nombre)}${s.usuario.staff ? " 🛠️" : (s.usuario.es_bot_owner ? " 👑" : "")}</span>
           <a href="/oauth/logout" style="color:var(--texto-2);font-size:11.5px;padding:0 6px">Salir</a>
         </div>`;
     } else {
