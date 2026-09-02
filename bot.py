@@ -5,6 +5,7 @@ import os
 import random
 import re
 import secrets
+import shutil
 import sys
 import time
 import urllib.parse
@@ -21,24 +22,44 @@ intents.moderation = True
 
 DURACION_REGEX = re.compile(r"^(\d+)([hmsHMS])$")
 
-LINKS_BANEADOS_PATH = "linkban_canal.json"
+# ============================================================
+#  DIRECTORIO DE DATOS PERSISTENTE
+#  Los JSON del bot se guardan aquí. Por defecto: junto al script.
+#  En Railway el disco es EFÍMERO (cada deploy borra lo escrito en runtime),
+#  así que hay que montar un Volumen (p. ej. en /data) y definir la variable
+#  DATA_DIR=/data para que economía, autoroles, warns, etc. sobrevivan.
+# ============================================================
+DATA_DIR = os.environ.get("DATA_DIR", "").strip() or os.path.dirname(os.path.abspath(__file__))
+try:
+    os.makedirs(DATA_DIR, exist_ok=True)
+except OSError as e:
+    print(f"Aviso: no pude crear el directorio de datos {DATA_DIR}: {e}")
+    DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def ruta_datos(nombre: str) -> str:
+    """Ruta absoluta de un archivo de datos JSON dentro del directorio de datos."""
+    return os.path.join(DATA_DIR, nombre)
+
+
+LINKS_BANEADOS_PATH = ruta_datos("linkban_canal.json")
 linkban_canal = set()
 
-GIVEAWAYS_PATH = "giveaways.json"
+GIVEAWAYS_PATH = ruta_datos("giveaways.json")
 giveaways_db = {}
 
 IPOV_REGEX = re.compile(r"^\d+\.\d+\.\d+\.\d+(?:/\d+)?$")
 
-WARNS_PATH = "warns.json"
+WARNS_PATH = ruta_datos("warns.json")
 warns_db = {}
 
-LOGS_CHANNELS_PATH = "logs_channels.json"
+LOGS_CHANNELS_PATH = ruta_datos("logs_channels.json")
 logs_channels = set()
 
-HONEYPOTS_PATH = "honeypots.json"
+HONEYPOTS_PATH = ruta_datos("honeypots.json")
 honeypots_db = {}   # guild_id (str) -> {channel_id (str): {"action": "ban|kick|mute", "duration": int|None}}
 
-XP_PATH = "xp_data.json"
+XP_PATH = ruta_datos("xp_data.json")
 xp_db = {}  # guild_id (str) -> {user_id (str): {"xp": int, "level": int, "last_xp_gain": float}}
 xp_config_db = {}  # guild_id (str) -> {"enabled": bool, "xp_min": int, "xp_max": int, "cooldown": int, "levelup_channel": int|None, "levelup_msg": str|None, "levelup_enabled": bool}
 
@@ -46,29 +67,56 @@ XP_COOLDOWNS = {}  # guild_id (str) -> {user_id (str): timestamp}
 
 # Level role rewards: guild_id -> {level: role_id}
 level_roles_db = {}  # guild_id (str) -> {level (str): role_id (str)}
-LEVEL_ROLES_PATH = "level_roles.json"
+LEVEL_ROLES_PATH = ruta_datos("level_roles.json")
 
 # Autoroles: guild_id -> {"human": [role_id,...], "bot": [role_id,...], "all": [role_id,...]}
 autoroles_db = {}  # guild_id (str) -> {"human": [str], "bot": [str], "all": [str]}
-AUTOROLES_PATH = "autoroles.json"
+AUTOROLES_PATH = ruta_datos("autoroles.json")
 
-PREFIXES_PATH = "prefixes.json"
+PREFIXES_PATH = ruta_datos("prefixes.json")
 prefixes_db = {}     # guild_id (str) -> list[str] de prefijos válidos
-REMINDERS_PATH = "reminders.json"
+REMINDERS_PATH = ruta_datos("reminders.json")
 reminders_db = {}    # id -> {user_id, channel_id, msg_id, msg, fin, md}
 
 # Starboard
-STARBOARD_PATH = "starboard.json"
+STARBOARD_PATH = ruta_datos("starboard.json")
 starboard_db = {}   # guild_id (str) -> {"enabled": bool, "channel_id": int|None, "threshold": int, "posted": {msg_id: star_msg_id}}
 
 # Antiraid (DESACTIVADO por defecto en cada servidor)
-ANTIRAID_PATH = "antiraid.json"
+ANTIRAID_PATH = ruta_datos("antiraid.json")
 antiraid_db = {}    # guild_id (str) -> config (ver _antiraid_default)
 # Joins recientes en memoria: guild_id (str) -> [timestamps]
 ANTIRAID_JOINS = {}
 
+# Archivos de datos que el bot escribe en runtime (para migrar al volumen la primera vez).
+ARCHIVOS_DATOS = [
+    "linkban_canal.json", "giveaways.json", "warns.json", "logs_channels.json",
+    "honeypots.json", "xp_data.json", "level_roles.json", "autoroles.json",
+    "prefixes.json", "reminders.json", "starboard.json", "antiraid.json",
+    "economy.json", "economy_shop.json",
+]
+
+
+def migrar_datos():
+    """Si DATA_DIR es distinto al directorio del script y un archivo de datos no
+    existe aún en DATA_DIR pero sí junto al script, lo copia (primera ejecución
+    con un volumen recién montado, para no partir de más cero de lo necesario)."""
+    origen = os.path.dirname(os.path.abspath(__file__))
+    if os.path.abspath(origen) == os.path.abspath(DATA_DIR):
+        return
+    for nombre in ARCHIVOS_DATOS:
+        destino = ruta_datos(nombre)
+        fuente = os.path.join(origen, nombre)
+        if not os.path.exists(destino) and os.path.exists(fuente):
+            try:
+                shutil.copy2(fuente, destino)
+                print(f"Datos migrados al directorio persistente: {nombre}")
+            except OSError as e:
+                print(f"Aviso: no pude migrar {nombre}: {e}")
+
 # Dashboard web (aiohttp, corre junto al bot; se configura en dashboard.json)
-DASHBOARD_CONFIG_PATH = "dashboard.json"
+# Nota: dashboard.json es CONFIG versionada en el repo -> se lee junto al script, no del volumen.
+DASHBOARD_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.json")
 DASHBOARD_HTML_PATH = "dashboard.html"
 dashboard_config = {"enabled": True, "host": "127.0.0.1", "port": 8080, "token": ""}
 _dashboard_arrancado = False
@@ -6226,10 +6274,10 @@ bot.tree.add_command(starboard_group)
 # 💰 SISTEMA DE ECONOMÍA (estilo UnbelievaBoat)
 # ============================================================
 
-ECONOMY_PATH = "economy.json"
+ECONOMY_PATH = ruta_datos("economy.json")
 economy_db = {}      # guild_id -> {user_id: {cash, bank, inventory, ...}}
 econ_config_db = {}  # guild_id -> configuración de economía
-SHOP_PATH = "economy_shop.json"
+SHOP_PATH = ruta_datos("economy_shop.json")
 shop_db = {}         # guild_id -> {item: {"price": int, "description": str}}
 
 ECONOMY_COOLDOWNS = {
@@ -8948,6 +8996,8 @@ if __name__ == "__main__":
                 _flujo.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
             except Exception:
                 pass
+    print(f"Directorio de datos: {DATA_DIR}")
+    migrar_datos()
     # Buscar token.txt SIEMPRE junto al script, sin importar el directorio de trabajo.
     _dir_script = os.path.dirname(os.path.abspath(__file__))
     _token_path = os.path.join(_dir_script, "token.txt")
