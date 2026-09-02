@@ -125,7 +125,9 @@ _INICIO_BOT = time.time()
 # Sesiones OAuth (entrar con Discord) del dashboard
 DASH_SESIONES = {}       # session_id -> {"user_id", "nombre", "avatar", "expira", "guilds": {gid: {"owner", "perms"}}}
 DASH_OAUTH_STATES = {}   # state -> timestamp (protección CSRF, caduca a los 10 min)
-DASH_SESION_SEG = 7 * 86400
+DASH_SESION_SEG = 30 * 86400  # caducidad deslizante: 30 días, se renueva al usar el dashboard
+DASH_SESIONES_PATH = ruta_datos("dashboard_sesiones.json")  # persistidas: sobreviven a redeploys
+_sesiones_ultimo_guardado = 0.0
 PERM_ADMINISTRADOR = 0x8
 PERM_MANAGE_GUILD = 0x20
 PERM_MANAGE_ROLES = 1 << 28
@@ -746,6 +748,40 @@ def guardar_antiraid():
         print(f"Error guardando antiraid.json: {e}")
 
 
+def cargar_sesiones_dash():
+    """Carga las sesiones OAuth persistidas (sobreviven a redeploys y reinicios)."""
+    global DASH_SESIONES
+    DASH_SESIONES = {}
+    if os.path.exists(DASH_SESIONES_PATH):
+        try:
+            with open(DASH_SESIONES_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                ahora = time.time()
+                DASH_SESIONES = {
+                    sid: s for sid, s in data.items()
+                    if isinstance(s, dict) and s.get("expira", 0) > ahora
+                }
+        except (json.JSONDecodeError, OSError):
+            DASH_SESIONES = {}
+    print(f"Sesiones del dashboard cargadas: {len(DASH_SESIONES)}")
+
+
+def guardar_sesiones_dash():
+    """Persiste las sesiones OAuth en disco, eliminando las caducadas."""
+    global _sesiones_ultimo_guardado
+    ahora = time.time()
+    for sid in list(DASH_SESIONES):
+        if DASH_SESIONES[sid].get("expira", 0) <= ahora:
+            DASH_SESIONES.pop(sid, None)
+    try:
+        with open(DASH_SESIONES_PATH, "w", encoding="utf-8") as f:
+            json.dump(DASH_SESIONES, f, indent=2, ensure_ascii=False)
+        _sesiones_ultimo_guardado = ahora
+    except OSError as e:
+        print(f"Error guardando dashboard_sesiones.json: {e}")
+
+
 def cargar_dashboard():
     """Carga dashboard.json (opcional): enabled, host, port, token."""
     global dashboard_config
@@ -1076,6 +1112,7 @@ async def on_ready():
     cargar_shop()
     cargar_antiraid()
     cargar_dashboard()
+    cargar_sesiones_dash()
     # Arrancar el dashboard web (una sola vez, aunque on_ready se repita al reconectar).
     global _dashboard_arrancado
     if dashboard_config["enabled"] and not _dashboard_arrancado:
@@ -7888,6 +7925,10 @@ async def _dash_auth(request, handler):
     sid = request.cookies.get("dash_session", "")
     sesion = DASH_SESIONES.get(sid)
     if sesion is not None and sesion["expira"] > time.time():
+        # Caducidad deslizante: mientras uses el dashboard, la sesión se renueva.
+        sesion["expira"] = time.time() + DASH_SESION_SEG
+        if time.time() - _sesiones_ultimo_guardado > 300:
+            guardar_sesiones_dash()
         request["dash_acceso"] = "oauth"
         request["dash_sesion"] = sesion
         return await handler(request)
@@ -8103,6 +8144,7 @@ async def _dash_oauth_callback(request):
         "expira": ahora + DASH_SESION_SEG,
         "guilds": guildes,
     }
+    guardar_sesiones_dash()
     print(f"Dashboard: {nombre} (ID {uid}) inició sesión en el dashboard")
     respuesta = dash_web.HTTPFound("/")
     respuesta.set_cookie("dash_session", sid, max_age=DASH_SESION_SEG, httponly=True, samesite="Lax")
@@ -8113,6 +8155,7 @@ async def _dash_oauth_logout(request):
     """Cierra la sesión del dashboard."""
     sid = request.cookies.get("dash_session", "")
     DASH_SESIONES.pop(sid, None)
+    guardar_sesiones_dash()
     respuesta = dash_web.HTTPFound("/")
     respuesta.del_cookie("dash_session")
     raise respuesta

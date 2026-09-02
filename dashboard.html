@@ -323,16 +323,29 @@ function mostrarLogin(datos) {
     <div class="login-card">
       <h2>🔐 Acceder al dashboard</h2>
       <div class="login-desc">Entra con tu cuenta de Discord y verás tus servidores según tus permisos: los mods pueden configurar, el resto solo ve.</div>
-      <a class="btn btn-primario" style="display:block;text-decoration:none;margin-bottom:16px" href="/oauth/login">🔐 Entrar con Discord</a>
-      <div class="login-desc">¿Tienes token maestro? (acceso total, solo owner del bot)</div>
-      <input id="login-input" type="password" placeholder="Token maestro (opcional)" autocomplete="off">
-      <button class="btn btn-primario" style="width:100%" onclick="entrarConToken()">Entrar con token</button>
+      <a class="btn btn-primario" style="display:block;text-decoration:none" href="/oauth/login">🔐 Entrar con Discord</a>
+      <div style="text-align:right;margin-top:16px">
+        <a href="#" onclick="mostrarTokenLogin(event)" style="font-size:11.5px;color:var(--texto-2)">Acceso con token maestro</a>
+      </div>
+      <div id="token-box" style="display:none;margin-top:12px">
+        <input id="login-input" type="password" placeholder="Token maestro" autocomplete="off">
+        <button class="btn btn-primario" style="width:100%" onclick="entrarConToken()">Entrar con token</button>
+      </div>
       ${debug}
     </div>`;
   document.body.appendChild(div);
   const input = document.getElementById("login-input");
   input.addEventListener("keydown", e => { if (e.key === "Enter") entrarConToken(); });
-  input.focus();
+}
+
+function mostrarTokenLogin(ev) {
+  if (ev) ev.preventDefault();
+  const caja = document.getElementById("token-box");
+  if (!caja) return;
+  caja.style.display = caja.style.display === "none" ? "" : "none";
+  if (caja.style.display === "none") return;
+  const input = document.getElementById("login-input");
+  if (input) input.focus();
 }
 
 function entrarConToken() {
