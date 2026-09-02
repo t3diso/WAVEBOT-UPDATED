@@ -6,181 +6,165 @@
 <title>WAVEBOT · Dashboard</title>
 <style>
   :root {
-    --bg: #0f1115;
-    --panel: #16181e;
-    --panel-2: #1c1f26;
-    --border: #2a2d36;
-    --texto: #e7e9ee;
-    --texto-2: #9aa1ad;
-    --blurple: #5865F2;
+    --bg: #0b0e14;
+    --bg-2: #0f131c;
+    --panel: #151a26;
+    --panel-2: #1b2130;
+    --border: #262d40;
+    --texto: #e8eaf2;
+    --texto-2: #97a0b3;
+    --acento: #8b7cf6;
+    --acento-suave: rgba(139, 124, 246, .14);
     --verde: #23a55a;
     --rojo: #f23f43;
     --naranja: #f0b232;
     --radio: 14px;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     background: var(--bg);
     color: var(--texto);
     font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-    min-height: 100vh;
+    display: flex; flex-direction: column; overflow: hidden;
   }
-  a { color: var(--blurple); text-decoration: none; }
+  a { color: var(--acento); text-decoration: none; }
 
-  /* ===== Header ===== */
-  header {
-    display: flex; align-items: center; gap: 16px;
-    padding: 14px 22px;
-    background: var(--panel);
-    border-bottom: 1px solid var(--border);
-    position: sticky; top: 0; z-index: 10;
-    flex-wrap: wrap;
+  /* ===== Barra superior ===== */
+  #topbar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 20px; background: var(--bg-2);
+    border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap;
   }
-  .bot-avatar { width: 46px; height: 46px; border-radius: 50%; background: var(--panel-2); }
-  .bot-nombre { font-size: 18px; font-weight: 700; }
-  .bot-sub { color: var(--texto-2); font-size: 12.5px; margin-top: 2px; }
-  .estado-punto {
-    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
-    background: var(--verde); margin-right: 5px; vertical-align: 1px;
-  }
+  .bot-avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--panel-2); }
+  .bot-nombre { font-size: 16.5px; font-weight: 700; }
+  .bot-sub { color: var(--texto-2); font-size: 11.5px; margin-top: 1px; }
+  .estado-punto { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--verde); margin-right: 5px; vertical-align: 1px; }
   .estado-punto.off { background: var(--rojo); }
-  .stats-header { display: flex; gap: 18px; margin-left: auto; flex-wrap: wrap; }
-  .stat-chip {
-    background: var(--panel-2); border: 1px solid var(--border);
-    border-radius: 10px; padding: 6px 14px; text-align: center;
-  }
-  .stat-chip b { display: block; font-size: 15px; }
-  .stat-chip span { font-size: 11px; color: var(--texto-2); text-transform: uppercase; letter-spacing: .5px; }
-  .btn-refrescar {
-    background: var(--blurple); color: #fff; border: 0; border-radius: 10px;
-    padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
-  }
+  .chips-top { display: flex; gap: 10px; margin-left: auto; flex-wrap: wrap; align-items: center; }
+  .stat-chip { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 5px 13px; text-align: center; }
+  .stat-chip b { display: block; font-size: 14px; }
+  .stat-chip span { font-size: 10.5px; color: var(--texto-2); text-transform: uppercase; letter-spacing: .5px; }
+  .btn-refrescar { background: var(--acento); color: #fff; border: 0; border-radius: 10px; padding: 8px 15px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
   .btn-refrescar:hover { filter: brightness(1.12); }
 
   /* ===== Layout ===== */
-  .contenedor { display: flex; gap: 18px; padding: 18px 22px; align-items: flex-start; }
-  aside {
-    width: 280px; min-width: 240px; position: sticky; top: 84px;
-    max-height: calc(100vh - 110px); overflow-y: auto;
+  .layout { flex: 1; display: flex; min-height: 0; }
+
+  /* Columna servidores */
+  .lista-servidores {
+    width: 262px; min-width: 262px; background: var(--bg-2);
+    border-right: 1px solid var(--border); padding: 14px 12px;
+    overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
   }
-  #buscar-guild {
-    width: 100%; background: var(--panel); border: 1px solid var(--border);
-    color: var(--texto); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; margin-bottom: 10px;
-  }
-  #buscar-guild:focus { outline: 1px solid var(--blurple); }
+  .titulo-columna { font-size: 10.5px; font-weight: 700; color: var(--texto-2); text-transform: uppercase; letter-spacing: .6px; padding: 0 6px; }
+  #buscar-guild { width: 100%; background: var(--panel); border: 1px solid var(--border); color: var(--texto); border-radius: 10px; padding: 9px 12px; font-size: 13px; }
+  #buscar-guild:focus { outline: 1px solid var(--acento); }
   .lista-guilds { display: flex; flex-direction: column; gap: 6px; }
   .guild-btn {
     display: flex; align-items: center; gap: 10px; width: 100%;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-    padding: 9px 11px; cursor: pointer; color: var(--texto); text-align: left;
-    font-size: 13.5px; transition: border-color .15s;
+    background: transparent; border: 1px solid transparent; border-radius: 11px;
+    padding: 8px 10px; cursor: pointer; color: var(--texto); text-align: left; font-size: 13.5px;
+    transition: background .12s, border-color .12s;
   }
-  .guild-btn:hover { border-color: var(--blurple); }
-  .guild-btn.activo { border-color: var(--blurple); background: var(--panel-2); }
-  .guild-icono { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; background: var(--panel-2);
-    display: flex; align-items: center; justify-content: center; font-size: 14px; color: var(--texto-2); }
+  .guild-btn:hover { background: var(--panel); }
+  .guild-btn.activo { background: var(--acento-suave); border-color: var(--acento); }
+  .guild-icono { width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; background: var(--panel-2); display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--texto-2); overflow: hidden; }
+  .guild-icono img { width: 100%; height: 100%; object-fit: cover; }
   .guild-info { overflow: hidden; }
   .guild-nombre { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .guild-miembros { font-size: 11.5px; color: var(--texto-2); }
+  .guild-miembros { font-size: 11px; color: var(--texto-2); }
 
-  main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+  /* Zona del guild */
+  .zona-guild { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow-y: auto; }
 
-  .card {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: var(--radio); padding: 18px 20px;
+  .guild-top {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--bg-2);
+    position: sticky; top: 0; z-index: 5;
   }
-  .card h2 { font-size: 15.5px; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
-  .grid-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 1100px) { .grid-cards { grid-template-columns: 1fr; } aside { display: none; } }
-
-  /* ===== Hero servidor ===== */
-  .hero { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-  .hero img { width: 64px; height: 64px; border-radius: 16px; background: var(--panel-2); }
-  .hero-iniciales {
-    width: 64px; height: 64px; border-radius: 16px; background: var(--blurple);
-    display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 800;
-  }
-  .hero h1 { font-size: 20px; }
-  .hero-meta { color: var(--texto-2); font-size: 13px; margin-top: 4px; }
-  .hero-tags { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
-  .etiqueta {
-    background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px;
-    padding: 5px 12px; font-size: 12px; color: var(--texto-2);
-  }
+  .guild-top img.gicono { width: 52px; height: 52px; border-radius: 14px; background: var(--panel-2); }
+  .guild-top .giniciales { width: 52px; height: 52px; border-radius: 14px; background: var(--acento); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; }
+  .guild-top h1 { font-size: 18px; }
+  .guild-meta { color: var(--texto-2); font-size: 12.5px; margin-top: 2px; }
+  .guild-tags { margin-left: auto; display: flex; gap: 7px; flex-wrap: wrap; }
+  .etiqueta { background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 4px 11px; font-size: 11.5px; color: var(--texto-2); }
   .etiqueta b { color: var(--texto); }
+  .btn-movil { display: none; background: var(--panel); border: 1px solid var(--border); color: var(--texto); border-radius: 10px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
 
-  /* ===== Formularios antiraid ===== */
-  .fila-opcion { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px dashed var(--border); }
+  .guild-cuerpo { display: flex; min-height: 0; flex: 1; }
+
+  /* Navegación de secciones */
+  .nav-secciones {
+    width: 218px; min-width: 218px; padding: 16px 10px; border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 3px; overflow-y: auto;
+  }
+  .nav-btn {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    background: transparent; border: 0; border-radius: 10px; padding: 9px 12px;
+    color: var(--texto-2); font-size: 13.5px; font-weight: 600; cursor: pointer; text-align: left;
+    transition: background .12s, color .12s;
+  }
+  .nav-btn:hover { background: var(--panel); color: var(--texto); }
+  .nav-btn.activo { background: var(--acento-suave); color: var(--acento); }
+  .nav-btn .candado { margin-left: auto; font-size: 11px; opacity: .7; }
+  .nav-separador { height: 1px; background: var(--border); margin: 10px 6px; }
+
+  /* Contenido */
+  .contenido { flex: 1; padding: 22px 26px; min-width: 0; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radio); padding: 20px 22px; margin-bottom: 18px; }
+  .card h2 { font-size: 15.5px; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .sub { color: var(--texto-2); font-weight: 400; font-size: 12px; }
+
+  /* Tiles de resumen */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .tile { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .tile .num { font-size: 21px; font-weight: 800; margin-top: 5px; }
+  .tile .lbl { font-size: 11px; color: var(--texto-2); text-transform: uppercase; letter-spacing: .5px; }
+  .modulos { display: flex; flex-wrap: wrap; gap: 10px; }
+  .modulo-pill {
+    display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 11px 16px; cursor: pointer; font-size: 13.5px; font-weight: 600;
+    transition: border-color .12s;
+  }
+  .modulo-pill:hover { border-color: var(--acento); }
+  .modulo-pill .estado { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+  .estado.on { background: rgba(35, 165, 90, .15); color: var(--verde); }
+  .estado.off { background: rgba(242, 63, 67, .12); color: var(--rojo); }
+
+  /* Formularios */
+  .fila-opcion { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px dashed var(--border); }
   .fila-opcion:last-of-type { border-bottom: 0; }
   .opcion-label { font-size: 13.5px; }
   .opcion-desc { font-size: 11.5px; color: var(--texto-2); margin-top: 2px; max-width: 340px; }
-
   .switch { position: relative; width: 46px; height: 26px; flex-shrink: 0; }
   .switch input { opacity: 0; width: 0; height: 0; }
-  .switch .pista {
-    position: absolute; inset: 0; background: var(--panel-2); border: 1px solid var(--border);
-    border-radius: 999px; cursor: pointer; transition: .2s;
-  }
-  .switch .pista::after {
-    content: ""; position: absolute; width: 18px; height: 18px; border-radius: 50%;
-    background: var(--texto-2); top: 3px; left: 3px; transition: .2s;
-  }
+  .switch .pista { position: absolute; inset: 0; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; transition: .2s; }
+  .switch .pista::after { content: ""; position: absolute; width: 18px; height: 18px; border-radius: 50%; background: var(--texto-2); top: 3px; left: 3px; transition: .2s; }
   .switch input:checked + .pista { background: var(--verde); border-color: var(--verde); }
   .switch input:checked + .pista::after { left: 23px; background: #fff; }
-
-  input[type=number], select {
+  input[type=number], input[type=text], select {
     background: var(--panel-2); border: 1px solid var(--border); color: var(--texto);
     border-radius: 9px; padding: 8px 10px; font-size: 13.5px; width: 110px;
   }
-  select { width: 150px; cursor: pointer; }
-  input[type=number]:focus, select:focus { outline: 1px solid var(--blurple); }
-
+  select { width: 170px; cursor: pointer; }
+  input:focus, select:focus { outline: 1px solid var(--acento); }
+  input.mini-input { width: 78px !important; }
   .acciones-form { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
-  .btn {
-    border: 0; border-radius: 10px; padding: 10px 18px; font-size: 13.5px;
-    font-weight: 600; cursor: pointer; color: #fff;
-  }
-  .btn-primario { background: var(--blurple); }
+  .btn { border: 0; border-radius: 10px; padding: 10px 18px; font-size: 13.5px; font-weight: 600; cursor: pointer; color: #fff; }
+  .btn-primario { background: var(--acento); }
   .btn-primario:hover { filter: brightness(1.12); }
   .btn-peligro { background: var(--rojo); }
   .btn-peligro:hover { filter: brightness(1.12); }
   .btn-verde { background: var(--verde); }
   .btn-verde:hover { filter: brightness(1.12); }
-  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
 
-  .banner-raid {
-    display: none; margin-bottom: 14px; padding: 11px 14px; border-radius: 10px;
-    background: rgba(240, 178, 50, .12); border: 1px solid var(--naranja);
-    color: var(--naranja); font-size: 13px; font-weight: 600;
-  }
+  .banner-raid { display: none; margin-bottom: 14px; padding: 11px 14px; border-radius: 10px; background: rgba(240, 178, 50, .1); border: 1px solid var(--naranja); color: var(--naranja); font-size: 13px; font-weight: 600; }
   .banner-raid.visible { display: block; }
+  .banner-ro { background: var(--panel-2); border-color: var(--border); color: var(--texto-2); }
 
-  .stats-mini { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
-  .mini-chip { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 7px 13px; font-size: 12.5px; color: var(--texto-2); }
-  .mini-chip b { color: var(--texto); font-size: 14px; margin-right: 4px; }
-
-  /* ===== Cards de datos ===== */
-  .dato-fila { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 13.5px; }
-  .dato-fila:last-child { border-bottom: 0; }
-  .dato-fila span { color: var(--texto-2); }
-  .dato-fila b { text-align: right; max-width: 60%; overflow-wrap: anywhere; }
-  .verde { color: var(--verde); } .rojo { color: var(--rojo); } .naranja { color: var(--naranja); }
-
-  .vacio { color: var(--texto-2); font-size: 13.5px; text-align: center; padding: 40px 10px; }
-
-  /* ===== Toast ===== */
-  #toast {
-    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
-    background: var(--panel-2); border: 1px solid var(--border); color: var(--texto);
-    padding: 12px 22px; border-radius: 12px; font-size: 13.5px; opacity: 0;
-    pointer-events: none; transition: .25s; z-index: 100; max-width: 90vw;
-  }
-  #toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
-  #toast.ok { border-color: var(--verde); } #toast.err { border-color: var(--rojo); }
-
-  /* ===== Tarjetas editables ===== */
-  .grupo-titulo { font-size: 12px; font-weight: 700; color: var(--texto-2); text-transform: uppercase; letter-spacing: .4px; margin: 18px 0 8px; }
-  .grupo-titulo:first-child { margin-top: 0; }
+  .grupo-titulo { font-size: 11.5px; font-weight: 700; color: var(--texto-2); text-transform: uppercase; letter-spacing: .5px; margin: 18px 0 8px; }
   .chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 6px 0 10px; }
   .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 5px 7px 5px 12px; font-size: 12.5px; }
   .chip.fijo { padding-right: 12px; color: var(--texto-2); }
@@ -188,68 +172,89 @@
   .chip button:hover { color: var(--rojo); }
   .fila-inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .fila-inline select { flex: 1; min-width: 150px; width: auto; }
+
+  .dato-fila { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 13.5px; gap: 10px; }
+  .dato-fila:last-child { border-bottom: 0; }
+  .dato-fila span { color: var(--texto-2); }
+  .dato-fila b { text-align: right; max-width: 60%; overflow-wrap: anywhere; }
+  .verde { color: var(--verde); } .rojo { color: var(--rojo); }
+
   .item-tienda { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 13px; }
   .item-tienda:last-child { border-bottom: 0; }
   .item-tienda .nombre { font-weight: 600; min-width: 90px; }
   .item-tienda .precio { color: var(--verde); font-weight: 700; min-width: 80px; }
   .item-tienda .desc { color: var(--texto-2); flex: 1; overflow-wrap: anywhere; }
-  .mini-input { width: 80px !important; }
 
-  /* ===== Login del dashboard ===== */  #overlay-login {
-    position: fixed; inset: 0; background: rgba(0, 0, 0, .78);
-    display: flex; align-items: center; justify-content: center; z-index: 200;
-  }
-  .login-card {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
-    padding: 26px 28px; width: min(400px, 92vw); text-align: center;
-  }
+  .stats-mini { display: flex; gap: 10px; margin: 12px 0 4px; flex-wrap: wrap; }
+  .mini-chip { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 7px 13px; font-size: 12.5px; color: var(--texto-2); }
+  .mini-chip b { color: var(--texto); font-size: 14px; margin-right: 4px; }
+
+  .vacio { color: var(--texto-2); font-size: 13.5px; text-align: center; padding: 26px 10px; }
+  .cargando { display: flex; align-items: center; gap: 10px; color: var(--texto-2); font-size: 14px; padding: 40px; justify-content: center; }
+  .spinner { width: 18px; height: 18px; border: 2.5px solid var(--border); border-top-color: var(--acento); border-radius: 50%; animation: girar .8s linear infinite; }
+  @keyframes girar { to { transform: rotate(360deg); } }
+
+  /* ===== Toast ===== */
+  #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--panel-2); border: 1px solid var(--border); color: var(--texto); padding: 12px 22px; border-radius: 12px; font-size: 13.5px; opacity: 0; pointer-events: none; transition: .25s; z-index: 100; max-width: 90vw; }
+  #toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.ok { border-color: var(--verde); } #toast.err { border-color: var(--rojo); }
+
+  /* ===== Login ===== */
+  #overlay-login { position: fixed; inset: 0; background: rgba(5, 7, 12, .82); display: flex; align-items: center; justify-content: center; z-index: 200; }
+  .login-card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 26px 28px; width: min(400px, 92vw); text-align: center; }
   .login-card h2 { margin-bottom: 8px; }
   .login-desc { color: var(--texto-2); font-size: 13px; margin-bottom: 16px; }
   .login-debug { color: var(--naranja); font-size: 12px; margin-top: 12px; overflow-wrap: anywhere; }
-  #login-input {
-    width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--texto);
-    border-radius: 10px; padding: 11px 13px; font-size: 13.5px; margin-bottom: 12px;
-  }
-  #login-input:focus { outline: 1px solid var(--blurple); }
+  #login-input { width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--texto); border-radius: 10px; padding: 11px 13px; font-size: 13.5px; margin-bottom: 12px; }
+  #login-input:focus { outline: 1px solid var(--acento); }
 
-  .cargando { display: flex; align-items: center; gap: 10px; color: var(--texto-2); font-size: 14px; padding: 30px; justify-content: center; }
-  .spinner {
-    width: 18px; height: 18px; border: 2.5px solid var(--border); border-top-color: var(--blurple);
-    border-radius: 50%; animation: girar .8s linear infinite;
+  /* ===== Responsive ===== */
+  @media (max-width: 1150px) { .nav-secciones { width: 64px; min-width: 64px; } .nav-btn { justify-content: center; padding: 10px 0; } .nav-btn .texto-nav, .nav-btn .candado { display: none; } }
+  @media (max-width: 860px) {
+    .lista-servidores { display: none; position: fixed; inset: 58px 0 0 0; z-index: 50; width: auto; }
+    .lista-servidores.abierto { display: flex; }
+    .btn-movil { display: inline-block; }
+    .chips-top .stat-chip { display: none; }
+    .guild-cuerpo { flex-direction: column; }
+    .nav-secciones { width: 100%; min-width: 0; flex-direction: row; overflow-x: auto; padding: 10px 14px; border-right: 0; border-bottom: 1px solid var(--border); }
+    .nav-btn { flex-shrink: 0; }
+    .nav-btn .texto-nav { display: inline; }
+    .nav-separador { display: none; }
+    .contenido { padding: 16px; }
   }
-  @keyframes girar { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
 
-<header>
+<header id="topbar">
   <img id="bot-avatar" class="bot-avatar" alt="">
   <div>
     <div class="bot-nombre"><span id="bot-estado" class="estado-punto"></span><span id="bot-nombre">Cargando…</span></div>
     <div class="bot-sub" id="bot-sub">Conectando con el bot…</div>
   </div>
   <div id="user-box" style="margin-left:6px"></div>
-  <div class="stats-header">
+  <div class="chips-top">
     <div class="stat-chip"><b id="h-servidores">–</b><span>Servidores</span></div>
     <div class="stat-chip"><b id="h-usuarios">–</b><span>Usuarios</span></div>
     <div class="stat-chip"><b id="h-ping">–</b><span>Ping</span></div>
     <div class="stat-chip"><b id="h-uptime">–</b><span>Uptime</span></div>
     <div class="stat-chip" id="chip-owner" style="display:none"><b id="h-owner">–</b><span>Owner</span></div>
+    <button class="btn-refrescar" onclick="refrescarTodo()">↻ Refrescar</button>
   </div>
-  <button class="btn-refrescar" onclick="refrescarTodo()">↻ Refrescar</button>
 </header>
 
-<div class="contenedor">
-  <aside>
+<div class="layout">
+  <aside class="lista-servidores" id="col-servidores">
+    <div class="titulo-columna">Tus servidores</div>
     <input id="buscar-guild" type="text" placeholder="🔎 Buscar servidor…" oninput="pintarGuilds()">
     <div class="lista-guilds" id="lista-guilds">
       <div class="cargando"><div class="spinner"></div> Cargando servidores…</div>
     </div>
   </aside>
 
-  <main id="principal">
+  <div class="zona-guild" id="zona-guild">
     <div class="cargando"><div class="spinner"></div> Cargando datos del bot…</div>
-  </main>
+  </div>
 </div>
 
 <div id="toast"></div>
@@ -261,8 +266,10 @@ let GUILDS = [];
 let GUILD_ACTUAL = null;
 let DATOS_GUILD = null;
 let ESTADO = null;
+let SECCION_ACTUAL = localStorage.getItem("dash_seccion") || "resumen";
 let REFRESCO_AUTO = null;
 
+/* ===== Base ===== */
 function api(ruta, opciones = {}) {
   const url = new URL(ruta, location.origin);
   if (TOKEN) url.searchParams.set("token", TOKEN);
@@ -279,6 +286,32 @@ function api(ruta, opciones = {}) {
   });
 }
 
+function esc(t) {
+  return String(t ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[c]);
+}
+
+function toast(msg, ok = true) {
+  if (document.getElementById("overlay-login")) return;
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "visible " + (ok ? "ok" : "err");
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.className = "", 3200);
+}
+
+function fmtNum(n) { return Number(n || 0).toLocaleString("es-ES"); }
+
+function fmtUptime(seg) {
+  seg = Math.floor(seg || 0);
+  const d = Math.floor(seg / 86400), h = Math.floor(seg % 86400 / 3600), m = Math.floor(seg % 3600 / 60);
+  if (d > 0) return d + "d " + h + "h";
+  if (h > 0) return h + "h " + m + "m";
+  return m + "m " + (seg % 60) + "s";
+}
+
+/* ===== Login ===== */
 function mostrarLogin(datos) {
   if (document.getElementById("overlay-login")) return;
   const div = document.createElement("div");
@@ -312,32 +345,7 @@ function entrarConToken() {
   refrescarTodo();
 }
 
-function esc(t) {
-  return String(t ?? "").replace(/[&<>"']/g, c => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-  })[c]);
-}
-
-function toast(msg, ok = true) {
-  if (document.getElementById("overlay-login")) return;
-  const t = document.getElementById("toast");
-  t.textContent = msg;
-  t.className = "visible " + (ok ? "ok" : "err");
-  clearTimeout(t._timer);
-  t._timer = setTimeout(() => t.className = "", 3200);
-}
-
-function fmtNum(n) { return Number(n || 0).toLocaleString("es-ES"); }
-
-function fmtUptime(seg) {
-  seg = Math.floor(seg || 0);
-  const d = Math.floor(seg / 86400), h = Math.floor(seg % 86400 / 3600), m = Math.floor(seg % 3600 / 60);
-  if (d > 0) return d + "d " + h + "h";
-  if (h > 0) return h + "h " + m + "m";
-  return m + "m " + (seg % 60) + "s";
-}
-
-/* ===== Estado del bot (header) ===== */
+/* ===== Estado del bot (topbar) ===== */
 async function cargarEstado() {
   try {
     const s = await api("/api/status");
@@ -356,11 +364,10 @@ async function cargarEstado() {
     } else {
       chipOwner.style.display = "none";
     }
-    // Caja de usuario (sesión Discord o token maestro)
     const ub = document.getElementById("user-box");
     if (s.usuario) {
       ub.innerHTML = `
-        <div style="display:flex;align-items:center;gap:8px;background:var(--panel-2);border:1px solid var(--border);border-radius:999px;padding:4px 8px 4px 5px">
+        <div style="display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--border);border-radius:999px;padding:4px 8px 4px 5px">
           ${s.usuario.avatar ? `<img src="${esc(s.usuario.avatar)}" style="width:26px;height:26px;border-radius:50%" alt="">` : ""}
           <span style="font-size:13px;font-weight:600">${esc(s.usuario.nombre)}${s.usuario.es_bot_owner ? " 👑" : ""}</span>
           <a href="/oauth/logout" style="color:var(--texto-2);font-size:11.5px;padding:0 6px">Salir</a>
@@ -371,7 +378,7 @@ async function cargarEstado() {
     const av = document.getElementById("bot-avatar");
     if (s.bot.avatar) { av.src = s.bot.avatar; av.style.display = ""; } else { av.style.display = "none"; }
   } catch (e) {
-    toast("Error cargando estado: " + e.message, false);
+    if (e.message !== "Token requerido") toast("Error cargando estado: " + e.message, false);
   }
 }
 
@@ -381,13 +388,15 @@ async function cargarGuilds() {
     GUILDS = await api("/api/guilds");
     pintarGuilds();
     if (!GUILD_ACTUAL && GUILDS.length) seleccionarGuild(GUILDS[0].id);
-    if (!GUILDS.length) {
-      document.getElementById("principal").innerHTML =
+    if (!GUILDS.length && !GUILD_ACTUAL) {
+      document.getElementById("zona-guild").innerHTML =
         '<div class="card"><div class="vacio">No hay servidores en común: el bot no está en ningún servidor donde tú estés (o no iniciaste sesión).</div></div>';
     }
   } catch (e) {
-    document.getElementById("lista-guilds").innerHTML = "";
-    toast("Error cargando servidores: " + e.message, false);
+    if (e.message !== "Token requerido") {
+      document.getElementById("lista-guilds").innerHTML = "";
+      toast("Error cargando servidores: " + e.message, false);
+    }
   }
 }
 
@@ -399,388 +408,547 @@ function pintarGuilds() {
     .map(g => `
       <button class="guild-btn ${g.id === GUILD_ACTUAL ? "activo" : ""}" onclick="seleccionarGuild('${g.id}')">
         ${g.icono
-          ? `<img class="guild-icono" src="${esc(g.icono)}" alt="">`
+          ? `<div class="guild-icono"><img src="${esc(g.icono)}" alt=""></div>`
           : `<div class="guild-icono">${esc(g.nombre.slice(0, 2).toUpperCase())}</div>`}
         <div class="guild-info">
           <div class="guild-nombre">${esc(g.nombre)}</div>
-          <div class="guild-miembros">👥 ${fmtNum(g.miembros)} miembros</div>
+          <div class="guild-miembros">👥 ${fmtNum(g.miembros)}</div>
         </div>
       </button>`).join("");
 }
 
-/* ===== Detalle de servidor ===== */
+/* ===== Selección y estructura del guild ===== */
 async function seleccionarGuild(id) {
   GUILD_ACTUAL = id;
   pintarGuilds();
-  const main = document.getElementById("principal");
-  main.innerHTML = '<div class="cargando"><div class="spinner"></div> Cargando servidor…</div>';
+  document.getElementById("col-servidores").classList.remove("abierto");
+  const zona = document.getElementById("zona-guild");
+  zona.innerHTML = '<div class="cargando"><div class="spinner"></div> Cargando servidor…</div>';
   try {
     DATOS_GUILD = await api("/api/guild/" + id);
     pintarGuild();
   } catch (e) {
-    main.innerHTML = '<div class="card"><div class="vacio">❌ ' + esc(e.message) + "</div></div>";
+    zona.innerHTML = '<div class="card"><div class="vacio">❌ ' + esc(e.message) + "</div></div>";
   }
 }
 
-function pintarGuild() {
-  const g = DATOS_GUILD;
-  const ar = g.antiraid;
-  const RaidActivo = ar.active;
-  const perms = g.permisos || {};
-  const ec = g.econ_config || {};
-  const sb = g.starboard || {};
-  const xp = g.xp || {};
-  const nivelTexto = {
+const NAV_SECCIONES = [
+  ["resumen", "🏠", "Resumen"],
+  ["antiraid", "🚨", "Antiraid"],
+  ["honeypots", "🍯", "Honeypots"],
+  ["canales", "🔗", "Canales y links"],
+  ["roles", "👥", "Roles y prefijos"],
+  ["warns", "⚠️", "Warns"],
+  ["starboard", "⭐", "Starboard"],
+  ["niveles", "📊", "Niveles / XP"],
+  ["economia", "💰", "Economía"],
+  ["tienda", "🛍️", "Tienda"],
+];
+
+function nivelTextoDe(nivel) {
+  return {
     bot_owner: "👑 Owner del bot",
     owner: "🛡️ Owner del servidor",
     mod: "⚔️ Moderador",
     member: "👁️ Solo lectura",
-  }[g.nivel] || "👁️ Solo lectura";
+  }[nivel] || "👁️ Solo lectura";
+}
 
-  // Helpers locales para selects de canales/roles y notas de solo lectura
-  const optsCanales = (sel, conVacio) =>
-    (conVacio ? `<option value="" ${!sel ? "selected" : ""}>— Sin canal —</option>` : "") +
-    (g.canales || []).map(c => `<option value="${c.id}" ${sel === c.id ? "selected" : ""}>#${esc(c.nombre)}</option>`).join("");
-  const optsRoles = sel =>
-    (g.roles || []).map(r => `<option value="${r.id}" ${sel === r.id ? "selected" : ""}>@${esc(r.nombre)}</option>`).join("");
-  const notaRO = (perm, nombrePerm) => perm ? "" : `
-    <div class="banner-raid visible" style="border-color:var(--texto-2);color:var(--texto-2);background:var(--panel-2)">
-      👁️ Solo lectura — necesitas el permiso ${nombrePerm || "Manage Server"} en este servidor.
-    </div>`;
-  const pct = v => Math.round((v || 0) * 100);
+function pintarGuild() {
+  const g = DATOS_GUILD;
+  const perms = g.permisos || {};
+  const candado = seccion => {
+    if (seccion === "roles") return (!perms.manage_roles && !perms.manage_guild) ? "🔒" : "";
+    if (seccion === "warns") return perms.moderate_members ? "" : "🔒";
+    return perms.manage_guild ? "" : "🔒";
+  };
+  const navOwner = g.es_bot_owner
+    ? `<div class="nav-separador"></div>
+       <button class="nav-btn ${SECCION_ACTUAL === "owner" ? "activo" : ""}" onclick="mostrarSeccion('owner')"><span>👑</span><span class="texto-nav">Owner del bot</span></button>`
+    : "";
 
-  document.getElementById("principal").innerHTML = `
-    <div class="card hero-card">
-      <div class="hero">
-        ${g.icono
-          ? `<img src="${esc(g.icono)}" alt="">`
-          : `<div class="hero-iniciales">${esc(g.nombre.slice(0, 2).toUpperCase())}</div>`}
-        <div>
-          <h1>${esc(g.nombre)}</h1>
-          <div class="hero-meta">👑 ${esc(g.owner_nombre || "Desconocido")} · 🗓️ Creado el ${esc(g.creado_texto)}</div>
-        </div>
-        <div class="hero-tags">
-          <span class="etiqueta">${nivelTexto}</span>
-          <span class="etiqueta">👥 <b>${fmtNum(g.miembros)}</b> miembros</span>
-          <span class="etiqueta">⌨️ Prefijos: <b>${esc(g.prefijos.join(" · "))}</b></span>
-          <span class="etiqueta">🤖 Bots: <b>${fmtNum(g.bots)}</b></span>
-        </div>
+  document.getElementById("zona-guild").innerHTML = `
+    <div class="guild-top">
+      <button class="btn-movil" onclick="document.getElementById('col-servidores').classList.toggle('abierto')">☰ Servidores</button>
+      ${g.icono
+        ? `<img class="gicono" src="${esc(g.icono)}" alt="">`
+        : `<div class="giniciales">${esc(g.nombre.slice(0, 2).toUpperCase())}</div>`}
+      <div>
+        <h1>${esc(g.nombre)}</h1>
+        <div class="guild-meta">👑 ${esc(g.owner_nombre || "Desconocido")} · 🗓️ ${esc(g.creado_texto)} · ⌨️ ${esc(g.prefijos.join(" · "))}</div>
+      </div>
+      <div class="guild-tags">
+        <span class="etiqueta">${nivelTextoDe(g.nivel)}</span>
+        <span class="etiqueta">👥 <b>${fmtNum(g.miembros)}</b></span>
+        <span class="etiqueta">🤖 <b>${fmtNum(g.bots)}</b></span>
       </div>
     </div>
-
-    <div class="grid-cards">
-      <div class="card" id="card-antiraid">
-        <h2>🚨 Antiraid</h2>
-        ${!g.puede_configurar ? `
-        <div class="banner-raid visible" style="border-color:var(--texto-2);color:var(--texto-2);background:var(--panel-2)">
-          👁️ Solo lectura — no tienes permiso (Manage Server) para cambiar la configuración de este servidor.
-        </div>` : ""}
-        <div class="banner-raid ${RaidActivo ? "visible" : ""}">
-          ${RaidActivo ? "MODO RAID ACTIVO — todas las entradas están siendo castigadas (" + (ar.manual ? "manual, no se desactiva solo" : "automático") + ")" : ""}
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Sistema antiraid</div>
-            <div class="opcion-desc">Desactivado por defecto. Detecta joins masivos y castiga a los raiders.</div></div>
-          <label class="switch"><input type="checkbox" id="ar-enabled" ${ar.enabled ? "checked" : ""}><span class="pista"></span></label>
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Umbral de detección</div>
-            <div class="opcion-desc">Joins necesarios dentro de la ventana para considerar raid.</div></div>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input type="number" id="ar-threshold" min="2" max="100" value="${ar.threshold}" title="Joins">
-            <span style="color:var(--texto-2)">en</span>
-            <input type="number" id="ar-seconds" min="3" max="3600" value="${ar.seconds}" title="Segundos">
-            <span style="color:var(--texto-2)">s</span>
-          </div>
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Acción contra raiders</div>
-            <div class="opcion-desc">castigo aplicado al detectar un raid${ar.action === "mute" ? " (timeout de 60 min)" : ""}.</div></div>
-          <select id="ar-action">
-            <option value="kick" ${ar.action === "kick" ? "selected" : ""}>kick (expulsar)</option>
-            <option value="ban" ${ar.action === "ban" ? "selected" : ""}>ban (banear)</option>
-            <option value="mute" ${ar.action === "mute" ? "selected" : ""}>mute (timeout 1h)</option>
-          </select>
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Castigar entradas durante raid</div>
-            <div class="opcion-desc">Si está en No, solo se castiga al usuario que dispara el umbral.</div></div>
-          <label class="switch"><input type="checkbox" id="ar-punishnew" ${ar.punish_new ? "checked" : ""}><span class="pista"></span></label>
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Edad mínima de cuenta</div>
-            <div class="opcion-desc">En minutos. 0 = desactivado. Castiga cuentas recién creadas.</div></div>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input type="number" id="ar-minage" min="0" max="43800" value="${ar.min_age}">
-            <span style="color:var(--texto-2)">min</span>
-          </div>
-        </div>
-        <div class="stats-mini">
-          <span class="mini-chip">🚨 <b>${fmtNum(ar.stats.raids)}</b> raids detectados</span>
-          <span class="mini-chip">⚔️ <b>${fmtNum(ar.stats.punished)}</b> castigados</span>
-        </div>
-        <div class="acciones-form">
-          <button class="btn btn-primario" onclick="guardarAntiraid()">💾 Guardar cambios</button>
-          ${RaidActivo
-            ? '<button class="btn btn-verde" onclick="toggleRaidmode(\'off\')">✅ Apagar modo raid</button>'
-            : '<button class="btn btn-peligro" onclick="toggleRaidmode(\'on\')">🚨 Activar modo raid manual</button>'}
-        </div>
-      </div>
-
-      <div class="card" id="card-econ">
-        <h2>💰 Economía</h2>
-        ${notaRO(perms.manage_guild)}
-        <div class="stats-mini">
-          <span class="mini-chip">👤 <b>${fmtNum(g.economia.usuarios)}</b> usuarios</span>
-          <span class="mini-chip">🏦 <b>${esc(g.economia.moneda)}${fmtNum(g.economia.dinero_total)}</b> en circulación</span>
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Moneda</div>
-            <div class="opcion-desc">Símbolo usado en todos los comandos (máx 5 caracteres).</div></div>
-          <input id="ec-currency" value="${esc(ec.currency || "$")}" maxlength="5" style="width:80px">
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Balance inicial</div>
-            <div class="opcion-desc">Efectivo con el que empieza cada usuario nuevo.</div></div>
-          <input type="number" id="ec-start" min="0" value="${ec.start_balance ?? 0}">
-        </div>
-        <div class="grupo-titulo">Recompensas (mínimo – máximo)</div>
-        ${[
-          ["daily", "💵 Daily (diario)"],
-          ["weekly", "📅 Weekly (semanal)"],
-          ["monthly", "🗓️ Monthly (mensual)"],
-          ["work", "🛠️ Work (trabajo)"],
-          ["crime", "🚔 Crime (crimen)"],
-          ["slut", "💋 Slut"],
-        ].map(([campo, texto]) => `
-        <div class="fila-opcion">
-          <div class="opcion-label">${texto}</div>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input class="mini-input" type="number" id="ec-${campo}-min" min="0" value="${ec[campo + "_min"] ?? 0}">
-            <span style="color:var(--texto-2)">–</span>
-            <input class="mini-input" type="number" id="ec-${campo}-max" min="0" value="${ec[campo + "_max"] ?? 0}">
-            ${campo === "crime" || campo === "slut" ? `<span style="color:var(--texto-2);font-size:11.5px">fallo %</span><input class="mini-input" type="number" id="ec-${campo}-fallo" min="0" max="100" value="${pct(ec[campo + "_fallo"])}">` : ""}
-          </div>
-        </div>`).join("")}
-        <div class="fila-opcion">
-          <div class="opcion-label">🦹 Rob (% del efectivo de la víctima)</div>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input class="mini-input" type="number" id="ec-rob-min" min="0" max="100" value="${pct(ec.rob_min)}">
-            <span style="color:var(--texto-2)">–</span>
-            <input class="mini-input" type="number" id="ec-rob-max" min="0" max="100" value="${pct(ec.rob_max)}">
-            <span style="color:var(--texto-2);font-size:11.5px">fallo %</span>
-            <input class="mini-input" type="number" id="ec-rob-fallo" min="0" max="100" value="${pct(ec.rob_fallo)}">
-          </div>
-        </div>
-        <div class="acciones-form">
-          <button class="btn btn-primario" onclick="guardarEconomia()">💾 Guardar economía</button>
-        </div>
-      </div>
-
-      <div class="card" id="card-econ-user">
-        <h2>👤 Dinero de un usuario</h2>
-        ${notaRO(perms.manage_guild)}
-        <div class="fila-opcion">
-          <div><div class="opcion-label">ID del usuario</div>
-            <div class="opcion-desc">Copia su ID (modo desarrollador de Discord → copiar ID).</div></div>
-          <input id="eu-id" placeholder="Ej: 611116738943123457" style="width:230px">
-        </div>
-        <div class="fila-opcion">
-          <div class="opcion-label">Cantidad (efectivo)</div>
-          <input type="number" id="eu-cantidad" min="0" value="0">
-        </div>
-        <div class="fila-opcion">
-          <div class="opcion-label">Acción</div>
-          <select id="eu-accion">
-            <option value="add">➕ Añadir</option>
-            <option value="remove">➖ Quitar</option>
-            <option value="set">🎯 Fijar exactamente</option>
-          </select>
-        </div>
-        <div class="acciones-form">
-          <button class="btn btn-primario" onclick="dineroUsuario()">💸 Aplicar</button>
-        </div>
-      </div>
-
-      <div class="card" id="card-shop">
-        <h2>🛍️ Tienda (${fmtNum(g.shop.length)} items)</h2>
-        ${notaRO(perms.manage_guild)}
-        ${(g.shop || []).map(it => `
-        <div class="item-tienda">
-          <span class="nombre">${esc(it.item)}</span>
-          <span class="precio">${esc(g.economia.moneda)}${fmtNum(it.precio)}</span>
-          <span class="desc">${esc(it.desc || "")}</span>
-          <button class="btn btn-peligro" style="padding:5px 11px;font-size:12px" onclick="tiendaRemove('${esc(it.item)}')">🗑</button>
-        </div>`).join("") || '<div class="vacio" style="padding:14px">La tienda está vacía.</div>'}
-        <div class="grupo-titulo">Añadir item</div>
-        <div class="fila-inline">
-          <input id="shop-item" placeholder="nombre (sin espacios)" style="width:170px">
-          <input class="mini-input" type="number" id="shop-precio" min="1" placeholder="precio">
-          <input id="shop-desc" placeholder="descripción (opcional)" style="flex:1;min-width:140px;width:auto">
-          <button class="btn btn-primario" onclick="tiendaAdd()">➕ Añadir</button>
-        </div>
-      </div>
-
-      <div class="card" id="card-starboard">
-        <h2>⭐ Starboard</h2>
-        ${notaRO(perms.manage_guild)}
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Starboard</div>
-            <div class="opcion-desc">Los mensajes con suficientes ⭐ se publican en el canal elegido.</div></div>
-          <label class="switch"><input type="checkbox" id="sb-enabled" ${sb.enabled ? "checked" : ""}><span class="pista"></span></label>
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Canal del starboard</div></div>
-          <select id="sb-channel">${optsCanales(sb.channel_id, true)}</select>
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">⭐ Estrellas necesarias</div></div>
-          <input type="number" id="sb-threshold" min="1" max="100" value="${sb.threshold ?? 5}">
-        </div>
-        <div class="acciones-form">
-          <button class="btn btn-primario" onclick="guardarStarboard()">💾 Guardar starboard</button>
-        </div>
-      </div>
-
-      <div class="card" id="card-xp">
-        <h2>📊 Niveles / XP <span style="color:var(--texto-2);font-weight:400;font-size:12px">(${fmtNum(xp.usuarios)} usuarios)</span></h2>
-        ${notaRO(perms.manage_guild)}
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Sistema de XP</div>
-            <div class="opcion-desc">Gana XP por mensaje y sube de nivel (con recompensas de rol si las configuras).</div></div>
-          <label class="switch"><input type="checkbox" id="xp-enabled" ${xp.enabled ? "checked" : ""}><span class="pista"></span></label>
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">XP por mensaje</div></div>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input class="mini-input" type="number" id="xp-min" min="0" value="${xp.xp_min ?? 15}">
-            <span style="color:var(--texto-2)">–</span>
-            <input class="mini-input" type="number" id="xp-max" min="0" value="${xp.xp_max ?? 25}">
-          </div>
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Cooldown anti-spam</div></div>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input class="mini-input" type="number" id="xp-cooldown" min="0" value="${xp.cooldown ?? 60}">
-            <span style="color:var(--texto-2)">seg</span>
-          </div>
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Anuncios de level-up</div></div>
-          <label class="switch"><input type="checkbox" id="xp-announce" ${xp.announce ? "checked" : ""}><span class="pista"></span></label>
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Canal de anuncios</div></div>
-          <select id="xp-channel">${optsCanales(xp.channel_id, true)}</select>
-        </div>
-        <div class="fila-opcion">
-          <div><div class="opcion-label">Mensaje de level-up</div>
-            <div class="opcion-desc">Variables: {user} {level} {xp}</div></div>
-          <input id="xp-message" value="${esc(xp.message || "")}" style="width:100%;max-width:340px">
-        </div>
-        <div class="acciones-form">
-          <button class="btn btn-primario" onclick="guardarXp()">💾 Guardar niveles</button>
-        </div>
-      </div>
-
-      <div class="card" id="card-canales">
-        <h2>🔗 Canales</h2>
-        ${notaRO(perms.manage_guild)}
-        <div class="grupo-titulo">📜 Canales de logs (eventos del servidor)</div>
-        <div class="chips">
-          ${(g.logs_detalle || []).map(c => `<span class="chip">#${esc(c.nombre)}<button onclick="canalRemove('logs','${c.id}')" title="Quitar">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno configurado</span>'}
-        </div>
-        <div class="fila-inline">
-          <select id="logs-canal">${optsCanales(null, true)}</select>
-          <button class="btn btn-primario" onclick="canalAdd('logs')">➕ Añadir logs</button>
-        </div>
-        <div class="grupo-titulo">🚫 Canales con links prohibidos (linkban)</div>
-        <div class="chips">
-          ${(g.linkban_detalle || []).map(c => `<span class="chip">#${esc(c.nombre)}<button onclick="canalRemove('linkban','${c.id}')" title="Permitir links">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno configurado</span>'}
-        </div>
-        <div class="fila-inline">
-          <select id="linkban-canal">${optsCanales(null, true)}</select>
-          <button class="btn btn-primario" onclick="canalAdd('linkban')">➕ Prohibir links</button>
-        </div>
-        <div class="grupo-titulo">🍯 Honeypots (trampa para raiders)</div>
-        <div class="chips">
-          ${(g.honeypots_detalle || []).map(h => `<span class="chip">#${esc(h.nombre)} · ${esc(h.action)}${h.action === "mute" && h.duration ? " " + Math.round(h.duration / 60) + "m" : ""}<button onclick="honeypotRemove('${h.id}')" title="Quitar honeypot">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno configurado</span>'}
-        </div>
-        <div class="fila-inline">
-          <select id="hp-canal">${optsCanales(null, true)}</select>
-          <select id="hp-accion" style="flex:0;min-width:110px;width:auto">
-            <option value="ban">🚫 ban</option>
-            <option value="kick">👢 kick</option>
-            <option value="mute">🔇 mute</option>
-          </select>
-          <input class="mini-input" type="number" id="hp-duracion" min="10" value="3600" title="Duración del mute en segundos">
-          <button class="btn btn-primario" onclick="honeypotAdd()">➕ Añadir honeypot</button>
-        </div>
-      </div>
-
-      <div class="card" id="card-roles">
-        <h2>👥 Autoroles y prefijos</h2>
-        <div id="sec-autoroles">
-          ${notaRO(perms.manage_roles, "Manage Roles")}
-          ${[
-            ["all", "🧩 Autoroles para TODOS"],
-            ["human", "🧑 Autoroles para HUMANOS"],
-            ["bot", "🤖 Autoroles para BOTS"],
-          ].map(([cat, titulo]) => `
-          <div class="grupo-titulo">${titulo}</div>
-          <div class="chips">
-            ${(g.autoroles_detalle?.[cat] || []).map(r => `<span class="chip">@${esc(r.nombre)}<button onclick="autoroleRemove('${cat}','${r.id}')" title="Quitar">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno</span>'}
-          </div>
-          <div class="fila-inline">
-            <select id="arol-${cat}">${optsRoles(null)}</select>
-            <button class="btn btn-primario" onclick="autoroleAdd('${cat}')">➕ Añadir</button>
-          </div>`).join("")}
-        </div>
-        <div id="sec-prefijos">
-          <div class="grupo-titulo">⌨️ Prefijos de comandos</div>
-          <div class="chips">
-            <span class="chip fijo">. (por defecto, no se puede quitar)</span>
-            ${(g.prefixes_custom || []).map(p => `<span class="chip">${esc(p)}<button onclick="prefijoRemove('${esc(p)}')" title="Quitar">✕</button></span>`).join("")}
-          </div>
-          <div class="fila-inline">
-            <input id="pfx-nuevo" placeholder="nuevo prefijo (máx 5)" style="width:190px">
-            <button class="btn btn-primario" onclick="prefijoAdd()">➕ Añadir prefijo</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="card" id="card-warns">
-        <h2>⚠️ Warns <span style="color:var(--texto-2);font-weight:400;font-size:12px">(${fmtNum(g.moderacion.warns_totales)} en total · ${fmtNum(g.moderacion.usuarios_con_warns)} usuarios)</span></h2>
-        ${notaRO(perms.moderate_members, "Moderate Members")}
-        <div class="fila-inline" style="margin-bottom:10px">
-          <input id="warns-uid" placeholder="ID del usuario a consultar" style="width:230px">
-          <button class="btn btn-primario" onclick="buscarWarns()">🔍 Buscar warns</button>
-        </div>
-        <div id="warns-resultado"></div>
-      </div>
-
-      ${g.es_bot_owner ? `
-      <div class="card">
-        <h2>👑 Owner del bot</h2>
-        <div class="dato-fila"><span>Sesión actual</span><b>${esc((ESTADO && ESTADO.usuario && ESTADO.usuario.nombre) || "Owner del bot")} 👑</b></div>
-        <div class="dato-fila"><span>Acceso</span><b>Control total de todos los servidores</b></div>
-        <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;">
-          <button class="btn btn-peligro" onclick="expulsarBot()">🚪 Expulsar bot de este servidor</button>
-          <button class="btn btn-primario" onclick="sincronizarSlash()">🔄 Sincronizar slash commands</button>
-        </div>
-      </div>` : ""}
+    <div class="guild-cuerpo">
+      <nav class="nav-secciones">
+        ${NAV_SECCIONES.map(([id, icono, texto]) => `
+          <button class="nav-btn ${SECCION_ACTUAL === id ? "activo" : ""}" onclick="mostrarSeccion('${id}')">
+            <span>${icono}</span><span class="texto-nav">${texto}</span>${candado(id) ? `<span class="candado">${candado(id)}</span>` : ""}
+          </button>`).join("")}
+        ${navOwner}
+      </nav>
+      <main class="contenido" id="contenido-seccion"></main>
     </div>`;
-  // Desactivar controles según permisos granulares (el servidor también lo valida en cada POST)
-  const desactivar = ids => ids.forEach(id => {
+  mostrarSeccion(SECCION_ACTUAL);
+}
+
+function mostrarSeccion(seccion) {
+  const g = DATOS_GUILD;
+  if (!g) return;
+  if (seccion === "owner" && !g.es_bot_owner) seccion = "resumen";
+  if (!NAV_SECCIONES.some(s => s[0] === seccion) && seccion !== "owner") seccion = "resumen";
+  SECCION_ACTUAL = seccion;
+  try { localStorage.setItem("dash_seccion", seccion); } catch (e) {}
+  document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("activo"));
+  const btns = document.querySelectorAll(".nav-secciones .nav-btn");
+  const idx = NAV_SECCIONES.map(s => s[0]).indexOf(seccion);
+  if (idx >= 0 && btns[idx]) btns[idx].classList.add("activo");
+  else if (seccion === "owner" && btns[btns.length - 1]) btns[btns.length - 1].classList.add("activo");
+
+  const cont = document.getElementById("contenido-seccion");
+  if (!cont) return;
+  const render = SECCIONES[seccion] || SECCIONES.resumen;
+  cont.innerHTML = render();
+  aplicarPermisosSeccion(seccion);
+}
+
+/* ===== Helpers de render ===== */
+function optsCanales(sel, conVacio) {
+  const g = DATOS_GUILD;
+  return (conVacio ? `<option value="" ${!sel ? "selected" : ""}>— Sin canal —</option>` : "") +
+    (g.canales || []).map(c => `<option value="${c.id}" ${sel === c.id ? "selected" : ""}>#${esc(c.nombre)}</option>`).join("");
+}
+
+function optsRoles(sel) {
+  const g = DATOS_GUILD;
+  return (g.roles || []).map(r => `<option value="${r.id}" ${sel === r.id ? "selected" : ""}>@${esc(r.nombre)}</option>`).join("");
+}
+
+function notaRO(perm, nombrePerm) {
+  return perm ? "" : `
+    <div class="banner-raid visible banner-ro">
+      👁️ Solo lectura — necesitas el permiso ${nombrePerm || "Manage Server"} en este servidor.
+    </div>`;
+}
+
+function pct(v) { return Math.round((v || 0) * 100); }
+
+function desactivar(ids) {
+  ids.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.querySelectorAll("input, select, button").forEach(x => { x.disabled = true; });
   });
-  if (!perms.manage_guild) {
-    desactivar(["card-antiraid", "card-econ", "card-econ-user", "card-shop", "card-starboard", "card-xp", "card-canales", "sec-prefijos"]);
-  }
-  if (!perms.manage_roles) desactivar(["sec-autoroles"]);
-  if (!perms.moderate_members) desactivar(["card-warns"]);
 }
+
+function aplicarPermisosSeccion(seccion) {
+  const perms = (DATOS_GUILD || {}).permisos || {};
+  if (seccion === "roles") {
+    if (!perms.manage_roles) desactivar(["sec-autoroles"]);
+    if (!perms.manage_guild) desactivar(["sec-prefijos"]);
+    return;
+  }
+  if (seccion === "warns") {
+    if (!perms.moderate_members) desactivar(["card-warns"]);
+    return;
+  }
+  if (seccion === "owner") return;
+  if (!perms.manage_guild) desactivar(["contenido-seccion"]);
+}
+
+/* ===== Secciones ===== */
+const SECCIONES = {};
+
+SECCIONES.resumen = function () {
+  const g = DATOS_GUILD, ar = g.antiraid;
+  const tiles = [
+    ["👥", "Miembros", fmtNum(g.miembros)],
+    ["🤖", "Bots", fmtNum(g.bots)],
+    ["⚠️", "Warns", fmtNum(g.moderacion.warns_totales)],
+    ["🚨", "Raids frenados", fmtNum(ar.stats.punished)],
+    ["🧩", "Autoroles", fmtNum(g.moderacion.autoroles)],
+    ["🎓", "Usuarios con nivel", fmtNum(g.xp.usuarios)],
+    ["🏦", "Dinero total", esc(g.economia.moneda) + fmtNum(g.economia.dinero_total)],
+    ["🛍️", "Items en tienda", fmtNum(g.economia.items_tienda)],
+  ];
+  const modulos = [
+    ["🚨 Antiraid", ar.enabled, ar.enabled ? "Activado" : "Desactivado", "antiraid"],
+    ["🍯 Honeypots", (g.honeypots_detalle || []).length > 0, (g.honeypots_detalle || []).length + " activos", "honeypots"],
+    ["⭐ Starboard", g.starboard.enabled, g.starboard.enabled ? "Activado" : "Desactivado", "starboard"],
+    ["📊 Niveles / XP", g.xp.enabled, g.xp.enabled ? "Activado" : "Desactivado", "niveles"],
+    ["💰 Economía", true, g.economia.usuarios + " usuarios", "economia"],
+    ["🔗 Canales de logs", (g.logs_detalle || []).length > 0, (g.logs_detalle || []).length + " canales", "canales"],
+  ];
+  return `
+    <div class="tiles">
+      ${tiles.map(([icono, lbl, num]) => `
+        <div class="tile"><div class="lbl">${icono} ${lbl}</div><div class="num">${num}</div></div>`).join("")}
+    </div>
+    <div class="card">
+      <h2>🧩 Módulos del servidor</h2>
+      <div class="modulos">
+        ${modulos.map(([texto, on, estado, destino]) => `
+          <div class="modulo-pill" onclick="mostrarSeccion('${destino}')">
+            ${texto}
+            <span class="estado ${on ? "on" : "off"}">${estado}</span>
+          </div>`).join("")}
+      </div>
+    </div>`;
+};
+
+SECCIONES.antiraid = function () {
+  const g = DATOS_GUILD, ar = g.antiraid;
+  const perms = g.permisos || {};
+  const RaidActivo = ar.active;
+  return `
+    <div class="card" id="card-antiraid">
+      <h2>🚨 Antiraid</h2>
+      ${notaRO(perms.manage_guild)}
+      <div class="banner-raid ${RaidActivo ? "visible" : ""}">
+        ${RaidActivo ? "MODO RAID ACTIVO — todas las entradas están siendo castigadas (" + (ar.manual ? "manual, no se desactiva solo" : "automático") + ")" : ""}
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Sistema antiraid</div>
+          <div class="opcion-desc">Desactivado por defecto. Detecta joins masivos y castiga a los raiders.</div></div>
+        <label class="switch"><input type="checkbox" id="ar-enabled" ${ar.enabled ? "checked" : ""}><span class="pista"></span></label>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Umbral de detección</div>
+          <div class="opcion-desc">Joins necesarios dentro de la ventana para considerar raid.</div></div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="number" id="ar-threshold" min="2" max="100" value="${ar.threshold}" title="Joins">
+          <span style="color:var(--texto-2)">en</span>
+          <input type="number" id="ar-seconds" min="3" max="3600" value="${ar.seconds}" title="Segundos">
+          <span style="color:var(--texto-2)">s</span>
+        </div>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Acción contra raiders</div>
+          <div class="opcion-desc">Castigo aplicado al detectar un raid${ar.action === "mute" ? " (timeout de 60 min)" : ""}.</div></div>
+        <select id="ar-action">
+          <option value="kick" ${ar.action === "kick" ? "selected" : ""}>kick (expulsar)</option>
+          <option value="ban" ${ar.action === "ban" ? "selected" : ""}>ban (banear)</option>
+          <option value="mute" ${ar.action === "mute" ? "selected" : ""}>mute (timeout 1h)</option>
+        </select>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Castigar entradas durante raid</div>
+          <div class="opcion-desc">Si está en No, solo se castiga al usuario que dispara el umbral.</div></div>
+        <label class="switch"><input type="checkbox" id="ar-punishnew" ${ar.punish_new ? "checked" : ""}><span class="pista"></span></label>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Edad mínima de cuenta</div>
+          <div class="opcion-desc">En minutos. 0 = desactivado. Castiga cuentas recién creadas.</div></div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="number" id="ar-minage" min="0" max="43800" value="${ar.min_age}">
+          <span style="color:var(--texto-2)">min</span>
+        </div>
+      </div>
+      <div class="stats-mini">
+        <span class="mini-chip">🚨 <b>${fmtNum(ar.stats.raids)}</b> raids detectados</span>
+        <span class="mini-chip">⚔️ <b>${fmtNum(ar.stats.punished)}</b> castigados</span>
+      </div>
+      <div class="acciones-form">
+        <button class="btn btn-primario" onclick="guardarAntiraid()">💾 Guardar cambios</button>
+        ${RaidActivo
+          ? '<button class="btn btn-verde" onclick="toggleRaidmode(\'off\')">✅ Apagar modo raid</button>'
+          : '<button class="btn btn-peligro" onclick="toggleRaidmode(\'on\')">🚨 Activar modo raid manual</button>'}
+      </div>
+    </div>`;
+};
+
+SECCIONES.honeypots = function () {
+  const g = DATOS_GUILD;
+  const perms = g.permisos || {};
+  return `
+    <div class="card" id="card-honeypots">
+      <h2>🍯 Honeypots <span class="sub">canales trampa: quien escriba ahí es castigado</span></h2>
+      ${notaRO(perms.manage_guild)}
+      <div class="chips">
+        ${(g.honeypots_detalle || []).map(h => `<span class="chip">#${esc(h.nombre)} · ${esc(h.action)}${h.action === "mute" && h.duration ? " " + Math.round(h.duration / 60) + "m" : ""}<button onclick="honeypotRemove('${h.id}')" title="Quitar honeypot">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno configurado</span>'}
+      </div>
+      <div class="fila-inline">
+        <select id="hp-canal">${optsCanales(null, true)}</select>
+        <select id="hp-accion" style="flex:0;min-width:110px;width:auto">
+          <option value="ban">🚫 ban</option>
+          <option value="kick">👢 kick</option>
+          <option value="mute">🔇 mute</option>
+        </select>
+        <input class="mini-input" type="number" id="hp-duracion" min="10" value="3600" title="Duración del mute en segundos">
+        <button class="btn btn-primario" onclick="honeypotAdd()">➕ Añadir honeypot</button>
+      </div>
+    </div>`;
+};
+
+SECCIONES.canales = function () {
+  const g = DATOS_GUILD;
+  const perms = g.permisos || {};
+  return `
+    <div class="card" id="card-canales">
+      <h2>📜 Canales de logs <span class="sub">eventos del servidor (bans, warns, joins…)</span></h2>
+      ${notaRO(perms.manage_guild)}
+      <div class="chips">
+        ${(g.logs_detalle || []).map(c => `<span class="chip">#${esc(c.nombre)}<button onclick="canalRemove('logs','${c.id}')" title="Quitar">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno configurado</span>'}
+      </div>
+      <div class="fila-inline" style="margin-bottom:20px">
+        <select id="logs-canal">${optsCanales(null, true)}</select>
+        <button class="btn btn-primario" onclick="canalAdd('logs')">➕ Añadir logs</button>
+      </div>
+      <h2>🚫 Canales con links prohibidos <span class="sub">linkban</span></h2>
+      <div class="chips">
+        ${(g.linkban_detalle || []).map(c => `<span class="chip">#${esc(c.nombre)}<button onclick="canalRemove('linkban','${c.id}')" title="Permitir links">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno configurado</span>'}
+      </div>
+      <div class="fila-inline">
+        <select id="linkban-canal">${optsCanales(null, true)}</select>
+        <button class="btn btn-primario" onclick="canalAdd('linkban')">➕ Prohibir links</button>
+      </div>
+    </div>`;
+};
+
+SECCIONES.roles = function () {
+  const g = DATOS_GUILD;
+  const perms = g.permisos || {};
+  return `
+    <div class="card" id="card-roles">
+      <h2>👥 Autoroles <span class="sub">roles que se dan automáticamente al entrar (permiso Manage Roles)</span></h2>
+      <div id="sec-autoroles">
+        ${notaRO(perms.manage_roles, "Manage Roles")}
+        ${[
+          ["all", "🧩 Para TODOS los miembros"],
+          ["human", "🧑 Solo HUMANOS"],
+          ["bot", "🤖 Solo BOTS"],
+        ].map(([cat, titulo]) => `
+        <div class="grupo-titulo">${titulo}</div>
+        <div class="chips">
+          ${(g.autoroles_detalle?.[cat] || []).map(r => `<span class="chip">@${esc(r.nombre)}<button onclick="autoroleRemove('${cat}','${r.id}')" title="Quitar">✕</button></span>`).join("") || '<span style="color:var(--texto-2);font-size:12.5px">Ninguno</span>'}
+        </div>
+        <div class="fila-inline">
+          <select id="arol-${cat}">${optsRoles(null)}</select>
+          <button class="btn btn-primario" onclick="autoroleAdd('${cat}')">➕ Añadir</button>
+        </div>`).join("")}
+      </div>
+      <div id="sec-prefijos">
+        <h2 style="margin-top:22px">⌨️ Prefijos de comandos</h2>
+        ${notaRO(perms.manage_guild)}
+        <div class="chips">
+          <span class="chip fijo">. (por defecto, no se puede quitar)</span>
+          ${(g.prefixes_custom || []).map(p => `<span class="chip">${esc(p)}<button onclick="prefijoRemove('${esc(p)}')" title="Quitar">✕</button></span>`).join("")}
+        </div>
+        <div class="fila-inline">
+          <input id="pfx-nuevo" placeholder="nuevo prefijo (máx 5)" style="width:190px">
+          <button class="btn btn-primario" onclick="prefijoAdd()">➕ Añadir prefijo</button>
+        </div>
+      </div>
+    </div>`;
+};
+
+SECCIONES.warns = function () {
+  const g = DATOS_GUILD;
+  const perms = g.permisos || {};
+  return `
+    <div class="card" id="card-warns">
+      <h2>⚠️ Warns <span class="sub">${fmtNum(g.moderacion.warns_totales)} en total · ${fmtNum(g.moderacion.usuarios_con_warns)} usuarios</span></h2>
+      ${notaRO(perms.moderate_members, "Moderate Members")}
+      <div class="fila-inline" style="margin-bottom:10px">
+        <input id="warns-uid" placeholder="ID del usuario a consultar" style="width:230px">
+        <button class="btn btn-primario" onclick="buscarWarns()">🔍 Buscar warns</button>
+      </div>
+      <div id="warns-resultado"></div>
+    </div>`;
+};
+
+SECCIONES.starboard = function () {
+  const g = DATOS_GUILD;
+  const sb = g.starboard || {};
+  const perms = g.permisos || {};
+  return `
+    <div class="card" id="card-starboard">
+      <h2>⭐ Starboard <span class="sub">los mensajes con suficientes ⭐ se publican en el canal elegido</span></h2>
+      ${notaRO(perms.manage_guild)}
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Starboard</div></div>
+        <label class="switch"><input type="checkbox" id="sb-enabled" ${sb.enabled ? "checked" : ""}><span class="pista"></span></label>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Canal del starboard</div></div>
+        <select id="sb-channel">${optsCanales(sb.channel_id, true)}</select>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">⭐ Estrellas necesarias</div></div>
+        <input type="number" id="sb-threshold" min="1" max="100" value="${sb.threshold ?? 5}">
+      </div>
+      <div class="acciones-form">
+        <button class="btn btn-primario" onclick="guardarStarboard()">💾 Guardar starboard</button>
+      </div>
+    </div>`;
+};
+
+SECCIONES.niveles = function () {
+  const g = DATOS_GUILD;
+  const xp = g.xp || {};
+  const perms = g.permisos || {};
+  return `
+    <div class="card" id="card-xp">
+      <h2>📊 Niveles / XP <span class="sub">${fmtNum(xp.usuarios)} usuarios con nivel</span></h2>
+      ${notaRO(perms.manage_guild)}
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Sistema de XP</div>
+          <div class="opcion-desc">Gana XP por mensaje y sube de nivel (con recompensas de rol si las configuras).</div></div>
+        <label class="switch"><input type="checkbox" id="xp-enabled" ${xp.enabled ? "checked" : ""}><span class="pista"></span></label>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">XP por mensaje</div></div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input class="mini-input" type="number" id="xp-min" min="0" value="${xp.xp_min ?? 15}">
+          <span style="color:var(--texto-2)">–</span>
+          <input class="mini-input" type="number" id="xp-max" min="0" value="${xp.xp_max ?? 25}">
+        </div>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Cooldown anti-spam</div></div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input class="mini-input" type="number" id="xp-cooldown" min="0" value="${xp.cooldown ?? 60}">
+          <span style="color:var(--texto-2)">seg</span>
+        </div>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Anuncios de level-up</div></div>
+        <label class="switch"><input type="checkbox" id="xp-announce" ${xp.announce ? "checked" : ""}><span class="pista"></span></label>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Canal de anuncios</div></div>
+        <select id="xp-channel">${optsCanales(xp.channel_id, true)}</select>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Mensaje de level-up</div>
+          <div class="opcion-desc">Variables: {user} {level} {xp}</div></div>
+        <input id="xp-message" value="${esc(xp.message || "")}" style="width:100%;max-width:340px">
+      </div>
+      <div class="acciones-form">
+        <button class="btn btn-primario" onclick="guardarXp()">💾 Guardar niveles</button>
+      </div>
+    </div>`;
+};
+
+SECCIONES.economia = function () {
+  const g = DATOS_GUILD, ec = g.econ_config || {};
+  const perms = g.permisos || {};
+  return `
+    <div class="card" id="card-econ">
+      <h2>💰 Configuración de economía</h2>
+      ${notaRO(perms.manage_guild)}
+      <div class="stats-mini">
+        <span class="mini-chip">👤 <b>${fmtNum(g.economia.usuarios)}</b> usuarios</span>
+        <span class="mini-chip">🏦 <b>${esc(g.economia.moneda)}${fmtNum(g.economia.dinero_total)}</b> en circulación</span>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Moneda</div>
+          <div class="opcion-desc">Símbolo usado en todos los comandos (máx 5 caracteres).</div></div>
+        <input id="ec-currency" value="${esc(ec.currency || "$")}" maxlength="5" style="width:80px">
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Balance inicial</div>
+          <div class="opcion-desc">Efectivo con el que empieza cada usuario nuevo.</div></div>
+        <input type="number" id="ec-start" min="0" value="${ec.start_balance ?? 0}">
+      </div>
+      <div class="grupo-titulo">Recompensas (mínimo – máximo)</div>
+      ${[
+        ["daily", "💵 Daily (diario)"],
+        ["weekly", "📅 Weekly (semanal)"],
+        ["monthly", "🗓️ Monthly (mensual)"],
+        ["work", "🛠️ Work (trabajo)"],
+        ["crime", "🚔 Crime (crimen)"],
+        ["slut", "💋 Slut"],
+      ].map(([campo, texto]) => `
+      <div class="fila-opcion">
+        <div class="opcion-label">${texto}</div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input class="mini-input" type="number" id="ec-${campo}-min" min="0" value="${ec[campo + "_min"] ?? 0}">
+          <span style="color:var(--texto-2)">–</span>
+          <input class="mini-input" type="number" id="ec-${campo}-max" min="0" value="${ec[campo + "_max"] ?? 0}">
+          ${campo === "crime" || campo === "slut" ? `<span style="color:var(--texto-2);font-size:11.5px">fallo %</span><input class="mini-input" type="number" id="ec-${campo}-fallo" min="0" max="100" value="${pct(ec[campo + "_fallo"])}">` : ""}
+        </div>
+      </div>`).join("")}
+      <div class="fila-opcion">
+        <div class="opcion-label">🦹 Rob (% del efectivo de la víctima)</div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input class="mini-input" type="number" id="ec-rob-min" min="0" max="100" value="${pct(ec.rob_min)}">
+          <span style="color:var(--texto-2)">–</span>
+          <input class="mini-input" type="number" id="ec-rob-max" min="0" max="100" value="${pct(ec.rob_max)}">
+          <span style="color:var(--texto-2);font-size:11.5px">fallo %</span>
+          <input class="mini-input" type="number" id="ec-rob-fallo" min="0" max="100" value="${pct(ec.rob_fallo)}">
+        </div>
+      </div>
+      <div class="acciones-form">
+        <button class="btn btn-primario" onclick="guardarEconomia()">💾 Guardar economía</button>
+      </div>
+    </div>
+
+    <div class="card" id="card-econ-user">
+      <h2>👤 Dinero de un usuario</h2>
+      ${notaRO(perms.manage_guild)}
+      <div class="fila-opcion">
+        <div><div class="opcion-label">ID del usuario</div>
+          <div class="opcion-desc">Copia su ID (modo desarrollador de Discord → copiar ID).</div></div>
+        <input id="eu-id" placeholder="Ej: 611116738943123457" style="width:230px">
+      </div>
+      <div class="fila-opcion">
+        <div class="opcion-label">Cantidad (efectivo)</div>
+        <input type="number" id="eu-cantidad" min="0" value="0">
+      </div>
+      <div class="fila-opcion">
+        <div class="opcion-label">Acción</div>
+        <select id="eu-accion">
+          <option value="add">➕ Añadir</option>
+          <option value="remove">➖ Quitar</option>
+          <option value="set">🎯 Fijar exactamente</option>
+        </select>
+      </div>
+      <div class="acciones-form">
+        <button class="btn btn-primario" onclick="dineroUsuario()">💸 Aplicar</button>
+      </div>
+    </div>`;
+};
+
+SECCIONES.tienda = function () {
+  const g = DATOS_GUILD;
+  const perms = g.permisos || {};
+  return `
+    <div class="card" id="card-shop">
+      <h2>🛍️ Tienda <span class="sub">${fmtNum(g.shop.length)} items</span></h2>
+      ${notaRO(perms.manage_guild)}
+      ${(g.shop || []).map(it => `
+      <div class="item-tienda">
+        <span class="nombre">${esc(it.item)}</span>
+        <span class="precio">${esc(g.economia.moneda)}${fmtNum(it.precio)}</span>
+        <span class="desc">${esc(it.desc || "")}</span>
+        <button class="btn btn-peligro" style="padding:5px 11px;font-size:12px" onclick="tiendaRemove('${esc(it.item)}')">🗑</button>
+      </div>`).join("") || '<div class="vacio">La tienda está vacía.</div>'}
+      <div class="grupo-titulo">Añadir item</div>
+      <div class="fila-inline">
+        <input id="shop-item" placeholder="nombre (sin espacios)" style="width:170px">
+        <input class="mini-input" type="number" id="shop-precio" min="1" placeholder="precio">
+        <input id="shop-desc" placeholder="descripción (opcional)" style="flex:1;min-width:140px;width:auto">
+        <button class="btn btn-primario" onclick="tiendaAdd()">➕ Añadir</button>
+      </div>
+    </div>`;
+};
+
+SECCIONES.owner = function () {
+  return `
+    <div class="card">
+      <h2>👑 Owner del bot</h2>
+      <div class="dato-fila"><span>Sesión actual</span><b>${esc((ESTADO && ESTADO.usuario && ESTADO.usuario.nombre) || "Owner del bot")} 👑</b></div>
+      <div class="dato-fila"><span>Acceso</span><b>Control total de todos los servidores</b></div>
+      <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;">
+        <button class="btn btn-peligro" onclick="expulsarBot()">🚪 Expulsar bot de este servidor</button>
+        <button class="btn btn-primario" onclick="sincronizarSlash()">🔄 Sincronizar slash commands</button>
+      </div>
+    </div>`;
+};
 
 /* ===== Acciones ===== */
 async function guardarAntiraid() {
@@ -796,9 +964,7 @@ async function guardarAntiraid() {
     await api("/api/guild/" + GUILD_ACTUAL + "/antiraid", { method: "POST", body: JSON.stringify(payload) });
     toast("✅ Antiraid guardado correctamente");
     await seleccionarGuild(GUILD_ACTUAL);
-  } catch (e) {
-    toast("❌ " + e.message, false);
-  }
+  } catch (e) { toast("❌ " + e.message, false); }
 }
 
 async function toggleRaidmode(estado) {
@@ -807,12 +973,9 @@ async function toggleRaidmode(estado) {
     await api("/api/guild/" + GUILD_ACTUAL + "/raidmode", { method: "POST", body: JSON.stringify({ estado }) });
     toast(estado === "on" ? "🚨 Modo raid ACTIVADO" : "✅ Modo raid desactivado");
     await seleccionarGuild(GUILD_ACTUAL);
-  } catch (e) {
-    toast("❌ " + e.message, false);
-  }
+  } catch (e) { toast("❌ " + e.message, false); }
 }
 
-/* ===== Acciones de configuración del servidor ===== */
 async function guardarEconomia() {
   const ent = id => parseInt(document.getElementById(id).value, 10) || 0;
   const pctv = id => (parseFloat(document.getElementById(id).value) || 0) / 100;
@@ -1014,18 +1177,14 @@ async function expulsarBot() {
     GUILD_ACTUAL = null;
     DATOS_GUILD = null;
     await cargarGuilds();
-  } catch (e) {
-    toast("❌ " + e.message, false);
-  }
+  } catch (e) { toast("❌ " + e.message, false); }
 }
 
 async function sincronizarSlash() {
   try {
     const r = await api("/api/sync", { method: "POST", body: JSON.stringify({}) });
     toast("🔄 Slash commands sincronizados: " + fmtNum(r.sincronizados));
-  } catch (e) {
-    toast("❌ " + e.message, false);
-  }
+  } catch (e) { toast("❌ " + e.message, false); }
 }
 
 /* ===== Inicio ===== */
