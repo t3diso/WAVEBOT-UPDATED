@@ -1105,7 +1105,37 @@ SECCIONES.integraciones = function () {
           <button class="btn ${f.enabled ? "btn-peligro" : "btn-verde"}" style="padding:5px 11px;font-size:12px" onclick="integracionToggle(${f.id}, ${f.enabled ? "false" : "true"})">${f.enabled ? "⏸ Pausar" : "▶️ Activar"}</button>
           <button class="btn btn-peligro" style="padding:5px 11px;font-size:12px" onclick="integracionRemove(${f.id})">🗑</button>
         </b>
-      </div>`).join("") || '<div style="color:var(--texto-2);font-size:12.5px">Ninguna integración configurada todavía.</div>'}
+      </div>
+      <details style="margin:-6px 0 12px">
+        <summary style="cursor:pointer;color:var(--acento);font-size:12px">⚙️ Personalizar notificación #${f.id}</summary>
+        <div class="fila-opcion" style="margin-top:10px">
+          <div><div class="opcion-label">Usar Embed</div>
+            <div class="opcion-desc">Si está desactivado, se enviará como texto simple.</div></div>
+          <label class="switch"><input type="checkbox" id="int-embed-${f.id}" ${f.use_embed ? "checked" : ""} onchange="integracionUpdate(${f.id})"><span class="pista"></span></label>
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Color del Embed</div>
+            <div class="opcion-desc">Color de la barra lateral del mensaje.</div></div>
+          <input type="color" id="int-color-${f.id}" value="${f.embed_color || '#5865f2'}" onchange="integracionUpdate(${f.id})" style="width:60px;height:30px;border:none;padding:0;background:none;cursor:pointer">
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Mencionar (Ping)</div>
+            <div class="opcion-desc">Quién recibirá la notificación.</div></div>
+          <div style="display:flex;gap:6px">
+            <select id="int-ping-tipo-${f.id}" onchange="integracionUpdate(${f.id})" style="width:110px">
+              <option value="" ${!f.ping ? "selected" : ""}>Ninguno</option>
+              <option value="everyone" ${f.ping === "everyone" ? "selected" : ""}>@everyone</option>
+              <option value="here" ${f.ping === "here" ? "selected" : ""}>@here</option>
+              <option value="role" ${f.ping && !["everyone", "here"].includes(f.ping) && f.ping.isdigit() ? "selected" : ""}>Rol (ID)</option>
+            </select>
+            <input id="int-ping-id-${f.id}" placeholder="ID del rol" value="${f.ping && !["everyone", "here"].includes(f.ping) ? esc(f.ping) : ""}"
+              style="width:120px;display:${f.ping && !["everyone", "here"].includes(f.ping) ? "block" : "none"}" oninput="integracionUpdate(${f.id})">
+          </div>
+        </div>
+        <div class="fila-inline" style="margin-top:12px;justify-content:flex-end">
+          <button class="btn btn-verde" style="padding:5px 11px;font-size:12px" onclick="integracionTest(${f.id})">🧪 Enviar prueba</button>
+        </div>
+      </details>`).join("") || '<div style="color:var(--texto-2);font-size:12.5px">Ninguna integración configurada todavía.</div>'}
       <div class="grupo-titulo">➕ Añadir integración</div>
       <div class="fila-inline" style="margin-bottom:10px">
         <select id="int-tipo" style="flex:0;min-width:130px;width:auto">
@@ -1853,6 +1883,39 @@ async function integracionRemove(id) {
     const r = await api("/api/guild/" + GUILD_ACTUAL + "/integraciones", { method: "POST", body: JSON.stringify({ remove: id }) });
     toast(r.msg || "✅ Integración eliminada");
     await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function integracionUpdate(id) {
+  const ping_tipo = document.getElementById(`int-ping-tipo-${id}`).value;
+  const ping_id_input = document.getElementById(`int-ping-id-${id}`);
+  if (ping_id_input) {
+    ping_id_input.style.display = (ping_tipo === "role") ? "block" : "none";
+  }
+
+  const use_embed = document.getElementById(`int-embed-${id}`).checked;
+  const embed_color = document.getElementById(`int-color-${id}`).value;
+  const ping_id = ping_id_input ? ping_id_input.value.trim() : "";
+
+  let ping = "";
+  if (ping_tipo === "everyone") ping = "everyone";
+  else if (ping_tipo === "here") ping = "here";
+  else if (ping_tipo === "role") ping = ping_id;
+
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/integraciones", {
+      method: "POST",
+      body: JSON.stringify({ update: { id, use_embed, embed_color, ping } })
+    });
+    toast("✅ Configuración actualizada");
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+
+async function integracionTest(id) {
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/integraciones/test", { method: "POST", body: JSON.stringify({ id }) });
+    toast(r.msg || "✅ Mensaje de prueba enviado");
   } catch (e) { toast("❌ " + e.message, false); }
 }
 

@@ -218,6 +218,37 @@ def parsear_duracion(texto: str):
     return total, None
 
 
+def fmt_duracion_segundos(segundos):
+    """
+    Convierte segundos a texto legible (ej: '5h 30m', '2 días 3h').
+    A partir de 24 horas habla directamente en días en vez de muchas horas.
+    Usado por TODOS los timestamps de duración del bot.
+    """
+    try:
+        segundos = int(segundos)
+    except (TypeError, ValueError):
+        segundos = 0
+    if segundos < 0:
+        segundos = 0
+    d = segundos // 86400
+    h = (segundos % 86400) // 3600
+    m = (segundos % 3600) // 60
+    s = segundos % 60
+    if d:
+        partes = [f"{d} día{'s' if d != 1 else ''}"]
+        if h:
+            partes.append(f"{h}h")
+        return " ".join(partes)
+    partes = []
+    if h:
+        partes.append(f"{h}h")
+    if m:
+        partes.append(f"{m}m")
+    if s:
+        partes.append(f"{s}s")
+    return " ".join(partes) or "0s"
+
+
 async def resolver_miembro(guild: discord.Guild, user_id: int):
     """Intenta obtener el miembro del servidor; si no está, devuelve el usuario."""
     miembro = guild.get_member(user_id)
@@ -1525,14 +1556,7 @@ async def mute(ctx, *, args: str = ""):
     # Tarea en segundo plano para quitar el timeout cuando termine.
     bot.loop.create_task(_quitar_timeout_automatico(ctx.guild.id, miembro.id, segundos, ctx.author))
 
-    humanas = []
-    h = segundos // 3600
-    m = (segundos % 3600) // 60
-    s = segundos % 60
-    if h: humanas.append(f"{h}h")
-    if m: humanas.append(f"{m}m")
-    if s: humanas.append(f"{s}s")
-    duracion_str = " ".join(humanas) or "0s"
+    duracion_str = fmt_duracion_segundos(segundos)
 
     embed = discord.Embed(
         title="🔇 Usuario silenciado",
@@ -3576,7 +3600,7 @@ def _automod_status_embed(cfg: dict) -> discord.Embed:
     embed.add_field(name="Palabras prohibidas", value=", ".join(f"`{p}`" for p in palabras[:15]) + (f" y {len(palabras) - 15} más" if len(palabras) > 15 else "") if palabras else "Ninguna", inline=False)
     embed.add_field(name="Invites de Discord", value="🚫 Bloqueados" if cfg.get("invites") else "Permitidos", inline=True)
     embed.add_field(name="Links", value="🚫 Bloqueados" if cfg.get("links") else "Permitidos", inline=True)
-    spam = "Desactivado" if not cfg.get("spam_msgs") else f"{cfg['spam_msgs']} mensajes en {cfg['spam_seg']}s → timeout {cfg['spam_timeout']}s"
+    spam = "Desactivado" if not cfg.get("spam_msgs") else f"{cfg['spam_msgs']} mensajes en {cfg['spam_seg']}s → timeout {fmt_duracion_segundos(cfg['spam_timeout'])}"
     embed.add_field(name="Anti-spam", value=spam, inline=False)
     accion = cfg.get("accion", "delete")
     accion_txt = {"delete": "🗑 Borrar mensaje", "warn": "⚠️ Borrar + avisar", "mute": "🔇 Borrar + silenciar"}[accion]
@@ -3640,7 +3664,7 @@ async def _automod_check(message: discord.Message):
                     reason=f"[AUTOMOD] {motivo}",
                 )
                 stats["mutes"] = int(stats.get("mutes", 0)) + 1
-                aviso += f" Silenciado {cfg.get('mute_min', 10)} min."
+                aviso += f" Silenciado {fmt_duracion_segundos(int(cfg.get('mute_min', 10)) * 60)}."
             except (discord.Forbidden, discord.HTTPException):
                 pass
         guardar_automod()
@@ -3679,14 +3703,14 @@ async def _automod_check(message: discord.Message):
                     reason="[AUTOMOD] Spam",
                 )
                 await message.channel.send(
-                    f"🤖 {miembro.mention} silenciado {int(cfg.get('spam_timeout', 600)) // 60} min por **spam**.",
+                    f"🤖 {miembro.mention} silenciado {fmt_duracion_segundos(cfg.get('spam_timeout', 600))} por **spam**.",
                     delete_after=10,
                 )
             except (discord.Forbidden, discord.HTTPException):
                 pass
             embed = discord.Embed(
                 title="🤖 AutoMod: spam detectado",
-                description=f"{miembro.mention} silenciado {int(cfg.get('spam_timeout', 600)) // 60} min en {message.channel.mention}.",
+                description=f"{miembro.mention} silenciado {fmt_duracion_segundos(cfg.get('spam_timeout', 600))} en {message.channel.mention}.",
                 color=discord.Color.orange(),
                 timestamp=discord.utils.utcnow(),
             )
@@ -3772,7 +3796,7 @@ async def automod(ctx, *, args: str = ""):
             return await ctx.send("❌ Para activarlo: mínimo 2 mensajes y 2 segundos (o 0 0 0 para desactivar).")
         cfg["spam_msgs"], cfg["spam_seg"], cfg["spam_timeout"] = msgs, seg, timeout
         guardar_automod()
-        texto = "Desactivado" if msgs == 0 else f"{msgs} mensajes en {seg}s → timeout {timeout}s"
+        texto = "Desactivado" if msgs == 0 else f"{msgs} mensajes en {seg}s → timeout {fmt_duracion_segundos(timeout)}"
         return await ctx.send(f"✅ Anti-spam: **{texto}**.")
 
     if sub == "accion":
@@ -4761,7 +4785,7 @@ async def softban(ctx, *, args: str = ""):
     embed = discord.Embed(title="⏱️ Softban aplicado", color=discord.Color.dark_gold(), timestamp=discord.utils.utcnow())
     embed.add_field(name="Usuario", value=f"{usuario} (`{usuario.id}`)", inline=False)
     embed.add_field(name="Moderador", value=ctx.author.mention, inline=True)
-    embed.add_field(name="Duración", value=duracion, inline=True)
+    embed.add_field(name="Duración", value=fmt_duracion_segundos(segundos), inline=True)
     embed.add_field(name="Motivo", value=motivo, inline=False)
     embed.set_thumbnail(url=usuario.display_avatar.url)
     embed.set_footer(text=f"Será desbaneado automáticamente a las {discord.utils.format_dt(discord.utils.utcnow() + datetime.timedelta(seconds=segundos), 'T')}")
@@ -5763,17 +5787,47 @@ async def _tarea_integraciones():
                         canal = guild.get_channel(int(feed["canal"])) if str(feed.get("canal", "")).isdigit() else None
                         if canal is not None:
                             for it in nuevos:
-                                embed = discord.Embed(
-                                    title=(it.get("titulo") or "Novedad")[:256],
-                                    url=it.get("enlace") or None,
-                                    color=discord.Color(meta["color"]),
-                                    timestamp=discord.utils.utcnow(),
-                                )
-                                embed.set_footer(text=f"{meta['emoji']} {feed.get('tipo')} · {feed.get('ref')}"[:2048])
-                                try:
-                                    await canal.send(embed=embed)
-                                except (discord.Forbidden, discord.HTTPException):
-                                    pass
+                                use_embed = feed.get("use_embed", True)
+                                ping = feed.get("ping", "")
+
+                                msg_content = ""
+                                if ping == "everyone":
+                                    msg_content = "@everyone "
+                                elif ping == "here":
+                                    msg_content = "@here "
+                                elif ping and ping.isdigit():
+                                    msg_content = f"<@&{ping}> "
+
+                                if use_embed:
+                                    color_val = feed.get("embed_color")
+                                    if color_val is None:
+                                        color_val = meta["color"]
+
+                                    try:
+                                        # Si viene como string hex "#FFFFFF" o "FFFFFF"
+                                        if isinstance(color_val, str):
+                                            color_val = int(color_val.replace("#", ""), 16)
+                                    except ValueError:
+                                        color_val = meta["color"]
+
+                                    embed = discord.Embed(
+                                        title=(it.get("titulo") or "Novedad")[:256],
+                                        url=it.get("enlace") or None,
+                                        color=discord.Color(color_val),
+                                        timestamp=discord.utils.utcnow(),
+                                    )
+                                    embed.set_footer(text=f"{meta['emoji']} {feed.get('tipo')} · {feed.get('ref')}"[:2048])
+                                    try:
+                                        await canal.send(content=msg_content, embed=embed)
+                                    except (discord.Forbidden, discord.HTTPException):
+                                        pass
+                                else:
+                                    # Mensaje simple sin embed
+                                    texto = f"{meta['emoji']} **{it.get('titulo') or 'Novedad'}**\n{it.get('enlace') or ''}"
+                                    try:
+                                        await canal.send(content=msg_content + texto)
+                                    except (discord.Forbidden, discord.HTTPException):
+                                        pass
             if hubo_cambios:
                 guardar_integraciones()
         except Exception as e:
@@ -5801,6 +5855,7 @@ async def _integracion_agregar(guild, tipo, ref, canal):
     cfg.setdefault("feeds", []).append({
         "id": feed_id, "tipo": tipo, "ref": ref, "canal": str(canal.id),
         "enabled": True, "last": "",
+        "use_embed": True, "embed_color": None, "ping": ""
     })
     guardar_integraciones()
     return feed_id, None
@@ -6245,12 +6300,7 @@ async def slash_mute(interaction: discord.Interaction, miembro: discord.Member, 
     except discord.HTTPException as e:
         return await interaction.response.send_message(f"❌ Error al silenciar: {e}", ephemeral=True)
     bot.loop.create_task(_quitar_timeout_automatico(interaction.guild.id, miembro.id, segundos, interaction.user))
-    humanas = []
-    h = segundos // 3600; m = (segundos % 3600) // 60; s = segundos % 60
-    if h: humanas.append(f"{h}h")
-    if m: humanas.append(f"{m}m")
-    if s: humanas.append(f"{s}s")
-    duracion_str = " ".join(humanas) or "0s"
+    duracion_str = fmt_duracion_segundos(segundos)
     embed = discord.Embed(title="🔇 Usuario silenciado", color=discord.Color.dark_grey(), timestamp=discord.utils.utcnow())
     embed.add_field(name="Usuario", value=f"{miembro.mention} (`{miembro.id}`)", inline=False)
     embed.add_field(name="Moderador", value=interaction.user.mention, inline=True)
@@ -7326,7 +7376,7 @@ async def slash_automod_spam(interaction: discord.Interaction, mensajes: int, se
     cfg = _automod_cfg(interaction.guild.id)
     cfg["spam_msgs"], cfg["spam_seg"], cfg["spam_timeout"] = mensajes, segundos, timeout_seg
     guardar_automod()
-    texto = "Desactivado" if mensajes == 0 else f"{mensajes} mensajes en {segundos}s → timeout {timeout_seg}s"
+    texto = "Desactivado" if mensajes == 0 else f"{mensajes} mensajes en {segundos}s → timeout {fmt_duracion_segundos(timeout_seg)}"
     await interaction.response.send_message(f"✅ Anti-spam: **{texto}**.")
 
 
@@ -8090,7 +8140,7 @@ async def slash_soft_ban(interaction: discord.Interaction, usuario: discord.User
     embed = discord.Embed(title="⏱️ Softban aplicado", color=discord.Color.dark_gold(), timestamp=discord.utils.utcnow())
     embed.add_field(name="Usuario", value=f"{usuario} (`{usuario.id}`)", inline=False)
     embed.add_field(name="Moderador", value=interaction.user.mention, inline=True)
-    embed.add_field(name="Duración", value=duracion, inline=True)
+    embed.add_field(name="Duración", value=fmt_duracion_segundos(segundos), inline=True)
     embed.add_field(name="Motivo", value=motivo, inline=False)
     embed.set_thumbnail(url=usuario.display_avatar.url)
     await interaction.response.send_message(embed=embed)
@@ -9299,14 +9349,7 @@ def fmt_dinero(n, cfg):
 
 
 def econ_fmt_segundos(seg):
-    h = seg // 3600
-    m = (seg % 3600) // 60
-    s = seg % 60
-    partes = []
-    if h: partes.append(f"{h}h")
-    if m: partes.append(f"{m}m")
-    if s: partes.append(f"{s}s")
-    return " ".join(partes) or "0s"
+    return fmt_duracion_segundos(seg)
 
 
 def econ_carcel_restante(u):
@@ -10442,7 +10485,7 @@ async def eco_prestamo(ctx, *, args: str = ""):
             embed = discord.Embed(title="🏦 Configuración de préstamos", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
             embed.add_field(name="Máximo por préstamo", value=fmt_dinero(cfg.get("loan_max", 5000), cfg), inline=True)
             embed.add_field(name="Interés", value=f"{cfg.get('loan_interes', 10)}%", inline=True)
-            embed.add_field(name="Plazo", value=f"{cfg.get('loan_plazo', 24)}h", inline=True)
+            embed.add_field(name="Plazo", value=fmt_duracion_segundos(int(cfg.get('loan_plazo', 24)) * 3600), inline=True)
             embed.set_footer(text=f"Editar: {p}prestamo config <max|interes|plazo> <valor>")
             return await ctx.send(embed=embed)
         campo = tokens[1].lower()
@@ -11095,6 +11138,9 @@ def _integraciones_public(gid, guild):
             "canal": str(f.get("canal", "")),
             "canal_nombre": canal.name if canal else "canal eliminado",
             "enabled": bool(f.get("enabled")),
+            "use_embed": f.get("use_embed", True),
+            "embed_color": f.get("embed_color"),
+            "ping": f.get("ping", ""),
         })
     return feeds
 
@@ -12076,6 +12122,21 @@ async def _dash_integraciones_set(request):
                 break
         else:
             return dash_web.json_response({"error": f"No existe la integración #{fid}."}, status=400)
+    if "update" in data:
+        upd = data["update"] if isinstance(data["update"], dict) else {}
+        fid, e = _dash_int(upd.get("id"), 1)
+        if e:
+            return dash_web.json_response({"error": "ID inválido."}, status=400)
+        for f in cfg.get("feeds", []):
+            if f.get("id") == fid:
+                if "use_embed" in upd: f["use_embed"] = bool(upd["use_embed"])
+                if "embed_color" in upd: f["embed_color"] = upd["embed_color"]
+                if "ping" in upd: f["ping"] = str(upd["ping"])
+                guardar_integraciones()
+                cambios.append(f"#{fid} configuración actualizada")
+                break
+        else:
+            return dash_web.json_response({"error": f"No existe la integración #{fid}."}, status=400)
 
     if cambios:
         embed = discord.Embed(
@@ -12088,7 +12149,75 @@ async def _dash_integraciones_set(request):
     return dash_web.json_response({"ok": True, "integraciones": _integraciones_public(gid, guild)})
 
 
-async def _dash_leave(request):
+async def _dash_integraciones_test(request):
+    """POST /api/guild/<id>/integraciones/test — enviar mensaje de prueba (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_puede_configurar(request, guild):
+        return dash_web.json_response({"error": "Necesitas permiso de administración (Manage Server) en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    fid, e = _dash_int(data.get("id"), 1)
+    if e:
+        return dash_web.json_response({"error": "ID de integración inválido."}, status=400)
+
+    gid = str(guild.id)
+    cfg = integraciones_db.get(gid, {"feeds": []})
+    feed = next((f for f in cfg.get("feeds", []) if f.get("id") == fid), None)
+    if not feed:
+        return dash_web.json_response({"error": f"No existe la integración #{fid}."}, status=400)
+
+    canal_id = feed.get("canal")
+    if not canal_id or not str(canal_id).isdigit():
+        return dash_web.json_response({"error": "La integración no tiene un canal válido."}, status=400)
+
+    canal = guild.get_channel(int(canal_id))
+    if not canal:
+        return dash_web.json_response({"error": "No pude encontrar el canal en el servidor."}, status=400)
+
+    meta = INTEGRACION_TIPOS.get(feed.get("tipo"), INTEGRACION_FALLBACK)
+    use_embed = feed.get("use_embed", True)
+    ping = feed.get("ping", "")
+
+    msg_content = ""
+    if ping == "everyone":
+        msg_content = "@everyone "
+    elif ping == "here":
+        msg_content = "@here "
+    elif ping and ping.isdigit():
+        msg_content = f"<@&{ping}> "
+
+    if use_embed:
+        color_val = feed.get("embed_color")
+        if color_val is None:
+            color_val = meta["color"]
+        try:
+            if isinstance(color_val, str):
+                color_val = int(color_val.replace("#", ""), 16)
+        except ValueError:
+            color_val = meta["color"]
+
+        embed = discord.Embed(
+            title="🧪 Mensaje de Prueba (WaveBot)",
+            description=f"Este es un mensaje de prueba para la integración de **{feed.get('tipo')}**.\nAsí se verá el formato cuando haya una novedad.",
+            color=discord.Color(color_val),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text=f"Prueba de configuración · {feed.get('tipo')}")
+        try:
+            await canal.send(content=msg_content, embed=embed)
+        except Exception as e:
+            return dash_web.json_response({"error": f"Error al enviar mensaje: {e}"}, status=500)
+    else:
+        texto = f"🧪 **Mensaje de Prueba (WaveBot)**\nEste es un mensaje de prueba para la integración de **{feed.get('tipo')}**. Así se verá el texto sin embed."
+        try:
+            await canal.send(content=msg_content + texto)
+        except Exception as e:
+            return dash_web.json_response({"error": f"Error al enviar mensaje: {e}"}, status=500)
+
+    return dash_web.json_response({"ok": True})
     """POST /api/guild/<id>/leave — el bot abandona ese servidor (solo owner del bot)."""
     if not _dash_es_bot_owner(request):
         return dash_web.json_response({"error": "Solo el owner del bot puede hacer esto."}, status=403)
@@ -12617,6 +12746,7 @@ async def _iniciar_dashboard():
     app.router.add_post("/api/guild/{gid}/tickets", _dash_tickets_set)
     app.router.add_post("/api/guild/{gid}/mensajes", _dash_mensajes_set)
     app.router.add_post("/api/guild/{gid}/integraciones", _dash_integraciones_set)
+    app.router.add_post("/api/guild/{gid}/integraciones/test", _dash_integraciones_test)
     app.router.add_post("/api/guild/{gid}/leave", _dash_leave)
     app.router.add_post("/api/sync", _dash_sync)
     app.router.add_post("/api/guild/{gid}/economy", _dash_economy_set)
