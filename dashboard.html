@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WAVEBOT · Dashboard</title>
+<link rel="icon" type="image/png" href="/icono.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -229,6 +230,14 @@
   .prev-boton.rojo { background: #da373c; }
   .prev-contenido { font-size: 14px; margin: 2px 0 4px; max-width: 430px; overflow-wrap: anywhere; }
   .prev-autor-img { width: 22px; height: 22px; border-radius: 50%; }
+
+  /* ===== Selector de color ===== */
+  input[type="color"] { -webkit-appearance: none; appearance: none; overflow: hidden; }
+  input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+  input[type="color"]::-webkit-color-swatch { border: 1px solid rgba(255, 255, 255, .18); border-radius: 6px; }
+  input[type="color"]::-moz-color-swatch { border: 1px solid rgba(255, 255, 255, .18); border-radius: 6px; }
+  .hex-badge { font-size: 11px; font-weight: 700; color: var(--texto); background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-family: ui-monospace, "Cascadia Mono", monospace; letter-spacing: .4px; white-space: nowrap; }
+  .chk-defecto { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--texto-2); cursor: pointer; user-select: none; }
 
   /* ===== Gráficas de analytics ===== */
   .graficas-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
@@ -1084,7 +1093,7 @@ SECCIONES.integraciones = function () {
   const g = DATOS_GUILD;
   const perms = g.permisos || {};
   const feeds = g.integraciones || [];
-  const emojis = { youtube: "📺", reddit: "🟠", github: "🐙", steam: "🎮", rss: "📰", twitch: "🟣" };
+  const emojis = { youtube: "📺", twitch: "🟣", reddit: "🟠", github: "🐙", steam: "🎮" };
   return `
     <div class="card" id="card-integraciones">
       <h2>🔗 Integraciones <span class="sub">novedades automáticas cada 3 minutos</span></h2>
@@ -1101,20 +1110,19 @@ SECCIONES.integraciones = function () {
       <div class="fila-inline" style="margin-bottom:10px">
         <select id="int-tipo" style="flex:0;min-width:130px;width:auto">
           <option value="youtube">📺 youtube</option>
+          <option value="twitch">🟣 twitch</option>
           <option value="reddit">🟠 reddit</option>
           <option value="github">🐙 github</option>
           <option value="steam">🎮 steam</option>
-          <option value="rss">📰 rss</option>
-          <option value="twitch">🟣 twitch</option>
         </select>
-        <input id="int-ref" placeholder="identificador según el tipo" style="flex:1;min-width:180px;width:auto">
+        <input id="int-ref" placeholder="link del canal o nombre de usuario" style="flex:1;min-width:180px;width:auto">
       </div>
       <div class="fila-inline">
         <select id="int-canal">${optsCanales(null, false)}</select>
         <button class="btn btn-primario" onclick="integracionAdd()">➕ Añadir</button>
       </div>
       <div style="margin-top:10px;font-size:11px;color:var(--texto-2);line-height:1.6">
-        youtube: ID de canal (empieza por UC…) · reddit: subreddit (sin r/) · github: usuario/repositorio · steam: AppID del juego (ej: 730) · rss: URL completa del feed · twitch: usuario del streamer (requiere credenciales TWITCH en el hosting)
+        youtube: link del canal o @handle · twitch: link twitch.tv/usuario o nombre del streamer (requiere credenciales TWITCH en el hosting) · reddit: subreddit o link · github: usuario/repositorio o link · steam: AppID del juego (ej: 730) o link de la tienda
       </div>
     </div>`;
 };
@@ -1183,9 +1191,13 @@ SECCIONES.tickets = function () {
         </div>
         <div class="fila-inline" style="margin-top:8px">
           <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--texto-2)">
-            <input type="color" id="pe-${pnl.id}-colorpicker" value="#${esc(pnl.color || "5865f2")}" oninput="prevPanelActualizar('pe-${pnl.id}')" style="width:34px;height:30px;padding:0;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer">
-            color del embed
+            <input type="color" id="pe-${pnl.id}-colorpicker" value="#${esc(pnl.color || "5865f2")}" oninput="prevPanelActualizar('pe-${pnl.id}')" style="width:38px;height:32px;padding:2px;border:1px solid var(--border);border-radius:7px;background:var(--panel-2);cursor:pointer">
+            color
           </label>
+          <span class="hex-badge" id="pe-${pnl.id}-colorhex">#${esc((pnl.color || "5865f2").toUpperCase())}</span>
+          <label class="chk-defecto"><input type="checkbox" id="pe-${pnl.id}-colordef" ${pnl.color ? "" : "checked"} onchange="prevPanelActualizar('pe-${pnl.id}')"> por defecto</label>
+        </div>
+        <div class="fila-inline" style="margin-top:8px">
           <input id="pe-${pnl.id}-imagen" placeholder="URL imagen grande (banner)" value="${esc(pnl.imagen || "")}" oninput="prevPanelActualizar('pe-${pnl.id}')" style="flex:1;min-width:220px;width:auto">
         </div>
         <div class="fila-inline" style="margin-top:8px">
@@ -1221,9 +1233,13 @@ SECCIONES.tickets = function () {
       </div>
       <div class="fila-inline" style="margin-bottom:10px">
         <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--texto-2)">
-          <input type="color" id="tk-panel-colorpicker" value="#8b7cf6" oninput="prevPanelActualizar('tk-panel')" style="width:34px;height:30px;padding:0;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer">
-          color del embed
+          <input type="color" id="tk-panel-colorpicker" value="#8b7cf6" oninput="prevPanelActualizar('tk-panel')" style="width:38px;height:32px;padding:2px;border:1px solid var(--border);border-radius:7px;background:var(--panel-2);cursor:pointer">
+          color
         </label>
+        <span class="hex-badge" id="tk-panel-colorhex">#8B7CF6</span>
+        <label class="chk-defecto"><input type="checkbox" id="tk-panel-colordef" onchange="prevPanelActualizar('tk-panel')"> por defecto</label>
+      </div>
+      <div class="fila-inline" style="margin-bottom:10px">
         <input id="tk-panel-desc" placeholder="descripción del panel (opcional)" oninput="prevPanelActualizar('tk-panel')" style="flex:1;min-width:200px;width:auto">
       </div>
       <div class="fila-inline" style="margin-bottom:10px">
@@ -1619,12 +1635,17 @@ function prevPanelRender(pnl) {
 function prevPanelActualizar(pref) {
   const val = campo => (document.getElementById(pref + "-" + campo) || {}).value || "";
   const picker = document.getElementById(pref + "-colorpicker");
+  const colordef = document.getElementById(pref + "-colordef");
+  if (picker) picker.disabled = !!(colordef && colordef.checked);
+  const color = (colordef && colordef.checked) ? "" : (picker ? picker.value : "");
+  const hexBadge = document.getElementById(pref + "-colorhex");
+  if (hexBadge) hexBadge.textContent = color ? color.toUpperCase() : "POR DEFECTO";
   const cont = document.getElementById("prev-" + pref);
   if (!cont) return;
   cont.innerHTML = prevPanelRender({
     titulo: val("titulo").trim(),
     desc: val("desc").trim(),
-    color: picker ? picker.value : "",
+    color: color,
     imagen: val("imagen").trim(),
     miniatura: val("miniatura").trim(),
     autor: val("autor").trim(),
@@ -1686,6 +1707,8 @@ async function ticketPreguntaRemove(num) {
 }
 
 async function ticketPanelAdd() {
+  const colordef = document.getElementById("tk-panel-colordef");
+  const picker = document.getElementById("tk-panel-colorpicker");
   const payload = {
     panel_add: {
       canal: document.getElementById("tk-panel-canal").value,
@@ -1694,7 +1717,7 @@ async function ticketPanelAdd() {
       boton: document.getElementById("tk-panel-boton").value.trim(),
       emoji: document.getElementById("tk-panel-emoji").value.trim(),
       estilo: document.getElementById("tk-panel-estilo").value,
-      color: document.getElementById("tk-panel-colorpicker").value.replace("#", ""),
+      color: (colordef && colordef.checked) ? "" : (picker ? picker.value.replace("#", "") : ""),
       imagen: document.getElementById("tk-panel-imagen").value.trim(),
       miniatura: document.getElementById("tk-panel-miniatura").value.trim(),
       autor: document.getElementById("tk-panel-autor").value.trim(),
@@ -1712,12 +1735,13 @@ async function ticketPanelAdd() {
 async function ticketPanelEdit(pid) {
   const val = campo => (document.getElementById("pe-" + pid + "-" + campo) || {}).value || "";
   const picker = document.getElementById("pe-" + pid + "-colorpicker");
+  const colordef = document.getElementById("pe-" + pid + "-colordef");
   const payload = {
     panel_edit: {
       id: pid,
       titulo: val("titulo").trim(),
       desc: val("desc").trim(),
-      color: picker ? picker.value.replace("#", "") : "",
+      color: (colordef && colordef.checked) ? "" : (picker ? picker.value.replace("#", "") : ""),
       imagen: val("imagen").trim(),
       miniatura: val("miniatura").trim(),
       autor: val("autor").trim(),

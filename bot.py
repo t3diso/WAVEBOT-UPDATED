@@ -106,7 +106,7 @@ tickets_db = {}     # guild_id (str) -> config (ver _tickets_default)
 MENSAJES_PATH = ruta_datos("mensajes.json")
 mensajes_db = {}    # guild_id (str) -> {"welcome": cfg, "goodbye": cfg, "boost": cfg}
 
-# Integraciones (feeds: youtube, reddit, github, steam, rss, twitch)
+# Integraciones (feeds: youtube, twitch, reddit, github y steam)
 INTEGRACIONES_PATH = ruta_datos("integraciones.json")
 integraciones_db = {}   # guild_id (str) -> {"feeds": [...]}
 
@@ -4938,7 +4938,7 @@ async def ayuda(ctx, *, comando: str = None):
                 discord.SelectOption(label="Automod", value="automod", description="Filtro de palabras, invites, links y spam"),
                 discord.SelectOption(label="Tickets", value="tickets", description="Paneles, soporte, claim, transcripts, límite"),
                 discord.SelectOption(label="Mensajes", value="mensajes", description="Welcome, goodbye y boost configurables"),
-                discord.SelectOption(label="Integraciones", value="integraciones", description="YouTube, Reddit, GitHub, Steam, RSS, Twitch y stats"),
+                discord.SelectOption(label="Integraciones", value="integraciones", description="YouTube, Twitch, Reddit, GitHub, Steam y stats"),
                 discord.SelectOption(label="Roles", value="roles", description="Roleadd, roleremove, rolehuman, autorole, etc."),
                 discord.SelectOption(label="Niveles / XP", value="niveles", description="Rank, level, leaderboard, level-config, etc."),
                 discord.SelectOption(label="Economía", value="economia", description="Balance, work, crime, rob, tienda, juegos, etc."),
@@ -5026,7 +5026,7 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}integraciones remove (id)` :: Eliminar\n"
                     f"`{p}integraciones on|off (id)` :: Pausar / reactivar\n"
                     f"`{p}stats` :: Estadísticas del servidor (actividad y moderación)\n\n"
-                    f"Tipos: youtube · reddit · github · steam · rss · twitch\n"
+                    f"Tipos: youtube · twitch · reddit · github · steam\n"
                     f"Novedades cada 3 min · Stats con 30 días de historial"
                 ), color=discord.Color.orange()),
                 "roles": discord.Embed(title="Roles", description=(
@@ -5552,22 +5552,88 @@ async def stats(ctx, *, args: str = ""):
 
 
 # ============================================================
-#  INTEGRACIONES (feeds: youtube, reddit, github, steam, rss y twitch)
+#  INTEGRACIONES (feeds: youtube, twitch, reddit, github y steam)
 # ============================================================
 
 INTEGRACION_TIPOS = {
     "youtube": {"emoji": "📺", "color": 0xff0000, "url": lambda ref: f"https://www.youtube.com/feeds/videos.xml?channel_id={ref}",
-                "ayuda": "ID de canal (empieza por UC…)"},
+                "ayuda": "link del canal, @handle o ID (UC…)"},
+    "twitch": {"emoji": "🟣", "color": 0x9146ff, "url": None, "ayuda": "link twitch.tv/usuario o nombre del streamer (requiere TWITCH_CLIENT_ID y TWITCH_CLIENT_SECRET)"},
     "reddit": {"emoji": "🟠", "color": 0xff4500, "url": lambda ref: f"https://www.reddit.com/r/{ref}/new/.rss",
-               "ayuda": "nombre del subreddit (sin r/)"},
+               "ayuda": "link reddit.com/r/… o nombre del subreddit (sin r/)"},
     "github": {"emoji": "🐙", "color": 0x24292e, "url": lambda ref: f"https://github.com/{ref}/releases.atom",
-               "ayuda": "usuario/repositorio"},
+               "ayuda": "link github.com/usuario/repo o usuario/repositorio"},
     "steam": {"emoji": "🎮", "color": 0x66c0f4, "url": lambda ref: f"https://store.steampowered.com/feeds/news/app/{ref}/",
-              "ayuda": "AppID del juego (ej: 730 para CS2)"},
-    "rss": {"emoji": "📰", "color": 0x5865f2, "url": lambda ref: ref, "ayuda": "URL completa del feed RSS/Atom"},
-    "twitch": {"emoji": "🟣", "color": 0x9146ff, "url": None, "ayuda": "usuario del streamer (requiere TWITCH_CLIENT_ID y TWITCH_CLIENT_SECRET)"},
+              "ayuda": "link de la tienda o AppID del juego (ej: 730 para CS2)"},
 }
+INTEGRACION_FALLBACK = {"emoji": "🔗", "color": 0x5865f2}
 TWITCH_TOKEN = {"token": "", "expira": 0.0}
+YOUTUBE_HANDLES_CACHE = {}   # handle (sin @) -> channel_id (UC…) o None si no se pudo resolver
+
+
+def _integracion_normalizar_ref(tipo, ref):
+    """Normaliza la referencia: acepta links completos o el nombre/usuario plano.
+    Devuelve la referencia limpia (o '' si quedó vacía)."""
+    ref = str(ref or "").strip().strip("/")
+    if not ref:
+        return ""
+    if tipo == "youtube":
+        m = re.search(r"youtube\.com/channel/(UC[A-Za-z0-9_-]{10,})", ref)
+        if m:
+            return m.group(1)
+        m = re.search(r"youtube\.com/(?:@|user/|c/)([A-Za-z0-9_.\-]+)", ref)
+        if m:
+            return "@" + m.group(1)
+        if ref.startswith("@"):
+            return ref
+        return ref  # UC… o handle sin arroba
+    if tipo == "twitch":
+        m = re.search(r"twitch\.tv/([A-Za-z0-9_]+)", ref)
+        if m:
+            return m.group(1).lower()
+        return ref.lower()
+    if tipo == "reddit":
+        m = re.search(r"reddit\.com/r/([A-Za-z0-9_]+)", ref)
+        if m:
+            return m.group(1).lower()
+        return ref.lower().removeprefix("r/")
+    if tipo == "github":
+        m = re.search(r"github\.com/([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)", ref)
+        if m:
+            return m.group(1)
+        return ref
+    if tipo == "steam":
+        m = re.search(r"steampowered\.com/app/(\d+)", ref)
+        if m:
+            return m.group(1)
+        return ref
+    return ref
+
+
+async def _youtube_handle_a_id(handle):
+    """Resuelve un @handle de YouTube al channel_id (UC…) cacheando el resultado."""
+    handle = str(handle).lstrip("@").strip()
+    if not handle:
+        return None
+    if handle in YOUTUBE_HANDLES_CACHE:
+        return YOUTUBE_HANDLES_CACHE[handle]
+    channel_id = None
+    try:
+        async with aiohttp.ClientSession() as ses:
+            async with ses.get(
+                f"https://www.youtube.com/@{handle}",
+                timeout=aiohttp.ClientTimeout(total=12),
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            ) as r:
+                if r.status == 200:
+                    html = await r.text()
+                    m = re.search(r'"channelId":"(UC[A-Za-z0-9_-]{10,})"', html)
+                    if m:
+                        channel_id = m.group(1)
+    except Exception:
+        channel_id = None
+    YOUTUBE_HANDLES_CACHE[handle] = channel_id
+    return channel_id
 
 
 def _feed_parsear(xml_text):
@@ -5693,7 +5759,7 @@ async def _tarea_integraciones():
                     hubo_cambios = True
                     guild = bot.get_guild(int(gid)) if str(gid).isdigit() else None
                     if nuevos and guild is not None:
-                        meta = INTEGRACION_TIPOS.get(feed.get("tipo"), INTEGRACION_TIPOS["rss"])
+                        meta = INTEGRACION_TIPOS.get(feed.get("tipo"), INTEGRACION_FALLBACK)
                         canal = guild.get_channel(int(feed["canal"])) if str(feed.get("canal", "")).isdigit() else None
                         if canal is not None:
                             for it in nuevos:
@@ -5715,15 +5781,21 @@ async def _tarea_integraciones():
         await asyncio.sleep(180)
 
 
-def _integracion_agregar(guild, tipo, ref, canal):
-    """Registra un feed nuevo. Devuelve (id | None, error)."""
+async def _integracion_agregar(guild, tipo, ref, canal):
+    """Registra un feed nuevo aceptando links completos o nombres de usuario.
+    Devuelve (id | None, error)."""
     if tipo not in INTEGRACION_TIPOS:
         return None, f"Tipo inválido. Usa: {', '.join(INTEGRACION_TIPOS)}"
-    ref = str(ref or "").strip()
+    ref = _integracion_normalizar_ref(tipo, ref)
     if not ref:
-        return None, "Debes indicar el identificador del feed."
-    if tipo == "rss" and not ref.startswith(("http://", "https://")):
-        return None, "Para RSS la referencia debe ser una URL completa (http/https)."
+        return None, "Debes indicar el link del canal o el nombre de usuario."
+    if tipo == "youtube":
+        # Un @handle hay que resolverlo al ID de canal (UC…) para poder leer el feed.
+        if ref.startswith("@") or not ref.startswith("UC"):
+            resuelto = await _youtube_handle_a_id(ref)
+            if not resuelto:
+                return None, "No pude resolver ese canal de YouTube. Prueba con el link del canal (youtube.com/channel/UC…)."
+            ref = resuelto
     cfg = integraciones_db.setdefault(str(guild.id), {"feeds": []})
     feed_id = max((f.get("id", 0) for f in cfg.get("feeds", [])), default=0) + 1
     cfg.setdefault("feeds", []).append({
@@ -5738,7 +5810,7 @@ def _integracion_agregar(guild, tipo, ref, canal):
 @commands.has_permissions(manage_guild=True)
 async def integraciones(ctx, *, args: str = ""):
     """
-    Notificaciones automáticas de YouTube, Reddit, GitHub, Steam, RSS y Twitch.
+    Notificaciones automáticas de YouTube, Twitch, Reddit, GitHub y Steam.
     Uso: .integraciones [add|remove|on|off]
     """
     cfg = integraciones_db.setdefault(str(ctx.guild.id), {"feeds": []})
@@ -5751,11 +5823,11 @@ async def integraciones(ctx, *, args: str = ""):
             return await ctx.send(
                 "📭 No tienes integraciones. Añade una con:\n"
                 f"`{p}integraciones add <tipo> <identificador> <#canal>`\n"
-                "Tipos: `youtube` `reddit` `github` `steam` `rss` `twitch`"
+                "Tipos: `youtube` `twitch` `reddit` `github` `steam`"
             )
         embed = discord.Embed(title="🔗 Integraciones", color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
         for f in cfg["feeds"][:10]:
-            meta = INTEGRACION_TIPOS.get(f.get("tipo"), INTEGRACION_TIPOS["rss"])
+            meta = INTEGRACION_TIPOS.get(f.get("tipo"), INTEGRACION_FALLBACK)
             estado = "🟢" if f.get("enabled") else "🔴"
             embed.add_field(
                 name=f"{meta['emoji']} #{f['id']} · {f.get('tipo')} — {estado}",
@@ -5779,7 +5851,7 @@ async def integraciones(ctx, *, args: str = ""):
             return await ctx.send("❌ Canal no encontrado.")
         if tipo == "twitch" and not (os.environ.get("TWITCH_CLIENT_ID", "").strip() and os.environ.get("TWITCH_CLIENT_SECRET", "").strip()):
             return await ctx.send("❌ Twitch requiere las variables `TWITCH_CLIENT_ID` y `TWITCH_CLIENT_SECRET` en el hosting. Los demás tipos no necesitan credenciales.")
-        feed_id, err = _integracion_agregar(ctx.guild, tipo, ref, canal)
+        feed_id, err = await _integracion_agregar(ctx.guild, tipo, ref, canal)
         if err:
             return await ctx.send(f"❌ {err}")
         return await ctx.send(f"✅ Integración **#{feed_id}** creada ({tipo}) → novedades en {canal.mention}.\nLa primera revisión no anuncia historial, solo lo nuevo a partir de ahora.")
@@ -5815,7 +5887,7 @@ async def integraciones(ctx, *, args: str = ""):
     return await ctx.send(
         "❌ Subcomando desconocido. Usa:\n"
         f"`{p}integraciones` :: Ver integraciones\n"
-        f"`{p}integraciones add <tipo> <ref> <#canal>` :: Añadir (youtube/reddit/github/steam/rss/twitch)\n"
+        f"`{p}integraciones add <tipo> <ref> <#canal>` :: Añadir (youtube/twitch/reddit/github/steam)\n"
         f"`{p}integraciones remove <id>` :: Eliminar\n"
         f"`{p}integraciones <on|off> <id>` :: Activar / pausar"
     )
@@ -7902,7 +7974,7 @@ async def slash_stats(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-integraciones_group = app_commands.Group(name="integraciones", description="Notificaciones de YouTube, Reddit, GitHub, Steam, RSS y Twitch")
+integraciones_group = app_commands.Group(name="integraciones", description="Notificaciones de YouTube, Twitch, Reddit, GitHub y Steam")
 
 
 @integraciones_group.command(name="list", description="Ver tus integraciones")
@@ -7913,12 +7985,12 @@ async def slash_integraciones_list(interaction: discord.Interaction):
     cfg = integraciones_db.setdefault(str(interaction.guild.id), {"feeds": []})
     if not cfg.get("feeds"):
         return await interaction.response.send_message(
-            "📭 No tienes integraciones. Añade una con `/integraciones add`.\nTipos: `youtube` `reddit` `github` `steam` `rss` `twitch`",
+            "📭 No tienes integraciones. Añade una con `/integraciones add`.\nTipos: `youtube` `twitch` `reddit` `github` `steam`",
             ephemeral=True,
         )
     embed = discord.Embed(title="🔗 Integraciones", color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
     for f in cfg["feeds"][:10]:
-        meta = INTEGRACION_TIPOS.get(f.get("tipo"), INTEGRACION_TIPOS["rss"])
+        meta = INTEGRACION_TIPOS.get(f.get("tipo"), INTEGRACION_FALLBACK)
         estado = "🟢" if f.get("enabled") else "🔴"
         embed.add_field(
             name=f"{meta['emoji']} #{f['id']} · {f.get('tipo')} — {estado}",
@@ -7929,22 +8001,21 @@ async def slash_integraciones_list(interaction: discord.Interaction):
 
 
 @integraciones_group.command(name="add", description="Añade una integración")
-@app_commands.describe(tipo="Tipo de integración", identificador="Canal de YouTube (UC…), subreddit, usuario/repo, AppID de Steam, URL del RSS o usuario de Twitch", canal="Canal donde avisar")
+@app_commands.describe(tipo="Tipo de integración", identificador="Link del canal o nombre de usuario (ej: link de YouTube, twitch.tv/usuario, subreddit, usuario/repo, AppID de Steam)", canal="Canal donde avisar")
 @app_commands.default_permissions(manage_guild=True)
 @app_commands.choices(tipo=[
     app_commands.Choice(name="youtube", value="youtube"),
+    app_commands.Choice(name="twitch", value="twitch"),
     app_commands.Choice(name="reddit", value="reddit"),
     app_commands.Choice(name="github", value="github"),
     app_commands.Choice(name="steam", value="steam"),
-    app_commands.Choice(name="rss", value="rss"),
-    app_commands.Choice(name="twitch", value="twitch"),
 ])
 async def slash_integraciones_add(interaction: discord.Interaction, tipo: app_commands.Choice[str], identificador: str, canal: discord.TextChannel):
     if not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
     if tipo.value == "twitch" and not (os.environ.get("TWITCH_CLIENT_ID", "").strip() and os.environ.get("TWITCH_CLIENT_SECRET", "").strip()):
         return await interaction.response.send_message("❌ Twitch requiere las variables `TWITCH_CLIENT_ID` y `TWITCH_CLIENT_SECRET` en el hosting.", ephemeral=True)
-    feed_id, err = _integracion_agregar(interaction.guild, tipo.value, identificador, canal)
+    feed_id, err = await _integracion_agregar(interaction.guild, tipo.value, identificador, canal)
     if err:
         return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
     await interaction.response.send_message(f"✅ Integración **#{feed_id}** creada ({tipo.value}) → novedades en {canal.mention}. La primera revisión no anuncia historial.")
@@ -8085,7 +8156,7 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(name="🤖 Automod", value="`automod` (ver config) `automod on`/`off` `automod add`/`remove` `automod invites` `automod links` `automod spam` `automod accion` `automod exrol` `automod excanal`\nGrupo slash `/automod`: config, on, off, add, remove, invites, links, spam, accion, exrol, excanal.\nFiltro de palabras, invites, links y spam • Desactivado por defecto", inline=False)
     embed.add_field(name="🎫 Tickets", value="`tickets` (ver config) `tickets on`/`off` `tickets soporte` `tickets categoria` `tickets canal` `tickets limite` `tickets pregunta-add`/`pregunta-remove` `tickets panel-add`/`panel-edit`/`panel-remove` `tickets cerrar` `tickets claim` `tickets add`/`remove`\nGrupo slash `/tickets` completo.\nPaneles personalizables (color, imagen, footer, botón) • Transcript HTML y DM al autor • Desactivado por defecto", inline=False)
     embed.add_field(name="👋 Mensajes", value="`welcome`/`goodbye`/`boost` (config) `on`/`off` `canal` `titulo` `descripcion` `footer` `contenido` `color` `imagen` `miniatura` `test` `variables`\nGrupo slash `/mensajes`: config, on, off, canal, campo, test.\nVariables {usuario} {mencion} {servidor} {miembros} {avatar} • Desactivados por defecto", inline=False)
-    embed.add_field(name="🔗 Integraciones y 📊 Stats", value="`integraciones` (listar) `integraciones add <youtube|reddit|github|steam|rss|twitch> <ref> <#canal>` `remove` `on`/`off`\nGrupo slash `/integraciones` + `/stats`.\nNovedades cada 3 min · `.stats` con actividad, moderación y 30 días de historial", inline=False)
+    embed.add_field(name="🔗 Integraciones y 📊 Stats", value="`integraciones` (listar) `integraciones add <youtube|twitch|reddit|github|steam> <ref> <#canal>` `remove` `on`/`off`\nGrupo slash `/integraciones` + `/stats`.\nAcepta links de canal o nombre de usuario · Novedades cada 3 min · `.stats` con 30 días de historial", inline=False)
     embed.add_field(name="👥 Roles", value="`roleadd`/`role add` `roleremove`/`role remove` `rolehuman`/`role human` `roleall`/`role all` `rolebot`/`role bot`\n`autorolehuman`/`autorole human` `autorolebot`/`autorole bot` `autorole`/`autorole general` `autorolelist`/`autorole list`", inline=False)
     embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
     embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob` `prestamo`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
@@ -11019,7 +11090,7 @@ def _integraciones_public(gid, guild):
         canal = guild.get_channel(int(f.get("canal", ""))) if guild is not None and str(f.get("canal", "")).isdigit() else None
         feeds.append({
             "id": int(f.get("id", 0)),
-            "tipo": f.get("tipo", "rss"),
+            "tipo": f.get("tipo", "youtube"),
             "ref": f.get("ref", ""),
             "canal": str(f.get("canal", "")),
             "canal_nombre": canal.name if canal else "canal eliminado",
@@ -11054,7 +11125,7 @@ def _dash_buscar_guild(gid_texto: str):
 async def _dash_auth(request, handler):
     """Páginas públicas: dashboard (/), login OAuth y páginas legales. El resto exige sesión o token."""
     ruta = request.path
-    if ruta == "/" or ruta.startswith("/oauth/") or ruta in ("/terminos", "/terms", "/privacidad", "/privacy", "/api/config"):
+    if ruta == "/" or ruta.startswith("/oauth/") or ruta in ("/terminos", "/terms", "/privacidad", "/privacy", "/api/config", "/icono.png"):
         return await handler(request)
     token_maestro = dashboard_config.get("token", "")
     if token_maestro:
@@ -11335,6 +11406,17 @@ async def _dash_servir_pagina(request):
 async def _dash_config_public(request):
     """GET /api/config — info mínima pública para la UI del login (si hay clave de equipo activa)."""
     return dash_web.json_response({"team_login": bool(dashboard_config.get("token"))})
+
+
+async def _dash_icono(request):
+    """Sirve el icono del bot (favicon) desde el directorio del script."""
+    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icono.png")
+    try:
+        with open(ruta, "rb") as f:
+            datos = f.read()
+    except OSError:
+        return dash_web.Response(status=404, text="icono.png no encontrado")
+    return dash_web.Response(body=datos, content_type="image/png", cache_control="public, max-age=86400")
 
 
 async def _dash_status(request):
@@ -11965,7 +12047,7 @@ async def _dash_integraciones_set(request):
             return dash_web.json_response({"error": "Canal no encontrado en este servidor."}, status=400)
         if tipo == "twitch" and not (os.environ.get("TWITCH_CLIENT_ID", "").strip() and os.environ.get("TWITCH_CLIENT_SECRET", "").strip()):
             return dash_web.json_response({"error": "Twitch requiere las variables TWITCH_CLIENT_ID y TWITCH_CLIENT_SECRET en el hosting."}, status=400)
-        feed_id, err_feed = _integracion_agregar(guild, tipo, ref, canal)
+        feed_id, err_feed = await _integracion_agregar(guild, tipo, ref, canal)
         if err_feed:
             return dash_web.json_response({"error": err_feed}, status=400)
         cambios.append(f"#{feed_id} {tipo} → #{canal.name}")
@@ -12517,6 +12599,7 @@ async def _iniciar_dashboard():
     """Arranca el servidor aiohttp del dashboard en el mismo event loop del bot."""
     app = dash_web.Application(middlewares=[_dash_auth])
     app.router.add_get("/", _dash_index)
+    app.router.add_get("/icono.png", _dash_icono)
     app.router.add_get("/api/config", _dash_config_public)
     app.router.add_get("/oauth/login", _dash_oauth_login)
     app.router.add_get("/oauth/callback", _dash_oauth_callback)
