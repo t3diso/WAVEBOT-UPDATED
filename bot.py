@@ -12200,7 +12200,7 @@ async def _dash_integraciones_test(request):
             color_val = meta["color"]
 
         embed = discord.Embed(
-            title="🧪 Mensaje de Prueba (WaveBot)",
+            title="🧪 Mensaje de Prueba",
             description=f"Este es un mensaje de prueba para la integración de **{feed.get('tipo')}**.\nAsí se verá el formato cuando haya una novedad.",
             color=discord.Color(color_val),
             timestamp=discord.utils.utcnow()
@@ -12211,7 +12211,7 @@ async def _dash_integraciones_test(request):
         except Exception as e:
             return dash_web.json_response({"error": f"Error al enviar mensaje: {e}"}, status=500)
     else:
-        texto = f"🧪 **Mensaje de Prueba (WaveBot)**\nEste es un mensaje de prueba para la integración de **{feed.get('tipo')}**. Así se verá el texto sin embed."
+        texto = f"🧪 **Mensaje de Prueba**\nEste es un mensaje de prueba para la integración de **{feed.get('tipo')}**. Así se verá el texto sin embed."
         try:
             await canal.send(content=msg_content + texto)
         except Exception as e:
