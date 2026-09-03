@@ -5583,7 +5583,7 @@ async def stats(ctx, *, args: str = ""):
 INTEGRACION_TIPOS = {
     "youtube": {"emoji": "📺", "color": 0xff0000, "url": lambda ref: f"https://www.youtube.com/feeds/videos.xml?channel_id={ref}",
                 "ayuda": "link del canal, @handle o ID (UC…)"},
-    "twitch": {"emoji": "🟣", "color": 0x9146ff, "url": None, "ayuda": "link twitch.tv/usuario o nombre del streamer (requiere TWITCH_CLIENT_ID y TWITCH_CLIENT_SECRET)"},
+    "twitch": {"emoji": "🟣", "color": 0x9146ff, "url": None, "ayuda": "link twitch.tv/usuario o nombre del streamer"},
     "reddit": {"emoji": "🟠", "color": 0xff4500, "url": lambda ref: f"https://www.reddit.com/r/{ref}/new/.rss",
                "ayuda": "link reddit.com/r/… o nombre del subreddit (sin r/)"},
     "github": {"emoji": "🐙", "color": 0x24292e, "url": lambda ref: f"https://github.com/{ref}/releases.atom",
@@ -5593,7 +5593,52 @@ INTEGRACION_TIPOS = {
 }
 INTEGRACION_FALLBACK = {"emoji": "🔗", "color": 0x5865f2}
 TWITCH_TOKEN = {"token": "", "expira": 0.0}
-YOUTUBE_HANDLES_CACHE = {}   # handle (sin @) -> channel_id (UC…) o None si no se pudo resolver
+TWITCH_GQL_CLIENT_ID = "kimne78kx3ncx6brgo4mv6swki8h1ko"   # client público de la web de Twitch (no requiere registro)
+YOUTUBE_HANDLES_CACHE = {}   # ref (str) -> channel_id (UC…) o None si no se pudo resolver
+
+
+async def _twitch_estado(login):
+    """Devuelve (en_vivo | None, titulo | None) de un streamer.
+    Usa Helix si hay credenciales; si no, el GQL público de la web de Twitch (sin credenciales).
+    None en el primer valor = no se pudo consultar."""
+    login = str(login or "").lower().strip()
+    if not login:
+        return None, None
+    token = await _twitch_token_obtener()
+    if token:
+        headers = {"Client-ID": os.environ.get("TWITCH_CLIENT_ID", "").strip(), "Authorization": f"Bearer {token}"}
+        try:
+            async with aiohttp.ClientSession() as ses:
+                async with ses.get(
+                    f"https://api.twitch.tv/helix/streams?user_login={urllib.parse.quote(login)}",
+                    headers=headers, timeout=aiohttp.ClientTimeout(total=10),
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        streams = data.get("data") or []
+                        if streams:
+                            return True, streams[0].get("title", "")
+                        return False, None
+        except Exception:
+            pass
+    # GQL público (sin credenciales)
+    try:
+        async with aiohttp.ClientSession() as ses:
+            async with ses.post(
+                "https://gql.twitch.tv/gql",
+                json={"query": f'query {{ user(login: "{login}") {{ stream {{ title viewersCount }} }} }}'},
+                headers={"Client-ID": TWITCH_GQL_CLIENT_ID},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    stream = (((data.get("data") or {}).get("user") or {}).get("stream"))
+                    if stream:
+                        return True, stream.get("title", "")
+                    return False, None
+    except Exception:
+        pass
+    return None, None
 
 
 def _integracion_normalizar_ref(tipo, ref):
@@ -5635,29 +5680,71 @@ def _integracion_normalizar_ref(tipo, ref):
     return ref
 
 
-async def _youtube_handle_a_id(handle):
-    """Resuelve un @handle de YouTube al channel_id (UC…) cacheando el resultado."""
-    handle = str(handle).lstrip("@").strip()
-    if not handle:
+async def _youtube_handle_a_id(ref):
+    """Resuelve una referencia de YouTube al channel_id (UC…): @handle, link del canal
+    (incluido /videos), link de VÍDEO (vía oEmbed) o link /c/ y /user/. Con caché."""
+    ref = str(ref or "").strip()
+    if not ref:
         return None
-    if handle in YOUTUBE_HANDLES_CACHE:
-        return YOUTUBE_HANDLES_CACHE[handle]
+    clave_cache = ref.lower()
+    if clave_cache in YOUTUBE_HANDLES_CACHE:
+        return YOUTUBE_HANDLES_CACHE[clave_cache]
     channel_id = None
+    UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+
+    # 1) Link de VÍDEO (youtube.com/watch?v=… o youtu.be/…) → oEmbed oficial (author_url lleva el channel ID).
+    m = re.search(r"(?:youtube\.com/(?:watch\?.*?v=|shorts/|live/)|youtu\.be/)([A-Za-z0-9_-]{11})", ref)
+    if m:
+        try:
+            async with aiohttp.ClientSession() as ses:
+                async with ses.get(
+                    "https://www.youtube.com/oembed?format=json&url="
+                    + urllib.parse.quote(f"https://www.youtube.com/watch?v={m.group(1)}", safe=""),
+                    timeout=aiohttp.ClientTimeout(total=12),
+                    headers=UA,
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        m2 = re.search(r"channel/(UC[A-Za-z0-9_-]{10,})", data.get("author_url", ""))
+                        if m2:
+                            channel_id = m2.group(1)
+        except Exception:
+            channel_id = None
+        YOUTUBE_HANDLES_CACHE[clave_cache] = channel_id
+        return channel_id
+
+    # 2) Handle o link de canal → página con cookies de consentimiento (evita el muro de consentimiento de la UE).
+    handle = ref.lstrip("@").strip("/")
+    m = re.search(r"youtube\.com/(?:@|user/|c/)([A-Za-z0-9_.\-]+)", ref)
+    if m:
+        handle = m.group(1)
+    if not handle:
+        YOUTUBE_HANDLES_CACHE[clave_cache] = None
+        return None
+    if handle.startswith("UC"):
+        YOUTUBE_HANDLES_CACHE[clave_cache] = handle
+        return handle
     try:
         async with aiohttp.ClientSession() as ses:
             async with ses.get(
                 f"https://www.youtube.com/@{handle}",
                 timeout=aiohttp.ClientTimeout(total=12),
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                headers={
+                    **UA,
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+678; SOCS=CAI",
+                },
             ) as r:
                 if r.status == 200:
                     html = await r.text()
                     m = re.search(r'"channelId":"(UC[A-Za-z0-9_-]{10,})"', html)
+                    if not m:
+                        m = re.search(r'channel/(UC[A-Za-z0-9_-]{10,})', html)  # <link rel="canonical">
                     if m:
                         channel_id = m.group(1)
     except Exception:
         channel_id = None
-    YOUTUBE_HANDLES_CACHE[handle] = channel_id
+    YOUTUBE_HANDLES_CACHE[clave_cache] = channel_id
     return channel_id
 
 
@@ -5786,28 +5873,14 @@ def _integracion_render(feed, titulo, enlace):
 async def _integracion_nuevos(feed, gid):
     """Comprueba un feed. Devuelve lista de novedades [{titulo, enlace}] (máx 3 por tanda)."""
     if feed.get("tipo") == "twitch":
-        token = await _twitch_token_obtener()
-        if not token:
-            return []
-        cid = os.environ.get("TWITCH_CLIENT_ID", "").strip()
-        headers = {"Client-ID": cid, "Authorization": f"Bearer {token}"}
-        try:
-            async with aiohttp.ClientSession() as ses:
-                async with ses.get(
-                    f"https://api.twitch.tv/helix/streams?user_login={urllib.parse.quote(str(feed.get('ref', '')))}",
-                    headers=headers, timeout=aiohttp.ClientTimeout(total=10),
-                ) as r:
-                    if r.status != 200:
-                        return []
-                    data = await r.json()
-        except Exception:
-            return []
-        en_vivo = bool(data.get("data"))
+        en_vivo, titulo_stream = await _twitch_estado(feed.get("ref", ""))
+        if en_vivo is None:
+            return []   # no se pudo consultar (red caída): reintentar en el siguiente ciclo
         previo = feed.get("last") or "offline"
         feed["last"] = "live" if en_vivo else "offline"
         if en_vivo and previo != "live":
-            s = data["data"][0]
-            return [{"titulo": f"🔴 {s.get('user_name', feed.get('ref'))} está EN DIRECTO: {s.get('title', '')}", "enlace": f"https://twitch.tv/{s.get('user_login', feed.get('ref'))}"}]
+            ref = feed.get("ref", "")
+            return [{"titulo": f"🔴 {ref} está EN DIRECTO: {titulo_stream or ''}", "enlace": f"https://twitch.tv/{ref}"}]
         return []
     meta = INTEGRACION_TIPOS.get(feed.get("tipo"))
     if meta is None or not meta["url"]:
@@ -5903,7 +5976,7 @@ async def _integracion_agregar(guild, tipo, ref, canal):
         if ref.startswith("@") or not ref.startswith("UC"):
             resuelto = await _youtube_handle_a_id(ref)
             if not resuelto:
-                return None, "No pude resolver ese canal de YouTube. Prueba con el link del canal (youtube.com/channel/UC…)."
+                return None, "No pude resolver ese canal de YouTube. Prueba con el link de un VÍDEO del canal, el link youtube.com/@canal o el ID de canal (UC…)."
             ref = resuelto
     cfg = integraciones_db.setdefault(str(guild.id), {"feeds": []})
     feed_id = max((f.get("id", 0) for f in cfg.get("feeds", [])), default=0) + 1
@@ -5960,8 +6033,6 @@ async def integraciones(ctx, *, args: str = ""):
             canal = await commands.TextChannelConverter().convert(ctx, tokens[3])
         except (commands.ChannelNotFound, commands.BadArgument):
             return await ctx.send("❌ Canal no encontrado.")
-        if tipo == "twitch" and not (os.environ.get("TWITCH_CLIENT_ID", "").strip() and os.environ.get("TWITCH_CLIENT_SECRET", "").strip()):
-            return await ctx.send("❌ Twitch requiere las variables `TWITCH_CLIENT_ID` y `TWITCH_CLIENT_SECRET` en el hosting. Los demás tipos no necesitan credenciales.")
         feed_id, err = await _integracion_agregar(ctx.guild, tipo, ref, canal)
         if err:
             return await ctx.send(f"❌ {err}")
@@ -8176,8 +8247,6 @@ async def slash_integraciones_list(interaction: discord.Interaction):
 async def slash_integraciones_add(interaction: discord.Interaction, tipo: app_commands.Choice[str], identificador: str, canal: discord.TextChannel):
     if not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
-    if tipo.value == "twitch" and not (os.environ.get("TWITCH_CLIENT_ID", "").strip() and os.environ.get("TWITCH_CLIENT_SECRET", "").strip()):
-        return await interaction.response.send_message("❌ Twitch requiere las variables `TWITCH_CLIENT_ID` y `TWITCH_CLIENT_SECRET` en el hosting.", ephemeral=True)
     feed_id, err = await _integracion_agregar(interaction.guild, tipo.value, identificador, canal)
     if err:
         return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
@@ -12268,8 +12337,6 @@ async def _dash_integraciones_set(request):
         canal = guild.get_channel(int(cid)) if cid.isdigit() else None
         if canal is None:
             return dash_web.json_response({"error": "Canal no encontrado en este servidor."}, status=400)
-        if tipo == "twitch" and not (os.environ.get("TWITCH_CLIENT_ID", "").strip() and os.environ.get("TWITCH_CLIENT_SECRET", "").strip()):
-            return dash_web.json_response({"error": "Twitch requiere las variables TWITCH_CLIENT_ID y TWITCH_CLIENT_SECRET en el hosting."}, status=400)
         feed_id, err_feed = await _integracion_agregar(guild, tipo, ref, canal)
         if err_feed:
             return dash_web.json_response({"error": err_feed}, status=400)
