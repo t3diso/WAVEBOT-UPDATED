@@ -12218,6 +12218,9 @@ async def _dash_integraciones_test(request):
             return dash_web.json_response({"error": f"Error al enviar mensaje: {e}"}, status=500)
 
     return dash_web.json_response({"ok": True})
+
+
+async def _dash_leave(request):
     """POST /api/guild/<id>/leave — el bot abandona ese servidor (solo owner del bot)."""
     if not _dash_es_bot_owner(request):
         return dash_web.json_response({"error": "Solo el owner del bot puede hacer esto."}, status=403)
