@@ -10,6 +10,7 @@ import shutil
 import sys
 import time
 import urllib.parse
+import xml.etree.ElementTree as ET
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -101,12 +102,27 @@ AUTOMOD_LINK_REGEX = re.compile(r"(https?://|www\.)\S+", re.IGNORECASE)
 TICKETS_PATH = ruta_datos("tickets.json")
 tickets_db = {}     # guild_id (str) -> config (ver _tickets_default)
 
+# Mensajes de welcome/goodbye/boost (DESACTIVADOS por defecto)
+MENSAJES_PATH = ruta_datos("mensajes.json")
+mensajes_db = {}    # guild_id (str) -> {"welcome": cfg, "goodbye": cfg, "boost": cfg}
+
+# Integraciones (feeds: youtube, reddit, github, steam, rss, twitch)
+INTEGRACIONES_PATH = ruta_datos("integraciones.json")
+integraciones_db = {}   # guild_id (str) -> {"feeds": [...]}
+
+# Analytics: contadores diarios por servidor
+ANALYTICS_PATH = ruta_datos("analytics.json")
+analytics_db = {}       # guild_id (str) -> {"dias": {"AAAA-MM-DD": {campo: n}}}
+_analytics_sucio = False
+BANS_RECIENTES = {}     # user_id (str) -> timestamp (para que goodbye no salga en baneos)
+
 # Archivos de datos que el bot escribe en runtime (para migrar al volumen la primera vez).
 ARCHIVOS_DATOS = [
     "linkban_canal.json", "giveaways.json", "warns.json", "logs_channels.json",
     "honeypots.json", "xp_data.json", "level_roles.json", "autoroles.json",
     "prefixes.json", "reminders.json", "starboard.json", "antiraid.json",
     "economy.json", "economy_shop.json", "automod.json", "tickets.json",
+    "mensajes.json", "integraciones.json", "analytics.json",
 ]
 
 
@@ -850,6 +866,76 @@ def guardar_tickets():
         print(f"Error guardando tickets.json: {e}")
 
 
+def cargar_mensajes():
+    global mensajes_db
+    mensajes_db = {}
+    if os.path.exists(MENSAJES_PATH):
+        try:
+            with open(MENSAJES_PATH, "r", encoding="utf-8") as f:
+                mensajes_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            mensajes_db = {}
+    for cfg in mensajes_db.values():
+        for tipo in ("welcome", "goodbye", "boost"):
+            base = _mensaje_default(tipo)
+            actual = cfg.setdefault(tipo, base)
+            for clave, valor in base.items():
+                actual.setdefault(clave, valor)
+    print(f"Mensajes (welcome/goodbye/boost) cargados: {len(mensajes_db)} servidores.")
+
+
+def guardar_mensajes():
+    try:
+        with open(MENSAJES_PATH, "w", encoding="utf-8") as f:
+            json.dump(mensajes_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando mensajes.json: {e}")
+
+
+def cargar_integraciones():
+    global integraciones_db
+    integraciones_db = {}
+    if os.path.exists(INTEGRACIONES_PATH):
+        try:
+            with open(INTEGRACIONES_PATH, "r", encoding="utf-8") as f:
+                integraciones_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            integraciones_db = {}
+    for cfg in integraciones_db.values():
+        cfg.setdefault("feeds", [])
+    print(f"Integraciones cargadas: {sum(len(c.get('feeds', [])) for c in integraciones_db.values())} feeds.")
+
+
+def guardar_integraciones():
+    try:
+        with open(INTEGRACIONES_PATH, "w", encoding="utf-8") as f:
+            json.dump(integraciones_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando integraciones.json: {e}")
+
+
+def cargar_analytics():
+    global analytics_db
+    analytics_db = {}
+    if os.path.exists(ANALYTICS_PATH):
+        try:
+            with open(ANALYTICS_PATH, "r", encoding="utf-8") as f:
+                analytics_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            analytics_db = {}
+    print(f"Analytics cargados: {len(analytics_db)} servidores.")
+
+
+def guardar_analytics():
+    global _analytics_sucio
+    try:
+        with open(ANALYTICS_PATH, "w", encoding="utf-8") as f:
+            json.dump(analytics_db, f, indent=2, ensure_ascii=False)
+        _analytics_sucio = False
+    except OSError as e:
+        print(f"Error guardando analytics.json: {e}")
+
+
 def cargar_dashboard():
     """Carga dashboard.json (opcional): enabled, host, port, token."""
     global dashboard_config
@@ -925,6 +1011,11 @@ async def on_message(message: discord.Message):
     # AutoMod: filtrar palabras/invites/links/spam antes de procesar el mensaje como comando.
     if await _automod_check(message):
         return
+
+    # Analytics: contadores de mensajes y comandos del día.
+    _analytics_punto(message.guild, "mensajes")
+    if message.content and any(message.content.startswith(px) for px in _get_prefixes_sync(message.guild.id)):
+        _analytics_punto(message.guild, "comandos")
 
     # Cachear para on_message_delete (sólo últimos 1000 para limitar RAM).
     if message.content or message.attachments:
@@ -1185,6 +1276,9 @@ async def on_ready():
     cargar_antiraid()
     cargar_automod()
     cargar_tickets()
+    cargar_mensajes()
+    cargar_integraciones()
+    cargar_analytics()
     cargar_dashboard()
     cargar_sesiones_dash()
     # Registrar vistas persistentes de tickets (botones que sobreviven reinicios).
@@ -1227,6 +1321,8 @@ async def on_ready():
     bot.loop.create_task(_reanudar_giveaways())
     bot.loop.create_task(_reanudar_reminders())
     bot.loop.create_task(_tarea_prestamos())
+    bot.loop.create_task(_tarea_analytics())
+    bot.loop.create_task(_tarea_integraciones())
 
 
 @bot.command(name="sync")
@@ -1420,6 +1516,7 @@ async def mute(ctx, *, args: str = ""):
     try:
         hasta = discord.utils.utcnow() + datetime.timedelta(seconds=segundos)
         await miembro.timeout(hasta, reason=f"{ctx.author} (ID {ctx.author.id}): {motivo}")
+        _analytics_punto(ctx.guild, "mutes")
     except discord.Forbidden:
         return await ctx.send("❌ No tengo permisos para silenciar a ese usuario.")
     except discord.HTTPException as e:
@@ -1593,6 +1690,7 @@ async def warn(ctx, *, args: str = ""):
 
     clave = str(usuario.id)
     lista = warns_db.setdefault(clave, [])
+    _analytics_punto(ctx.guild, "warns")
 
     numero = len(lista) + 1
     entrada = {
@@ -4817,6 +4915,8 @@ async def ayuda(ctx, *, comando: str = None):
         f"`{p}help antiraid` :: Antiraid\n"
         f"`{p}help automod` :: Automod\n"
         f"`{p}help tickets` :: Tickets de soporte\n"
+        f"`{p}help mensajes` :: Mensajes (welcome/goodbye/boost)\n"
+        f"`{p}help integraciones` :: Integraciones y stats\n"
         f"`{p}help roles` :: Roles\n"
         f"`{p}help niveles` :: Niveles / XP\n"
         f"`{p}help economia` :: Economía\n"
@@ -4837,6 +4937,8 @@ async def ayuda(ctx, *, comando: str = None):
                 discord.SelectOption(label="Antiraid", value="antiraid", description="Antiraid on/off, set, action, punishnew, minage, raidmode"),
                 discord.SelectOption(label="Automod", value="automod", description="Filtro de palabras, invites, links y spam"),
                 discord.SelectOption(label="Tickets", value="tickets", description="Paneles, soporte, claim, transcripts, límite"),
+                discord.SelectOption(label="Mensajes", value="mensajes", description="Welcome, goodbye y boost configurables"),
+                discord.SelectOption(label="Integraciones", value="integraciones", description="YouTube, Reddit, GitHub, Steam, RSS, Twitch y stats"),
                 discord.SelectOption(label="Roles", value="roles", description="Roleadd, roleremove, rolehuman, autorole, etc."),
                 discord.SelectOption(label="Niveles / XP", value="niveles", description="Rank, level, leaderboard, level-config, etc."),
                 discord.SelectOption(label="Economía", value="economia", description="Balance, work, crime, rob, tienda, juegos, etc."),
@@ -4895,8 +4997,7 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}automod excanal <add|remove> (#canal)` :: Canales exentos\n\n"
                     f"Desactivado por defecto • El staff nunca es filtrado"
                 ), color=discord.Color.green()),
-                "tickets": discord.Embed(title="Tickets de soporte", description=(
-                    f"`{p}tickets` :: Ver configuración\n"
+                "tickets": discord.Embed(title="Tickets de soporte", description=(                    f"`{p}tickets` :: Ver configuración\n"
                     f"`{p}tickets on/off` :: Activar / desactivar\n"
                     f"`{p}tickets soporte <add|remove> (@rol)` :: Roles de soporte\n"
                     f"`{p}tickets categoria <#cat|none>` :: Dónde se crean\n"
@@ -4909,6 +5010,25 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}tickets cerrar|claim|add|remove` :: Dentro de un ticket\n\n"
                     f"Paneles 100% personalizables (color, imagen, miniatura, autor, footer, botón)"
                 ), color=discord.Color.blurple()),
+                "mensajes": discord.Embed(title="Mensajes (welcome / goodbye / boost)", description=(
+                    f"`{p}welcome` :: Config del mensaje de bienvenida\n"
+                    f"`{p}welcome on/off` :: Activar / desactivar\n"
+                    f"`{p}welcome canal <#canal|none>` :: Canal destino\n"
+                    f"`{p}welcome titulo|descripcion|footer|contenido (texto)` :: Textos\n"
+                    f"`{p}welcome color <hex|none>` · `{p}welcome imagen|miniatura <URL|none>` :: Estilo\n"
+                    f"`{p}welcome test` :: Enviar prueba · `{p}welcome variables` :: Ver variables\n"
+                    f"`.goodbye` y `.boost` funcionan IGUAL (para despedidas y boosts)\n\n"
+                    f"Variables: {{usuario}} {{mencion}} {{servidor}} {{miembros}} {{avatar}} • Desactivados por defecto"
+                ), color=discord.Color.green()),
+                "integraciones": discord.Embed(title="Integraciones y estadísticas", description=(
+                    f"`{p}integraciones` :: Ver integraciones\n"
+                    f"`{p}integraciones add <tipo> <ref> <#canal>` :: Añadir\n"
+                    f"`{p}integraciones remove (id)` :: Eliminar\n"
+                    f"`{p}integraciones on|off (id)` :: Pausar / reactivar\n"
+                    f"`{p}stats` :: Estadísticas del servidor (actividad y moderación)\n\n"
+                    f"Tipos: youtube · reddit · github · steam · rss · twitch\n"
+                    f"Novedades cada 3 min · Stats con 30 días de historial"
+                ), color=discord.Color.orange()),
                 "roles": discord.Embed(title="Roles", description=(
                     f"`{p}roleadd (@usuario) (@rol)` :: Otorga rol\n"
                     f"`{p}roleremove (@usuario) (@rol)` :: Quita rol\n"
@@ -5085,15 +5205,640 @@ async def prefixremove_error(ctx, error):
 
 
 # ============================================================
+#  MENSAJES DE WELCOME / GOODBYE / BOOST (DESACTIVADOS por defecto)
+# ============================================================
+
+MENSAJE_TIPOS = ("welcome", "goodbye", "boost")
+MENSAJE_CAMPOS = ("titulo", "descripcion", "footer", "color", "imagen", "miniatura", "contenido")
+
+
+def _mensaje_default(tipo):
+    if tipo == "goodbye":
+        return {
+            "enabled": False, "canal": None,
+            "titulo": "👋 ¡Hasta luego!",
+            "descripcion": "**{usuario}** ha salido del servidor. Nos quedamos **{miembros}** miembros.",
+            "color": "f23f43", "imagen": None, "miniatura": "{avatar}", "footer": None, "contenido": None,
+        }
+    if tipo == "boost":
+        return {
+            "enabled": False, "canal": None,
+            "titulo": "🚀 ¡Nuevo boost!",
+            "descripcion": "**{mencion}** ha boosteado **{servidor}**! 🎉 ¡Gracias por el apoyo!",
+            "color": "ff73fa", "imagen": None, "miniatura": "{avatar}", "footer": None, "contenido": None,
+        }
+    return {
+        "enabled": False, "canal": None,
+        "titulo": "👋 ¡Bienvenid@!",
+        "descripcion": "Bienvenid@ a **{servidor}**, {mencion}! Ya somos **{miembros}** miembros.",
+        "color": "23a55a", "imagen": None, "miniatura": "{avatar}", "footer": None, "contenido": None,
+    }
+
+
+def _mensaje_cfg(guild_id, tipo):
+    """Devuelve (creándola si no existe) la config de un mensaje por servidor."""
+    gid = str(guild_id)
+    cfg_g = mensajes_db.setdefault(gid, {})
+    cfg = cfg_g.setdefault(tipo, _mensaje_default(tipo))
+    base = _mensaje_default(tipo)
+    for clave, valor in base.items():
+        cfg.setdefault(clave, valor)
+    return cfg
+
+
+def _mensaje_variables(member):
+    guild = member.guild
+    return {
+        "{usuario}": member.name,
+        "{mencion}": member.mention,
+        "{servidor}": guild.name,
+        "{miembros}": str(guild.member_count if guild.member_count is not None else len(guild.members)),
+        "{avatar}": str(member.display_avatar.url),
+    }
+
+
+def _mensaje_render(cfg, member):
+    """Construye (contenido, embed) de un mensaje con las variables aplicadas."""
+    vars_ = _mensaje_variables(member)
+
+    def r(texto):
+        if not texto:
+            return None
+        for clave, valor in vars_.items():
+            texto = texto.replace(clave, valor)
+        return texto
+
+    color = None
+    if cfg.get("color"):
+        try:
+            color = discord.Color(int(str(cfg["color"]).lstrip("#"), 16))
+        except ValueError:
+            color = None
+    embed = discord.Embed(
+        title=r(cfg.get("titulo")),
+        description=r(cfg.get("descripcion")),
+        color=color or discord.Color.blurple(),
+        timestamp=discord.utils.utcnow(),
+    )
+    miniatura = r(cfg.get("miniatura"))
+    if miniatura and _url_valida(miniatura):
+        embed.set_thumbnail(url=miniatura)
+    imagen = r(cfg.get("imagen"))
+    if imagen and _url_valida(imagen):
+        embed.set_image(url=imagen)
+    footer = r(cfg.get("footer"))
+    if footer:
+        embed.set_footer(text=footer[:2048])
+    return r(cfg.get("contenido")), embed
+
+
+async def _mensaje_enviar(guild, member, tipo):
+    """Envía el mensaje (welcome/goodbye/boost) al canal configurado, si está activado."""
+    cfg_g = mensajes_db.get(str(guild.id)) or {}
+    cfg = cfg_g.get(tipo) or {}
+    if not cfg.get("enabled") or not cfg.get("canal"):
+        return
+    canal = guild.get_channel(int(cfg["canal"])) if str(cfg.get("canal", "")).isdigit() else None
+    if canal is None:
+        return
+    contenido, embed = _mensaje_render(cfg, member)
+    try:
+        await canal.send(content=contenido or None, embed=embed)
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+
+def _mensaje_set_campo(guild_id, tipo, campo, valor):
+    """Valida y aplica un campo de un mensaje. Devuelve (ok, mensaje)."""
+    cfg = _mensaje_cfg(guild_id, tipo)
+    campo = str(campo or "").lower().strip()
+    texto = str(valor or "").strip()
+    if campo not in MENSAJE_CAMPOS:
+        return False, f"Campo desconocido: `{campo}`. Válidos: {', '.join(MENSAJE_CAMPOS)}"
+    if campo == "color":
+        limpiar = texto.lower() in ("none", "ninguno", "quitar", "reset")
+        if limpiar or not texto:
+            cfg["color"] = None
+        else:
+            hexa = texto.lstrip("#")
+            if len(hexa) == 6 and all(c in "0123456789abcdef" for c in hexa.lower()):
+                cfg["color"] = hexa.lower()
+            else:
+                return False, "Color inválido: usa hex, ej: `23a55a` o `#ff00aa`."
+    elif campo in ("imagen", "miniatura"):
+        cfg[campo] = texto if _url_valida(texto) else None
+    elif campo == "titulo":
+        cfg["titulo"] = texto[:256] if texto else _mensaje_default(tipo)["titulo"]
+    elif campo == "descripcion":
+        cfg["descripcion"] = texto[:4096] if texto else _mensaje_default(tipo)["descripcion"]
+    elif campo == "footer":
+        cfg["footer"] = texto[:2048] or None
+    elif campo == "contenido":
+        cfg["contenido"] = texto[:2000] or None
+    guardar_mensajes()
+    return True, f"✅ {tipo} · {campo} actualizado."
+
+
+def _mensaje_config_embed(guild, tipo):
+    cfg = _mensaje_cfg(guild.id, tipo)
+    nombres = {"welcome": "👋 Welcome", "goodbye": "👋 Goodbye", "boost": "🚀 Boost"}
+    embed = discord.Embed(
+        title=f"{nombres.get(tipo, tipo)} · configuración",
+        color=discord.Color.green() if cfg.get("enabled") else discord.Color.dark_grey(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Estado", value="🟢 Activado" if cfg.get("enabled") else "🔴 Desactivado (por defecto)", inline=True)
+    canal = guild.get_channel(int(cfg["canal"])) if cfg.get("canal") and str(cfg.get("canal", "")).isdigit() else None
+    embed.add_field(name="Canal", value=canal.mention if canal else "Sin configurar", inline=True)
+    embed.add_field(name="Título", value=cfg.get("titulo") or "—", inline=False)
+    embed.add_field(name="Descripción", value=(cfg.get("descripcion") or "—")[:1024], inline=False)
+    embed.add_field(name="Contenido extra", value=cfg.get("contenido") or "—", inline=False)
+    embed.add_field(name="Footer", value=cfg.get("footer") or "—", inline=False)
+    embed.add_field(name="Color", value=f"#{cfg['color']}" if cfg.get("color") else "Por defecto", inline=True)
+    embed.add_field(name="Imagen", value=(cfg.get("imagen") or "—")[:60], inline=True)
+    embed.add_field(name="Miniatura", value=(cfg.get("miniatura") or "—")[:60], inline=True)
+    embed.set_footer(text="Variables: {usuario} {mencion} {servidor} {miembros} {avatar}")
+    return embed
+
+
+async def _mensaje_comando(ctx, tipo, args):
+    cfg = _mensaje_cfg(ctx.guild.id, tipo)
+    tokens = args.split()
+    sub = tokens[0].lower() if tokens else ""
+    p = ctx.prefix if ctx.prefix and not MENTION_REGEX.match(ctx.prefix) else DEFAULT_PREFIX
+
+    if sub in ("", "config", "status"):
+        return await ctx.send(embed=_mensaje_config_embed(ctx.guild, tipo))
+
+    if sub == "on":
+        cfg["enabled"] = True
+        guardar_mensajes()
+        return await ctx.send(f"✅ Mensaje de **{tipo}** activado. Configura el canal con `{p}{tipo} canal #canal`.")
+
+    if sub == "off":
+        cfg["enabled"] = False
+        guardar_mensajes()
+        return await ctx.send(f"🔴 Mensaje de **{tipo}** desactivado (estado por defecto).")
+
+    if sub == "canal":
+        if len(tokens) < 2:
+            return await ctx.send(f"❌ Uso correcto: `{p}{tipo} canal <#canal>` o `{p}{tipo} canal none`")
+        if tokens[1].lower() in ("none", "ninguno", "quitar"):
+            cfg["canal"] = None
+            guardar_mensajes()
+            return await ctx.send("✅ Canal eliminado.")
+        try:
+            canal = await commands.TextChannelConverter().convert(ctx, tokens[1])
+        except (commands.ChannelNotFound, commands.BadArgument):
+            return await ctx.send("❌ Canal no encontrado.")
+        cfg["canal"] = str(canal.id)
+        guardar_mensajes()
+        return await ctx.send(f"✅ Canal configurado: {canal.mention}.")
+
+    if sub == "test":
+        if not cfg.get("canal"):
+            return await ctx.send(f"❌ Configura primero el canal: `{p}{tipo} canal #canal`")
+        await _mensaje_enviar(ctx.guild, ctx.author, tipo)
+        return await ctx.send("📨 Mensaje de prueba enviado con TUS datos como usuario.")
+
+    if sub in ("variables", "vars"):
+        return await ctx.send(
+            "📊 Variables disponibles (título, descripción, footer, contenido, imagen y miniatura):\n"
+            "`{usuario}` · `{mencion}` · `{servidor}` · `{miembros}` · `{avatar}`"
+        )
+
+    if sub in MENSAJE_CAMPOS:
+        valor = " ".join(tokens[1:]).strip()
+        ok, msg = _mensaje_set_campo(ctx.guild.id, tipo, sub, valor)
+        return await ctx.send(msg if ok else f"❌ {msg}")
+
+    return await ctx.send(
+        "❌ Subcomando desconocido. Usa:\n"
+        f"`{p}{tipo}` :: Ver configuración\n"
+        f"`{p}{tipo} on|off` :: Activar / desactivar\n"
+        f"`{p}{tipo} canal <#canal|none>` :: Canal del mensaje\n"
+        f"`{p}{tipo} titulo|descripcion|footer|contenido <texto>` :: Textos\n"
+        f"`{p}{tipo} color <hex|none>` · `{p}{tipo} imagen|miniatura <URL|none>` :: Estilo\n"
+        f"`{p}{tipo} test` :: Enviar mensaje de prueba\n"
+        f"`{p}{tipo} variables` :: Ver variables"
+    )
+
+
+@bot.command(name="welcome", aliases=["bienvenida"])
+@commands.has_permissions(manage_guild=True)
+async def welcome(ctx, *, args: str = ""):
+    """Configura el mensaje de bienvenida. Uso: .welcome [on|off|canal|titulo|descripcion|color|imagen|miniatura|footer|contenido|test|variables]"""
+    await _mensaje_comando(ctx, "welcome", args)
+
+
+@bot.command(name="goodbye", aliases=["despedida", "salida"])
+@commands.has_permissions(manage_guild=True)
+async def goodbye(ctx, *, args: str = ""):
+    """Configura el mensaje de despedida. Uso: .goodbye [on|off|canal|titulo|descripcion|color|imagen|miniatura|footer|contenido|test|variables]"""
+    await _mensaje_comando(ctx, "goodbye", args)
+
+
+@bot.command(name="boost", aliases=["boostmsg"])
+@commands.has_permissions(manage_guild=True)
+async def boost(ctx, *, args: str = ""):
+    """Configura el mensaje al boostear el servidor. Uso: .boost [on|off|canal|titulo|descripcion|color|imagen|miniatura|footer|contenido|test|variables]"""
+    await _mensaje_comando(ctx, "boost", args)
+
+
+@welcome.error
+async def welcome_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Server.")
+
+
+@goodbye.error
+async def goodbye_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Server.")
+
+
+@boost.error
+async def boost_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Server.")
+
+
+# ============================================================
+#  ANALYTICS (contadores diarios por servidor)
+# ============================================================
+
+ANALYTICS_CAMPOS = ("mensajes", "comandos", "joins", "salidas", "kicks", "bans", "warns", "mutes", "boosts")
+
+
+def _analytics_punto(guild, campo, n=1):
+    """Suma n a un contador del día actual (en memoria; se guarda cada 60s)."""
+    global _analytics_sucio
+    gid = str(guild.id)
+    hoy = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    cfg = analytics_db.setdefault(gid, {"dias": {}})
+    dias = cfg.setdefault("dias", {})
+    dia = dias.setdefault(hoy, {c: 0 for c in ANALYTICS_CAMPOS})
+    dia[campo] = int(dia.get(campo, 0)) + n
+    _analytics_sucio = True
+
+
+def _analytics_resumen(gid, dias_count):
+    """Suma los contadores de los últimos N días. Devuelve dict campo -> total."""
+    gid = str(gid)
+    cfg = analytics_db.get(gid) or {}
+    dias = cfg.get("dias", {}) or {}
+    if not dias:
+        return {c: 0 for c in ANALYTICS_CAMPOS}
+    fechas = sorted(dias.keys())[-dias_count:]
+    resumen = {c: 0 for c in ANALYTICS_CAMPOS}
+    for fecha in fechas:
+        for c in ANALYTICS_CAMPOS:
+            resumen[c] += int((dias.get(fecha) or {}).get(c, 0))
+    return resumen
+
+
+async def _tarea_analytics():
+    """Guarda analytics en disco cada 60s (limita escrituras) y poda días viejos."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            if _analytics_sucio:
+                limite = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+                for cfg in analytics_db.values():
+                    dias = cfg.setdefault("dias", {})
+                    for fecha in [f for f in dias if f < limite]:
+                        dias.pop(fecha, None)
+                guardar_analytics()
+        except Exception as e:
+            print(f"Error guardando analytics: {e}")
+        await asyncio.sleep(60)
+
+
+@bot.command(name="stats", aliases=["estadisticas"])
+@commands.guild_only()
+async def stats(ctx, *, args: str = ""):
+    """Estadísticas del servidor (mensajes, comandos, actividad, moderación). Uso: .stats"""
+    hoy = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    dia_actual = ((analytics_db.get(str(ctx.guild.id)) or {}).get("dias", {}) or {}).get(hoy, {})
+    semana = _analytics_resumen(ctx.guild.id, 7)
+    mes = _analytics_resumen(ctx.guild.id, 30)
+    embed = discord.Embed(
+        title=f"📊 Estadísticas de {ctx.guild.name}",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(
+        name="📅 Hoy",
+        value="\n".join(f"• {c.capitalize()}: **{dia_actual.get(c, 0):,}**" for c in ("mensajes", "comandos", "joins", "salidas")),
+        inline=True,
+    )
+    embed.add_field(
+        name="🧹 Moderación (hoy)",
+        value="\n".join(f"• {c.capitalize()}: **{dia_actual.get(c, 0):,}**" for c in ("bans", "kicks", "mutes", "warns")),
+        inline=True,
+    )
+    embed.add_field(
+        name="🗓️ Últimos 7 días",
+        value="\n".join(f"• {c.capitalize()}: **{semana[c]:,}**" for c in ("mensajes", "comandos", "joins", "salidas", "warns")),
+        inline=False,
+    )
+    embed.add_field(
+        name="📆 Últimos 30 días",
+        value=f"💬 Mensajes: **{mes['mensajes']:,}** · ⌨️ Comandos: **{mes['comandos']:,}** · 🎉 Joins: **{mes['joins']:,}** · 🚀 Boosts: **{mes['boosts']:,}**",
+        inline=False,
+    )
+    embed.set_footer(text="Gráficas completas en el dashboard web (.dashboard)")
+    await ctx.send(embed=embed)
+
+
+# ============================================================
+#  INTEGRACIONES (feeds: youtube, reddit, github, steam, rss y twitch)
+# ============================================================
+
+INTEGRACION_TIPOS = {
+    "youtube": {"emoji": "📺", "color": 0xff0000, "url": lambda ref: f"https://www.youtube.com/feeds/videos.xml?channel_id={ref}",
+                "ayuda": "ID de canal (empieza por UC…)"},
+    "reddit": {"emoji": "🟠", "color": 0xff4500, "url": lambda ref: f"https://www.reddit.com/r/{ref}/new/.rss",
+               "ayuda": "nombre del subreddit (sin r/)"},
+    "github": {"emoji": "🐙", "color": 0x24292e, "url": lambda ref: f"https://github.com/{ref}/releases.atom",
+               "ayuda": "usuario/repositorio"},
+    "steam": {"emoji": "🎮", "color": 0x66c0f4, "url": lambda ref: f"https://store.steampowered.com/feeds/news/app/{ref}/",
+              "ayuda": "AppID del juego (ej: 730 para CS2)"},
+    "rss": {"emoji": "📰", "color": 0x5865f2, "url": lambda ref: ref, "ayuda": "URL completa del feed RSS/Atom"},
+    "twitch": {"emoji": "🟣", "color": 0x9146ff, "url": None, "ayuda": "usuario del streamer (requiere TWITCH_CLIENT_ID y TWITCH_CLIENT_SECRET)"},
+}
+TWITCH_TOKEN = {"token": "", "expira": 0.0}
+
+
+def _feed_parsear(xml_text):
+    """Extrae items de un feed RSS 2.0 o Atom (título, enlace, guid)."""
+    try:
+        raiz = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    def loc(t):
+        return t.split("}")[-1]
+    items = []
+    for el in raiz.iter():
+        if loc(el.tag) not in ("item", "entry"):
+            continue
+        it = {"titulo": "", "enlace": "", "guid": ""}
+        for sub in el:
+            sl = loc(sub.tag)
+            if sl == "title":
+                it["titulo"] = (sub.text or "").strip()
+            elif sl == "link":
+                it["enlace"] = sub.get("href") or (sub.text or "").strip()
+            elif sl in ("guid", "id"):
+                it["guid"] = (sub.text or "").strip()
+        if not it["guid"]:
+            it["guid"] = it["enlace"] or it["titulo"]
+        items.append(it)
+    return items[:10]
+
+
+async def _twitch_token_obtener():
+    global TWITCH_TOKEN
+    if TWITCH_TOKEN["token"] and TWITCH_TOKEN["expira"] > time.time() + 60:
+        return TWITCH_TOKEN["token"]
+    cid = os.environ.get("TWITCH_CLIENT_ID", "").strip()
+    csec = os.environ.get("TWITCH_CLIENT_SECRET", "").strip()
+    if not cid or not csec:
+        return None
+    try:
+        async with aiohttp.ClientSession() as ses:
+            async with ses.post(
+                "https://id.twitch.tv/oauth2/token",
+                params={"client_id": cid, "client_secret": csec, "grant_type": "client_credentials"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json()
+    except Exception:
+        return None
+    TWITCH_TOKEN = {"token": data.get("access_token", ""), "expira": time.time() + data.get("expires_in", 3600)}
+    return TWITCH_TOKEN["token"]
+
+
+async def _integracion_nuevos(feed, gid):
+    """Comprueba un feed. Devuelve lista de novedades [{titulo, enlace}] (máx 3 por tanda)."""
+    if feed.get("tipo") == "twitch":
+        token = await _twitch_token_obtener()
+        if not token:
+            return []
+        cid = os.environ.get("TWITCH_CLIENT_ID", "").strip()
+        headers = {"Client-ID": cid, "Authorization": f"Bearer {token}"}
+        try:
+            async with aiohttp.ClientSession() as ses:
+                async with ses.get(
+                    f"https://api.twitch.tv/helix/streams?user_login={urllib.parse.quote(str(feed.get('ref', '')))}",
+                    headers=headers, timeout=aiohttp.ClientTimeout(total=10),
+                ) as r:
+                    if r.status != 200:
+                        return []
+                    data = await r.json()
+        except Exception:
+            return []
+        en_vivo = bool(data.get("data"))
+        previo = feed.get("last") or "offline"
+        feed["last"] = "live" if en_vivo else "offline"
+        if en_vivo and previo != "live":
+            s = data["data"][0]
+            return [{"titulo": f"🔴 {s.get('user_name', feed.get('ref'))} está EN DIRECTO: {s.get('title', '')}", "enlace": f"https://twitch.tv/{s.get('user_login', feed.get('ref'))}"}]
+        return []
+    meta = INTEGRACION_TIPOS.get(feed.get("tipo"))
+    if meta is None or not meta["url"]:
+        return []
+    try:
+        async with aiohttp.ClientSession() as ses:
+            async with ses.get(meta["url"](feed.get("ref", "")), timeout=aiohttp.ClientTimeout(total=12),
+                               headers={"User-Agent": "WaveBot/1.0"}) as r:
+                if r.status != 200:
+                    return []
+                xml_text = await r.text()
+    except Exception:
+        return []
+    items = _feed_parsear(xml_text)
+    if not items:
+        return []
+    if not feed.get("last"):
+        feed["last"] = items[0]["guid"]  # primera sincronización: no spamear historial
+        return []
+    nuevos = []
+    for it in items:
+        if it["guid"] == feed.get("last"):
+            break
+        nuevos.append(it)
+    nuevos = nuevos[:3][::-1]
+    if items[0]["guid"] != feed.get("last"):
+        feed["last"] = items[0]["guid"]
+    return nuevos
+
+
+async def _tarea_integraciones():
+    """Revisa los feeds cada 3 minutos y anuncia novedades en sus canales."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            hubo_cambios = False
+            for gid, cfg in list(integraciones_db.items()):
+                for feed in cfg.get("feeds", []):
+                    if not feed.get("enabled"):
+                        continue
+                    try:
+                        nuevos = await _integracion_nuevos(feed, gid)
+                    except Exception:
+                        nuevos = []
+                    hubo_cambios = True
+                    guild = bot.get_guild(int(gid)) if str(gid).isdigit() else None
+                    if nuevos and guild is not None:
+                        meta = INTEGRACION_TIPOS.get(feed.get("tipo"), INTEGRACION_TIPOS["rss"])
+                        canal = guild.get_channel(int(feed["canal"])) if str(feed.get("canal", "")).isdigit() else None
+                        if canal is not None:
+                            for it in nuevos:
+                                embed = discord.Embed(
+                                    title=(it.get("titulo") or "Novedad")[:256],
+                                    url=it.get("enlace") or None,
+                                    color=discord.Color(meta["color"]),
+                                    timestamp=discord.utils.utcnow(),
+                                )
+                                embed.set_footer(text=f"{meta['emoji']} {feed.get('tipo')} · {feed.get('ref')}"[:2048])
+                                try:
+                                    await canal.send(embed=embed)
+                                except (discord.Forbidden, discord.HTTPException):
+                                    pass
+            if hubo_cambios:
+                guardar_integraciones()
+        except Exception as e:
+            print(f"Error en la tarea de integraciones: {e}")
+        await asyncio.sleep(180)
+
+
+def _integracion_agregar(guild, tipo, ref, canal):
+    """Registra un feed nuevo. Devuelve (id | None, error)."""
+    if tipo not in INTEGRACION_TIPOS:
+        return None, f"Tipo inválido. Usa: {', '.join(INTEGRACION_TIPOS)}"
+    ref = str(ref or "").strip()
+    if not ref:
+        return None, "Debes indicar el identificador del feed."
+    if tipo == "rss" and not ref.startswith(("http://", "https://")):
+        return None, "Para RSS la referencia debe ser una URL completa (http/https)."
+    cfg = integraciones_db.setdefault(str(guild.id), {"feeds": []})
+    feed_id = max((f.get("id", 0) for f in cfg.get("feeds", [])), default=0) + 1
+    cfg.setdefault("feeds", []).append({
+        "id": feed_id, "tipo": tipo, "ref": ref, "canal": str(canal.id),
+        "enabled": True, "last": "",
+    })
+    guardar_integraciones()
+    return feed_id, None
+
+
+@bot.command(name="integraciones", aliases=["integracion", "feeds"])
+@commands.has_permissions(manage_guild=True)
+async def integraciones(ctx, *, args: str = ""):
+    """
+    Notificaciones automáticas de YouTube, Reddit, GitHub, Steam, RSS y Twitch.
+    Uso: .integraciones [add|remove|on|off]
+    """
+    cfg = integraciones_db.setdefault(str(ctx.guild.id), {"feeds": []})
+    tokens = args.split()
+    sub = tokens[0].lower() if tokens else ""
+    p = ctx.prefix if ctx.prefix and not MENTION_REGEX.match(ctx.prefix) else DEFAULT_PREFIX
+
+    if sub in ("", "list", "lista"):
+        if not cfg.get("feeds"):
+            return await ctx.send(
+                "📭 No tienes integraciones. Añade una con:\n"
+                f"`{p}integraciones add <tipo> <identificador> <#canal>`\n"
+                "Tipos: `youtube` `reddit` `github` `steam` `rss` `twitch`"
+            )
+        embed = discord.Embed(title="🔗 Integraciones", color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+        for f in cfg["feeds"][:10]:
+            meta = INTEGRACION_TIPOS.get(f.get("tipo"), INTEGRACION_TIPOS["rss"])
+            estado = "🟢" if f.get("enabled") else "🔴"
+            embed.add_field(
+                name=f"{meta['emoji']} #{f['id']} · {f.get('tipo')} — {estado}",
+                value=f"<#{f.get('canal')}> · `{f.get('ref')}`",
+                inline=False,
+            )
+        embed.set_footer(text=f"Editar: {p}integraciones <remove|on|off> <id>")
+        return await ctx.send(embed=embed)
+
+    if sub == "add":
+        if len(tokens) < 4:
+            ayudas = "\n".join(f"`{t}`: {m['ayuda']}" for t, m in INTEGRACION_TIPOS.items())
+            return await ctx.send(
+                f"❌ Uso correcto: `{p}integraciones add <tipo> <identificador> <#canal>`\n{ayudas}"
+            )
+        tipo = tokens[1].lower()
+        ref = tokens[2]
+        try:
+            canal = await commands.TextChannelConverter().convert(ctx, tokens[3])
+        except (commands.ChannelNotFound, commands.BadArgument):
+            return await ctx.send("❌ Canal no encontrado.")
+        if tipo == "twitch" and not (os.environ.get("TWITCH_CLIENT_ID", "").strip() and os.environ.get("TWITCH_CLIENT_SECRET", "").strip()):
+            return await ctx.send("❌ Twitch requiere las variables `TWITCH_CLIENT_ID` y `TWITCH_CLIENT_SECRET` en el hosting. Los demás tipos no necesitan credenciales.")
+        feed_id, err = _integracion_agregar(ctx.guild, tipo, ref, canal)
+        if err:
+            return await ctx.send(f"❌ {err}")
+        return await ctx.send(f"✅ Integración **#{feed_id}** creada ({tipo}) → novedades en {canal.mention}.\nLa primera revisión no anuncia historial, solo lo nuevo a partir de ahora.")
+
+    if sub in ("remove", "del", "eliminar"):
+        if len(tokens) < 2:
+            return await ctx.send(f"❌ Uso correcto: `{p}integraciones remove <id>`")
+        try:
+            fid = int(tokens[1])
+        except ValueError:
+            return await ctx.send("❌ ID inválido.")
+        for f in cfg.get("feeds", []):
+            if f.get("id") == fid:
+                cfg["feeds"].remove(f)
+                guardar_integraciones()
+                return await ctx.send(f"✅ Integración #{fid} eliminada.")
+        return await ctx.send(f"❌ No existe la integración #{fid}.")
+
+    if sub in ("on", "off"):
+        if len(tokens) < 2:
+            return await ctx.send(f"❌ Uso correcto: `{p}integraciones <on|off> <id>`")
+        try:
+            fid = int(tokens[1])
+        except ValueError:
+            return await ctx.send("❌ ID inválido.")
+        for f in cfg.get("feeds", []):
+            if f.get("id") == fid:
+                f["enabled"] = sub == "on"
+                guardar_integraciones()
+                return await ctx.send(f"✅ Integración #{fid}: **{'activada' if sub == 'on' else 'desactivada'}**.")
+        return await ctx.send(f"❌ No existe la integración #{fid}.")
+
+    return await ctx.send(
+        "❌ Subcomando desconocido. Usa:\n"
+        f"`{p}integraciones` :: Ver integraciones\n"
+        f"`{p}integraciones add <tipo> <ref> <#canal>` :: Añadir (youtube/reddit/github/steam/rss/twitch)\n"
+        f"`{p}integraciones remove <id>` :: Eliminar\n"
+        f"`{p}integraciones <on|off> <id>` :: Activar / pausar"
+    )
+
+
+@integraciones.error
+async def integraciones_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Necesitas el permiso Manage Server.")
+
+
+# ============================================================
 #  AUTOROLE (evento al unirse un miembro)
 # ============================================================
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    """Antiraid + asignación automática de autoroles cuando alguien se une al servidor."""
-    # Antiraid: si el miembro fue castigado por el sistema, no se le aplican autoroles.
+    """Antiraid + welcome + autoroles al unirse un miembro."""
+    # Antiraid: si el miembro fue castigado por el sistema, no se le aplican autoroles ni welcome.
     if await _antiraid_check(member):
         return
+    _analytics_punto(member.guild, "joins")
+    await _mensaje_enviar(member.guild, member, "welcome")
     gid = str(member.guild.id)
     config = autoroles_db.get(gid)
     if not config:
@@ -5122,7 +5867,9 @@ async def on_member_join(member: discord.Member):
 
 @bot.event
 async def on_member_ban(guild: discord.Guild, user: discord.User):
-    """Log cuando un usuario es baneado del servidor."""
+    """Log + analytics cuando un usuario es baneado del servidor."""
+    BANS_RECIENTES[str(user.id)] = time.time()
+    _analytics_punto(guild, "bans")
     embed = discord.Embed(title="🔨 Miembro baneado", color=discord.Color.red(), timestamp=discord.utils.utcnow())
     embed.add_field(name="Usuario", value=f"{user} (`{user.id}`)", inline=False)
     embed.set_thumbnail(url=user.display_avatar.url)
@@ -5164,7 +5911,8 @@ async def on_member_unban(guild: discord.Guild, user: discord.User):
 
 @bot.event
 async def on_member_remove(member: discord.Member):
-    """Log cuando un miembro sale/kickeado del servidor."""
+    """Log + goodbye + analytics cuando un miembro sale/kickeado del servidor."""
+    _analytics_punto(member.guild, "salidas")
     embed = discord.Embed(title="👋 Miembro salió", color=discord.Color.dark_grey(), timestamp=discord.utils.utcnow())
     embed.add_field(name="Usuario", value=f"{member} (`{member.id}`)", inline=False)
     embed.set_thumbnail(url=member.display_avatar.url)
@@ -5177,15 +5925,23 @@ async def on_member_remove(member: discord.Member):
                 embed.add_field(name="Kickeado por", value=entry.user.mention, inline=True)
                 if entry.reason:
                     embed.add_field(name="Motivo", value=entry.reason, inline=False)
+                _analytics_punto(member.guild, "kicks")
                 break
     except discord.Forbidden:
         pass
     await enviar_logs(member.guild, embed)
+    # Goodbye (salvo que haya sido baneado hace menos de 5 min: eso ya es un ban, no una salida)
+    if time.time() - BANS_RECIENTES.get(str(member.id), 0) > 300:
+        await _mensaje_enviar(member.guild, member, "goodbye")
 
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
-    """Logs de cambios en miembros: apodo, roles, timeout."""
+    """Logs de cambios en miembros: boost, apodo, roles, timeout."""
+    # 🚀 Boost nuevo: de no-premium a premium
+    if before.premium_since is None and after.premium_since is not None:
+        _analytics_punto(after.guild, "boosts")
+        await _mensaje_enviar(after.guild, after, "boost")
     if before.timed_out_until != after.timed_out_until:
         if after.is_timed_out():
             embed = discord.Embed(title="🔇 Miembro silenciado (timeout)", color=discord.Color.dark_grey(), timestamp=discord.utils.utcnow())
@@ -6988,6 +7744,245 @@ async def slash_prestamo_config(interaction: discord.Interaction, campo: app_com
 bot.tree.add_command(prestamo_group)
 
 
+# ============================================================
+#  SLASH: /mensajes /stats /integraciones
+# ============================================================
+
+mensajes_group = app_commands.Group(name="mensajes", description="Mensajes de welcome/goodbye/boost")
+
+
+@mensajes_group.command(name="config", description="Ver la configuración de un mensaje")
+@app_commands.describe(tipo="Qué mensaje ver")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(tipo=[
+    app_commands.Choice(name="welcome", value="welcome"),
+    app_commands.Choice(name="goodbye", value="goodbye"),
+    app_commands.Choice(name="boost", value="boost"),
+])
+async def slash_mensajes_config(interaction: discord.Interaction, tipo: app_commands.Choice[str]):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    await interaction.response.send_message(embed=_mensaje_config_embed(interaction.guild, tipo.value))
+
+
+@mensajes_group.command(name="on", description="Activa un mensaje")
+@app_commands.describe(tipo="Qué mensaje activar")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(tipo=[
+    app_commands.Choice(name="welcome", value="welcome"),
+    app_commands.Choice(name="goodbye", value="goodbye"),
+    app_commands.Choice(name="boost", value="boost"),
+])
+async def slash_mensajes_on(interaction: discord.Interaction, tipo: app_commands.Choice[str]):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _mensaje_cfg(interaction.guild.id, tipo.value)
+    cfg["enabled"] = True
+    guardar_mensajes()
+    await interaction.response.send_message(f"✅ Mensaje de **{tipo.value}** activado. Configura el canal con `/mensajes canal`.")
+
+
+@mensajes_group.command(name="off", description="Desactiva un mensaje (estado por defecto)")
+@app_commands.describe(tipo="Qué mensaje desactivar")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(tipo=[
+    app_commands.Choice(name="welcome", value="welcome"),
+    app_commands.Choice(name="goodbye", value="goodbye"),
+    app_commands.Choice(name="boost", value="boost"),
+])
+async def slash_mensajes_off(interaction: discord.Interaction, tipo: app_commands.Choice[str]):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _mensaje_cfg(interaction.guild.id, tipo.value)
+    cfg["enabled"] = False
+    guardar_mensajes()
+    await interaction.response.send_message(f"🔴 Mensaje de **{tipo.value}** desactivado (estado por defecto).")
+
+
+@mensajes_group.command(name="canal", description="Canal donde se envía el mensaje")
+@app_commands.describe(tipo="Qué mensaje configurar", canal="Canal destino", quitar="True para quitar el canal")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(tipo=[
+    app_commands.Choice(name="welcome", value="welcome"),
+    app_commands.Choice(name="goodbye", value="goodbye"),
+    app_commands.Choice(name="boost", value="boost"),
+])
+async def slash_mensajes_canal(interaction: discord.Interaction, tipo: app_commands.Choice[str], canal: discord.TextChannel = None, quitar: bool = False):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _mensaje_cfg(interaction.guild.id, tipo.value)
+    if quitar or canal is None:
+        cfg["canal"] = None
+        guardar_mensajes()
+        return await interaction.response.send_message("✅ Canal eliminado.")
+    cfg["canal"] = str(canal.id)
+    guardar_mensajes()
+    await interaction.response.send_message(f"✅ Canal configurado: {canal.mention}.")
+
+
+@mensajes_group.command(name="campo", description="Edita un campo del mensaje")
+@app_commands.describe(tipo="Qué mensaje editar", campo="Campo a cambiar", valor="Nuevo valor (variables: {usuario} {mencion} {servidor} {miembros} {avatar})")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(tipo=[
+    app_commands.Choice(name="welcome", value="welcome"),
+    app_commands.Choice(name="goodbye", value="goodbye"),
+    app_commands.Choice(name="boost", value="boost"),
+])
+@app_commands.choices(campo=[
+    app_commands.Choice(name="titulo", value="titulo"),
+    app_commands.Choice(name="descripcion", value="descripcion"),
+    app_commands.Choice(name="footer", value="footer"),
+    app_commands.Choice(name="color", value="color"),
+    app_commands.Choice(name="imagen", value="imagen"),
+    app_commands.Choice(name="miniatura", value="miniatura"),
+    app_commands.Choice(name="contenido", value="contenido"),
+])
+async def slash_mensajes_campo(interaction: discord.Interaction, tipo: app_commands.Choice[str], campo: app_commands.Choice[str], valor: str):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    ok, msg = _mensaje_set_campo(interaction.guild.id, tipo.value, campo.value, valor)
+    await interaction.response.send_message(msg if ok else f"❌ {msg}", ephemeral=not ok)
+
+
+@mensajes_group.command(name="test", description="Envía el mensaje de prueba con tus datos")
+@app_commands.describe(tipo="Qué mensaje probar")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(tipo=[
+    app_commands.Choice(name="welcome", value="welcome"),
+    app_commands.Choice(name="goodbye", value="goodbye"),
+    app_commands.Choice(name="boost", value="boost"),
+])
+async def slash_mensajes_test(interaction: discord.Interaction, tipo: app_commands.Choice[str]):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = _mensaje_cfg(interaction.guild.id, tipo.value)
+    if not cfg.get("canal"):
+        return await interaction.response.send_message("❌ Configura primero el canal con `/mensajes canal`.", ephemeral=True)
+    await _mensaje_enviar(interaction.guild, interaction.user, tipo.value)
+    await interaction.response.send_message("📨 Mensaje de prueba enviado con TUS datos como usuario.")
+
+
+bot.tree.add_command(mensajes_group)
+
+
+@bot.tree.command(name="stats", description="Estadísticas del servidor (mensajes, comandos, moderación...)")
+async def slash_stats(interaction: discord.Interaction):
+    if interaction.guild is None:
+        return await interaction.response.send_message("❌ Este comando solo funciona en servidores.", ephemeral=True)
+    hoy = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    dia_actual = ((analytics_db.get(str(interaction.guild.id)) or {}).get("dias", {}) or {}).get(hoy, {})
+    semana = _analytics_resumen(interaction.guild.id, 7)
+    mes = _analytics_resumen(interaction.guild.id, 30)
+    embed = discord.Embed(
+        title=f"📊 Estadísticas de {interaction.guild.name}",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(
+        name="📅 Hoy",
+        value="\n".join(f"• {c.capitalize()}: **{dia_actual.get(c, 0):,}**" for c in ("mensajes", "comandos", "joins", "salidas")),
+        inline=True,
+    )
+    embed.add_field(
+        name="🧹 Moderación (hoy)",
+        value="\n".join(f"• {c.capitalize()}: **{dia_actual.get(c, 0):,}**" for c in ("bans", "kicks", "mutes", "warns")),
+        inline=True,
+    )
+    embed.add_field(
+        name="🗓️ Últimos 7 días",
+        value="\n".join(f"• {c.capitalize()}: **{semana[c]:,}**" for c in ("mensajes", "comandos", "joins", "salidas", "warns")),
+        inline=False,
+    )
+    embed.add_field(
+        name="📆 Últimos 30 días",
+        value=f"💬 Mensajes: **{mes['mensajes']:,}** · ⌨️ Comandos: **{mes['comandos']:,}** · 🎉 Joins: **{mes['joins']:,}** · 🚀 Boosts: **{mes['boosts']:,}**",
+        inline=False,
+    )
+    embed.set_footer(text="Gráficas completas en el dashboard web (/dashboard)")
+    await interaction.response.send_message(embed=embed)
+
+
+integraciones_group = app_commands.Group(name="integraciones", description="Notificaciones de YouTube, Reddit, GitHub, Steam, RSS y Twitch")
+
+
+@integraciones_group.command(name="list", description="Ver tus integraciones")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_integraciones_list(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = integraciones_db.setdefault(str(interaction.guild.id), {"feeds": []})
+    if not cfg.get("feeds"):
+        return await interaction.response.send_message(
+            "📭 No tienes integraciones. Añade una con `/integraciones add`.\nTipos: `youtube` `reddit` `github` `steam` `rss` `twitch`",
+            ephemeral=True,
+        )
+    embed = discord.Embed(title="🔗 Integraciones", color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+    for f in cfg["feeds"][:10]:
+        meta = INTEGRACION_TIPOS.get(f.get("tipo"), INTEGRACION_TIPOS["rss"])
+        estado = "🟢" if f.get("enabled") else "🔴"
+        embed.add_field(
+            name=f"{meta['emoji']} #{f['id']} · {f.get('tipo')} — {estado}",
+            value=f"<#{f.get('canal')}> · `{f.get('ref')}`",
+            inline=False,
+        )
+    await interaction.response.send_message(embed=embed)
+
+
+@integraciones_group.command(name="add", description="Añade una integración")
+@app_commands.describe(tipo="Tipo de integración", identificador="Canal de YouTube (UC…), subreddit, usuario/repo, AppID de Steam, URL del RSS o usuario de Twitch", canal="Canal donde avisar")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(tipo=[
+    app_commands.Choice(name="youtube", value="youtube"),
+    app_commands.Choice(name="reddit", value="reddit"),
+    app_commands.Choice(name="github", value="github"),
+    app_commands.Choice(name="steam", value="steam"),
+    app_commands.Choice(name="rss", value="rss"),
+    app_commands.Choice(name="twitch", value="twitch"),
+])
+async def slash_integraciones_add(interaction: discord.Interaction, tipo: app_commands.Choice[str], identificador: str, canal: discord.TextChannel):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    if tipo.value == "twitch" and not (os.environ.get("TWITCH_CLIENT_ID", "").strip() and os.environ.get("TWITCH_CLIENT_SECRET", "").strip()):
+        return await interaction.response.send_message("❌ Twitch requiere las variables `TWITCH_CLIENT_ID` y `TWITCH_CLIENT_SECRET` en el hosting.", ephemeral=True)
+    feed_id, err = _integracion_agregar(interaction.guild, tipo.value, identificador, canal)
+    if err:
+        return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
+    await interaction.response.send_message(f"✅ Integración **#{feed_id}** creada ({tipo.value}) → novedades en {canal.mention}. La primera revisión no anuncia historial.")
+
+
+@integraciones_group.command(name="remove", description="Elimina una integración")
+@app_commands.describe(identificador="ID de la integración (ver /integraciones list)")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_integraciones_remove(interaction: discord.Interaction, identificador: int):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = integraciones_db.setdefault(str(interaction.guild.id), {"feeds": []})
+    for f in cfg.get("feeds", []):
+        if f.get("id") == identificador:
+            cfg["feeds"].remove(f)
+            guardar_integraciones()
+            return await interaction.response.send_message(f"✅ Integración #{identificador} eliminada.")
+    await interaction.response.send_message(f"❌ No existe la integración #{identificador}.", ephemeral=True)
+
+
+@integraciones_group.command(name="toggle", description="Activa o pausa una integración")
+@app_commands.describe(identificador="ID de la integración", pausar="True para pausar, False para reactivar")
+@app_commands.default_permissions(manage_guild=True)
+async def slash_integraciones_toggle(interaction: discord.Interaction, identificador: int, pausar: bool):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    cfg = integraciones_db.setdefault(str(interaction.guild.id), {"feeds": []})
+    for f in cfg.get("feeds", []):
+        if f.get("id") == identificador:
+            f["enabled"] = not pausar
+            guardar_integraciones()
+            return await interaction.response.send_message(f"✅ Integración #{identificador}: **{'pausada' if pausar else 'activada'}**.")
+    await interaction.response.send_message(f"❌ No existe la integración #{identificador}.", ephemeral=True)
+
+
+bot.tree.add_command(integraciones_group)
+
+
 
 # ============================================================
 #  SLASH: /soft /softban (baneo temporal)
@@ -7089,6 +8084,8 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(name="🚨 Antiraid", value="`antiraid` (ver config) `antiraid on`/`off` `antiraid set` `antiraid action` `antiraid punishnew` `antiraid minage` `antiraid raidmode`\nGrupo slash `/antiraid`: config, on, off, set, action, punishnew, minage, raidmode.\nDesactivado por defecto • Nunca actúa contra el staff (Manage Server)", inline=False)
     embed.add_field(name="🤖 Automod", value="`automod` (ver config) `automod on`/`off` `automod add`/`remove` `automod invites` `automod links` `automod spam` `automod accion` `automod exrol` `automod excanal`\nGrupo slash `/automod`: config, on, off, add, remove, invites, links, spam, accion, exrol, excanal.\nFiltro de palabras, invites, links y spam • Desactivado por defecto", inline=False)
     embed.add_field(name="🎫 Tickets", value="`tickets` (ver config) `tickets on`/`off` `tickets soporte` `tickets categoria` `tickets canal` `tickets limite` `tickets pregunta-add`/`pregunta-remove` `tickets panel-add`/`panel-edit`/`panel-remove` `tickets cerrar` `tickets claim` `tickets add`/`remove`\nGrupo slash `/tickets` completo.\nPaneles personalizables (color, imagen, footer, botón) • Transcript HTML y DM al autor • Desactivado por defecto", inline=False)
+    embed.add_field(name="👋 Mensajes", value="`welcome`/`goodbye`/`boost` (config) `on`/`off` `canal` `titulo` `descripcion` `footer` `contenido` `color` `imagen` `miniatura` `test` `variables`\nGrupo slash `/mensajes`: config, on, off, canal, campo, test.\nVariables {usuario} {mencion} {servidor} {miembros} {avatar} • Desactivados por defecto", inline=False)
+    embed.add_field(name="🔗 Integraciones y 📊 Stats", value="`integraciones` (listar) `integraciones add <youtube|reddit|github|steam|rss|twitch> <ref> <#canal>` `remove` `on`/`off`\nGrupo slash `/integraciones` + `/stats`.\nNovedades cada 3 min · `.stats` con actividad, moderación y 30 días de historial", inline=False)
     embed.add_field(name="👥 Roles", value="`roleadd`/`role add` `roleremove`/`role remove` `rolehuman`/`role human` `roleall`/`role all` `rolebot`/`role bot`\n`autorolehuman`/`autorole human` `autorolebot`/`autorole bot` `autorole`/`autorole general` `autorolelist`/`autorole list`", inline=False)
     embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
     embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob` `prestamo`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
@@ -9993,6 +10990,59 @@ def _tickets_public(cfg: dict, guild: discord.Guild = None):
     }
 
 
+def _mensajes_public(gid, guild):
+    """Serializa los mensajes (welcome/goodbye/boost) para la API del dashboard."""
+    out = {}
+    for tipo in MENSAJE_TIPOS:
+        cfg = _mensaje_cfg(gid, tipo)
+        canal = guild.get_channel(int(cfg["canal"])) if cfg.get("canal") and str(cfg.get("canal", "")).isdigit() else None
+        out[tipo] = {
+            "enabled": bool(cfg.get("enabled")),
+            "canal": str(cfg["canal"]) if cfg.get("canal") else None,
+            "canal_nombre": canal.name if canal else None,
+            "titulo": cfg.get("titulo"),
+            "descripcion": cfg.get("descripcion"),
+            "footer": cfg.get("footer"),
+            "color": cfg.get("color"),
+            "imagen": cfg.get("imagen"),
+            "miniatura": cfg.get("miniatura"),
+            "contenido": cfg.get("contenido"),
+        }
+    return out
+
+
+def _integraciones_public(gid, guild):
+    """Serializa las integraciones (feeds) para la API del dashboard."""
+    cfg = integraciones_db.get(str(gid)) or {}
+    feeds = []
+    for f in cfg.get("feeds", []):
+        canal = guild.get_channel(int(f.get("canal", ""))) if guild is not None and str(f.get("canal", "")).isdigit() else None
+        feeds.append({
+            "id": int(f.get("id", 0)),
+            "tipo": f.get("tipo", "rss"),
+            "ref": f.get("ref", ""),
+            "canal": str(f.get("canal", "")),
+            "canal_nombre": canal.name if canal else "canal eliminado",
+            "enabled": bool(f.get("enabled")),
+        })
+    return feeds
+
+
+def _analytics_public(gid):
+    """Serializa los últimos 30 días de analytics para la API del dashboard."""
+    cfg = analytics_db.get(str(gid)) or {}
+    dias = cfg.get("dias", {}) or {}
+    fechas = sorted(dias.keys())[-30:]
+    out = []
+    for fecha in fechas:
+        dia = dias.get(fecha) or {}
+        punto = {"fecha": fecha}
+        for campo in ANALYTICS_CAMPOS:
+            punto[campo] = int(dia.get(campo, 0))
+        out.append(punto)
+    return {"dias": out}
+
+
 def _dash_buscar_guild(gid_texto: str):
     """Devuelve el Guild a partir del parámetro de ruta, o None."""
     if not gid_texto.isdigit():
@@ -10432,6 +11482,9 @@ async def _dash_guild(request):
         "antiraid": _antiraid_public(_antiraid_cfg(gid)),
         "automod": _automod_public(_automod_cfg(gid), guild),
         "tickets": _tickets_public(_tickets_cfg(gid), guild),
+        "mensajes": _mensajes_public(gid, guild),
+        "integraciones": _integraciones_public(gid, guild),
+        "analytics": _analytics_public(gid),
         "moderacion": {
             "warns_totales": warns_totales,
             "usuarios_con_warns": usuarios_warns,
@@ -10836,6 +11889,121 @@ async def _dash_tickets_set(request):
         )
         await enviar_logs(guild, embed)
     return dash_web.json_response({"ok": True, "tickets": _tickets_public(cfg, guild)})
+
+
+async def _dash_mensajes_set(request):
+    """POST /api/guild/<id>/mensajes — welcome/goodbye/boost (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_puede_configurar(request, guild):
+        return dash_web.json_response({"error": "Necesitas permiso de administración (Manage Server) en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    tipo = str(data.get("tipo", "")).lower()
+    if tipo not in MENSAJE_TIPOS:
+        return dash_web.json_response({"error": "tipo debe ser welcome, goodbye o boost."}, status=400)
+    cfg = _mensaje_cfg(guild.id, tipo)
+    cambios = []
+
+    if "enabled" in data:
+        if not isinstance(data["enabled"], bool):
+            return dash_web.json_response({"error": "enabled debe ser true/false."}, status=400)
+        cfg["enabled"] = data["enabled"]
+        cambios.append("activado" if data["enabled"] else "desactivado")
+    if "canal" in data:
+        v = data["canal"]
+        if v is None:
+            cfg["canal"] = None
+            cambios.append("canal: ninguno")
+        elif isinstance(v, str) and v.isdigit() and guild.get_channel(int(v)) is not None:
+            cfg["canal"] = v
+            cambios.append("canal actualizado")
+        else:
+            return dash_web.json_response({"error": "Canal no encontrado en este servidor."}, status=400)
+        guardar_mensajes()
+    for campo in MENSAJE_CAMPOS:
+        if campo in data:
+            ok, msg = _mensaje_set_campo(guild.id, tipo, campo, data[campo])
+            if not ok:
+                return dash_web.json_response({"error": msg}, status=400)
+            cambios.append(campo)
+
+    if cambios:
+        embed = discord.Embed(
+            title=f"👋 Mensaje de {tipo} actualizado desde el dashboard",
+            description=" • ".join(cambios)[:4096],
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow(),
+        )
+        await enviar_logs(guild, embed)
+    return dash_web.json_response({"ok": True, "mensajes": _mensajes_public(guild.id, guild)})
+
+
+async def _dash_integraciones_set(request):
+    """POST /api/guild/<id>/integraciones — feeds (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_puede_configurar(request, guild):
+        return dash_web.json_response({"error": "Necesitas permiso de administración (Manage Server) en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    gid = str(guild.id)
+    cfg = integraciones_db.setdefault(gid, {"feeds": []})
+    cambios = []
+
+    if "add" in data:
+        nuevo = data["add"] if isinstance(data["add"], dict) else {}
+        tipo = str(nuevo.get("tipo", "")).lower()
+        ref = str(nuevo.get("ref", "")).strip()
+        cid = str(nuevo.get("canal", ""))
+        canal = guild.get_channel(int(cid)) if cid.isdigit() else None
+        if canal is None:
+            return dash_web.json_response({"error": "Canal no encontrado en este servidor."}, status=400)
+        if tipo == "twitch" and not (os.environ.get("TWITCH_CLIENT_ID", "").strip() and os.environ.get("TWITCH_CLIENT_SECRET", "").strip()):
+            return dash_web.json_response({"error": "Twitch requiere las variables TWITCH_CLIENT_ID y TWITCH_CLIENT_SECRET en el hosting."}, status=400)
+        feed_id, err_feed = _integracion_agregar(guild, tipo, ref, canal)
+        if err_feed:
+            return dash_web.json_response({"error": err_feed}, status=400)
+        cambios.append(f"#{feed_id} {tipo} → #{canal.name}")
+    if "remove" in data:
+        fid, e = _dash_int(data["remove"], 1)
+        if e:
+            return dash_web.json_response({"error": "ID inválido."}, status=400)
+        for f in cfg.get("feeds", []):
+            if f.get("id") == fid:
+                cfg["feeds"].remove(f)
+                guardar_integraciones()
+                cambios.append(f"#{fid} eliminada")
+                break
+        else:
+            return dash_web.json_response({"error": f"No existe la integración #{fid}."}, status=400)
+    if "toggle" in data:
+        tg = data["toggle"] if isinstance(data["toggle"], dict) else {}
+        fid, e = _dash_int(tg.get("id"), 1)
+        if e:
+            return dash_web.json_response({"error": "ID inválido."}, status=400)
+        for f in cfg.get("feeds", []):
+            if f.get("id") == fid:
+                f["enabled"] = bool(tg.get("enabled"))
+                guardar_integraciones()
+                cambios.append(f"#{fid} {'activada' if f['enabled'] else 'pausada'}")
+                break
+        else:
+            return dash_web.json_response({"error": f"No existe la integración #{fid}."}, status=400)
+
+    if cambios:
+        embed = discord.Embed(
+            title="🔗 Integraciones actualizadas desde el dashboard",
+            description=" • ".join(cambios)[:4096],
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow(),
+        )
+        await enviar_logs(guild, embed)
+    return dash_web.json_response({"ok": True, "integraciones": _integraciones_public(gid, guild)})
 
 
 async def _dash_leave(request):
@@ -11364,6 +12532,8 @@ async def _iniciar_dashboard():
     app.router.add_post("/api/guild/{gid}/raidmode", _dash_raidmode)
     app.router.add_post("/api/guild/{gid}/automod", _dash_automod_set)
     app.router.add_post("/api/guild/{gid}/tickets", _dash_tickets_set)
+    app.router.add_post("/api/guild/{gid}/mensajes", _dash_mensajes_set)
+    app.router.add_post("/api/guild/{gid}/integraciones", _dash_integraciones_set)
     app.router.add_post("/api/guild/{gid}/leave", _dash_leave)
     app.router.add_post("/api/sync", _dash_sync)
     app.router.add_post("/api/guild/{gid}/economy", _dash_economy_set)
