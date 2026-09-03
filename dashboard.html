@@ -660,6 +660,9 @@ function mostrarSeccion(seccion) {
   if (seccion === "mensajes") {
     ["welcome", "goodbye", "boost"].forEach(t => prevMensajeActualizar(t));
   }
+  if (seccion === "integraciones") {
+    document.querySelectorAll('[id^="prev-int-"]').forEach(el => prevIntegracionActualizar(parseInt(el.id.slice(9), 10)));
+  }
 }
 
 /* ===== Helpers de render ===== */
@@ -1114,11 +1117,6 @@ SECCIONES.integraciones = function () {
           <label class="switch"><input type="checkbox" id="int-embed-${f.id}" ${f.use_embed ? "checked" : ""} onchange="integracionUpdate(${f.id})"><span class="pista"></span></label>
         </div>
         <div class="fila-opcion">
-          <div><div class="opcion-label">Color del Embed</div>
-            <div class="opcion-desc">Color de la barra lateral del mensaje.</div></div>
-          <input type="color" id="int-color-${f.id}" value="${f.embed_color || '#5865f2'}" onchange="integracionUpdate(${f.id})" style="width:60px;height:30px;border:none;padding:0;background:none;cursor:pointer">
-        </div>
-        <div class="fila-opcion">
           <div><div class="opcion-label">Mencionar (Ping)</div>
             <div class="opcion-desc">Quién recibirá la notificación.</div></div>
           <div style="display:flex;gap:6px">
@@ -1126,13 +1124,50 @@ SECCIONES.integraciones = function () {
               <option value="" ${!f.ping ? "selected" : ""}>Ninguno</option>
               <option value="everyone" ${f.ping === "everyone" ? "selected" : ""}>@everyone</option>
               <option value="here" ${f.ping === "here" ? "selected" : ""}>@here</option>
-              <option value="role" ${f.ping && !["everyone", "here"].includes(f.ping) && f.ping.isdigit() ? "selected" : ""}>Rol (ID)</option>
+              <option value="role" ${f.ping && !["everyone", "here"].includes(f.ping) ? "selected" : ""}>Rol (ID)</option>
             </select>
             <input id="int-ping-id-${f.id}" placeholder="ID del rol" value="${f.ping && !["everyone", "here"].includes(f.ping) ? esc(f.ping) : ""}"
               style="width:120px;display:${f.ping && !["everyone", "here"].includes(f.ping) ? "block" : "none"}" oninput="integracionUpdate(${f.id})">
           </div>
         </div>
+        <div class="grupo-titulo">✏️ Mensaje personalizado <span style="text-transform:none;font-weight:400">· variables: {titulo} {enlace} {fuente} {tipo}</span></div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Título</div></div>
+          <input id="int-titulo-${f.id}" value="${esc(f.mensaje.titulo || "{titulo}")}" oninput="prevIntegracionActualizar(${f.id})" style="width:220px">
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Descripción</div></div>
+          <input id="int-descripcion-${f.id}" value="${esc(f.mensaje.descripcion || "")}" oninput="prevIntegracionActualizar(${f.id})" style="flex:1;min-width:200px;width:auto">
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Contenido</div>
+            <div class="opcion-desc">Texto fuera del embed (ej: {enlace}). Opcional.</div></div>
+          <input id="int-contenido-${f.id}" value="${esc(f.mensaje.contenido || "")}" oninput="prevIntegracionActualizar(${f.id})" style="flex:1;min-width:200px;width:auto">
+        </div>
+        <div class="fila-opcion">
+          <div><div class="opcion-label">Footer</div></div>
+          <input id="int-footer-${f.id}" value="${esc(f.mensaje.footer || "")}" oninput="prevIntegracionActualizar(${f.id})" style="flex:1;min-width:180px;width:auto">
+        </div>
+        <div class="fila-inline" style="margin-top:8px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--texto-2)">
+            <input type="color" id="int-colorpicker-${f.id}" value="#${esc(f.mensaje.color || "5865f2")}" oninput="prevIntegracionActualizar(${f.id})" style="width:38px;height:32px;padding:2px;border:1px solid var(--border);border-radius:7px;background:var(--panel-2);cursor:pointer">
+            color
+          </label>
+          <span class="hex-badge" id="int-colorhex-${f.id}">#${esc((f.mensaje.color || "5865f2").toUpperCase())}</span>
+          <label class="chk-defecto"><input type="checkbox" id="int-colordef-${f.id}" ${f.mensaje.color === f.mensaje.color_default ? "checked" : ""} onchange="prevIntegracionActualizar(${f.id})"> por defecto</label>
+        </div>
+        <div class="fila-inline" style="margin-top:8px">
+          <input id="int-imagen-${f.id}" placeholder="URL imagen (opcional)" value="${esc(f.mensaje.imagen || "")}" oninput="prevIntegracionActualizar(${f.id})" style="flex:1;min-width:180px;width:auto">
+        </div>
+        <div class="fila-inline" style="margin-top:8px">
+          <input id="int-miniatura-${f.id}" placeholder="URL miniatura (opcional)" value="${esc(f.mensaje.miniatura || "")}" oninput="prevIntegracionActualizar(${f.id})" style="flex:1;min-width:180px;width:auto">
+        </div>
+        <div class="prev-zona">
+          <div class="prev-etiqueta">Previsualización en vivo</div>
+          <div id="prev-int-${f.id}"></div>
+        </div>
         <div class="fila-inline" style="margin-top:12px;justify-content:flex-end">
+          <button class="btn btn-primario" style="padding:5px 11px;font-size:12px" onclick="guardarIntegracionMensaje(${f.id})">💾 Guardar notificación</button>
           <button class="btn btn-verde" style="padding:5px 11px;font-size:12px" onclick="integracionTest(${f.id})">🧪 Enviar prueba</button>
         </div>
       </details>`).join("") || '<div style="color:var(--texto-2);font-size:12.5px">Ninguna integración configurada todavía.</div>'}
@@ -1894,7 +1929,6 @@ async function integracionUpdate(id) {
   }
 
   const use_embed = document.getElementById(`int-embed-${id}`).checked;
-  const embed_color = document.getElementById(`int-color-${id}`).value;
   const ping_id = ping_id_input ? ping_id_input.value.trim() : "";
 
   let ping = "";
@@ -1905,9 +1939,64 @@ async function integracionUpdate(id) {
   try {
     const r = await api("/api/guild/" + GUILD_ACTUAL + "/integraciones", {
       method: "POST",
-      body: JSON.stringify({ update: { id, use_embed, embed_color, ping } })
+      body: JSON.stringify({ update: { id, use_embed, ping } })
     });
     toast("✅ Configuración actualizada");
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+
+function prevIntegracionActualizar(fid) {
+  const val = c => { const el = document.getElementById("int-" + c + "-" + fid); return (el || {}).value || ""; };
+  const cont = document.getElementById("prev-int-" + fid);
+  if (!cont) return;
+  const feed = ((DATOS_GUILD && DATOS_GUILD.integraciones) || []).find(x => x.id === fid) || {};
+  const picker = document.getElementById("int-colorpicker-" + fid);
+  const cdef = document.getElementById("int-colordef-" + fid);
+  if (picker) picker.disabled = !!(cdef && cdef.checked);
+  const color = (cdef && cdef.checked) ? "" : (picker ? picker.value : "");
+  const hexBadge = document.getElementById("int-colorhex-" + fid);
+  if (hexBadge) hexBadge.textContent = color ? color.toUpperCase() : "POR DEFECTO";
+  const vars = {
+    "{titulo}": "🎬 Título de la novedad",
+    "{enlace}": "https://ejemplo.com/novedad",
+    "{fuente}": feed.ref || "canal-ejemplo",
+    "{tipo}": feed.tipo || "youtube",
+  };
+  const r = t => { if (!t) return ""; for (const k in vars) t = t.split(k).join(vars[k]); return t; };
+  cont.innerHTML = `
+    ${val("contenido") ? `<div class="prev-contenido">${esc(r(val("contenido")))}</div>` : ""}
+    ${prevPanelRender({
+      titulo: r(val("titulo")),
+      desc: r(val("descripcion")),
+      color: color,
+      imagen: r(val("imagen")),
+      miniatura: r(val("miniatura")),
+      footer: r(val("footer")),
+      boton: "",
+    })}`;
+}
+
+async function guardarIntegracionMensaje(fid) {
+  const val = c => { const el = document.getElementById("int-" + c + "-" + fid); return (el || {}).value || ""; };
+  const picker = document.getElementById("int-colorpicker-" + fid);
+  const cdef = document.getElementById("int-colordef-" + fid);
+  const payload = {
+    mensaje: {
+      id: fid,
+      titulo: val("titulo").trim(),
+      descripcion: val("descripcion").trim(),
+      contenido: val("contenido").trim(),
+      footer: val("footer").trim(),
+      color: (cdef && cdef.checked) ? "" : (picker ? picker.value.replace("#", "") : ""),
+      imagen: val("imagen").trim(),
+      miniatura: val("miniatura").trim(),
+    },
+  };
+  try {
+    await api("/api/guild/" + GUILD_ACTUAL + "/integraciones", { method: "POST", body: JSON.stringify(payload) });
+    toast("✅ Notificación personalizada guardada");
+    await seleccionarGuild(GUILD_ACTUAL);
   } catch (e) { toast("❌ " + e.message, false); }
 }
 

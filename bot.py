@@ -5049,6 +5049,7 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}integraciones add <tipo> <ref> <#canal>` :: Añadir\n"
                     f"`{p}integraciones remove (id)` :: Eliminar\n"
                     f"`{p}integraciones on|off (id)` :: Pausar / reactivar\n"
+                    f"`{p}test (welcome|goodbye|boost|youtube|twitch|reddit|github|steam)` :: Enviar prueba\n"
                     f"`{p}stats` :: Estadísticas del servidor (actividad y moderación)\n\n"
                     f"Tipos: youtube · twitch · reddit · github · steam\n"
                     f"Novedades cada 3 min · Stats con 30 días de historial"
@@ -5711,6 +5712,77 @@ async def _twitch_token_obtener():
     return TWITCH_TOKEN["token"]
 
 
+def _integracion_mensaje_default():
+    """Plantilla por defecto de la notificación de un feed (personalizable por separado)."""
+    return {
+        "titulo": "{titulo}",
+        "descripcion": "🔗 {enlace}",
+        "footer": "{tipo} · {fuente}",
+        "color": None,        # None = color por defecto del tipo
+        "imagen": None,       # URL (admite variables)
+        "miniatura": None,    # URL (admite variables)
+        "contenido": None,    # texto fuera del embed (ej: {enlace})
+    }
+
+
+def _integracion_mensaje_cfg(feed):
+    """Devuelve (creándola si no existe) la plantilla de notificación de un feed."""
+    cfg = feed.setdefault("mensaje", {})
+    base = _integracion_mensaje_default()
+    for clave, valor in base.items():
+        cfg.setdefault(clave, valor)
+    return cfg
+
+
+def _integracion_render(feed, titulo, enlace):
+    """Construye (contenido, embed) de la notificación con la plantilla del feed.
+    Variables: {titulo} {enlace} {fuente} {tipo}."""
+    meta = INTEGRACION_TIPOS.get(feed.get("tipo"), INTEGRACION_FALLBACK)
+    mcfg = _integracion_mensaje_cfg(feed)
+    vars_ = {
+        "{titulo}": str(titulo or "Novedad"),
+        "{enlace}": str(enlace or ""),
+        "{fuente}": str(feed.get("ref", "")),
+        "{tipo}": str(feed.get("tipo", "")),
+    }
+
+    def r(texto):
+        if not texto:
+            return None
+        for clave, valor in vars_.items():
+            texto = texto.replace(clave, valor)
+        return texto
+
+    color_val = mcfg.get("color") or feed.get("embed_color")
+    if color_val is None:
+        color_val = meta["color"]
+    if isinstance(color_val, str):
+        try:
+            color_val = int(color_val.replace("#", ""), 16)
+        except ValueError:
+            color_val = meta["color"]
+
+    embed = discord.Embed(
+        title=(r(mcfg.get("titulo")) or "Novedad")[:256],
+        url=enlace or None,
+        color=discord.Color(color_val),
+        timestamp=discord.utils.utcnow(),
+    )
+    desc = r(mcfg.get("descripcion"))
+    if desc:
+        embed.description = desc[:4096]
+    miniatura = r(mcfg.get("miniatura"))
+    if miniatura and _url_valida(miniatura):
+        embed.set_thumbnail(url=miniatura)
+    imagen = r(mcfg.get("imagen"))
+    if imagen and _url_valida(imagen):
+        embed.set_image(url=imagen)
+    footer = r(mcfg.get("footer"))
+    if footer:
+        embed.set_footer(text=footer[:2048])
+    return r(mcfg.get("contenido")), embed
+
+
 async def _integracion_nuevos(feed, gid):
     """Comprueba un feed. Devuelve lista de novedades [{titulo, enlace}] (máx 3 por tanda)."""
     if feed.get("tipo") == "twitch":
@@ -5799,26 +5871,9 @@ async def _tarea_integraciones():
                                     msg_content = f"<@&{ping}> "
 
                                 if use_embed:
-                                    color_val = feed.get("embed_color")
-                                    if color_val is None:
-                                        color_val = meta["color"]
-
+                                    contenido, embed = _integracion_render(feed, it.get("titulo"), it.get("enlace"))
                                     try:
-                                        # Si viene como string hex "#FFFFFF" o "FFFFFF"
-                                        if isinstance(color_val, str):
-                                            color_val = int(color_val.replace("#", ""), 16)
-                                    except ValueError:
-                                        color_val = meta["color"]
-
-                                    embed = discord.Embed(
-                                        title=(it.get("titulo") or "Novedad")[:256],
-                                        url=it.get("enlace") or None,
-                                        color=discord.Color(color_val),
-                                        timestamp=discord.utils.utcnow(),
-                                    )
-                                    embed.set_footer(text=f"{meta['emoji']} {feed.get('tipo')} · {feed.get('ref')}"[:2048])
-                                    try:
-                                        await canal.send(content=msg_content, embed=embed)
+                                        await canal.send(content=(msg_content + (contenido or "")).strip() or None, embed=embed)
                                     except (discord.Forbidden, discord.HTTPException):
                                         pass
                                 else:
@@ -5855,7 +5910,8 @@ async def _integracion_agregar(guild, tipo, ref, canal):
     cfg.setdefault("feeds", []).append({
         "id": feed_id, "tipo": tipo, "ref": ref, "canal": str(canal.id),
         "enabled": True, "last": "",
-        "use_embed": True, "embed_color": None, "ping": ""
+        "use_embed": True, "embed_color": None, "ping": "",
+        "mensaje": _integracion_mensaje_default(),
     })
     guardar_integraciones()
     return feed_id, None
@@ -5952,6 +6008,63 @@ async def integraciones(ctx, *, args: str = ""):
 async def integraciones_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ Necesitas el permiso Manage Server.")
+
+
+@bot.command(name="test")
+@commands.guild_only()
+async def test_cmd(ctx, *, args: str = ""):
+    """
+    Envía un mensaje de prueba. Uso: .test <welcome|goodbye|boost|youtube|twitch|reddit|github|steam>
+    Los mensajes se envían al canal configurado (con TUS datos como usuario en welcome/goodbye/boost).
+    """
+    tipo = args.strip().lower()
+    p = ctx.prefix if ctx.prefix and not MENTION_REGEX.match(ctx.prefix) else DEFAULT_PREFIX
+    if not tipo:
+        return await ctx.send(
+            f"❌ Uso correcto: `{p}test <tipo>`\n"
+            f"Mensaje: `{p}test welcome|goodbye|boost`\n"
+            f"Integraciones: `{p}test youtube|twitch|reddit|github|steam`"
+        )
+
+    if tipo in ("welcome", "goodbye", "boost"):
+        cfg = _mensaje_cfg(ctx.guild.id, tipo)
+        if not cfg.get("canal"):
+            return await ctx.send(f"❌ El mensaje de **{tipo}** no tiene canal configurado. Usa `{p}{tipo} canal #canal`.")
+        await _mensaje_enviar(ctx.guild, ctx.author, tipo)
+        return await ctx.send(f"📨 Prueba de **{tipo}** enviada al canal configurado, con TUS datos como usuario.")
+
+    if tipo in INTEGRACION_TIPOS:
+        meta = INTEGRACION_TIPOS[tipo]
+        cfg_g = integraciones_db.get(str(ctx.guild.id)) or {}
+        feed = next((f for f in cfg_g.get("feeds", []) if f.get("tipo") == tipo), None)
+        if feed is not None:
+            canal = ctx.guild.get_channel(int(feed["canal"])) if str(feed.get("canal", "")).isdigit() else None
+            if canal is None:
+                canal = ctx.channel
+            titulo_ej = f"{meta['emoji']} Ejemplo de novedad de {feed.get('ref', tipo)}"
+            ping = feed.get("ping", "")
+        else:
+            canal = ctx.channel
+            feed = {"tipo": tipo, "ref": "ejemplo", "mensaje": _integracion_mensaje_default()}
+            titulo_ej = f"{meta['emoji']} Ejemplo de notificación de {tipo}"
+            ping = ""
+        msg_content = "@everyone " if ping == "everyone" else ("@here " if ping == "here" else (f"<@&{ping}> " if ping and str(ping).isdigit() else ""))
+        contenido, embed = _integracion_render(feed, titulo_ej, "https://ejemplo.com/novedad")
+        try:
+            await canal.send(content=(msg_content + (contenido or "")).strip() or None, embed=embed)
+        except (discord.Forbidden, discord.HTTPException) as e:
+            return await ctx.send(f"❌ No pude enviar la prueba: {e}")
+        return await ctx.send(f"🧪 Prueba de **{tipo}** enviada a {canal.mention}.")
+
+    return await ctx.send(
+        "❌ Tipo desconocido. Usa: `welcome` `goodbye` `boost` `youtube` `twitch` `reddit` `github` `steam`"
+    )
+
+
+@test_cmd.error
+async def test_cmd_error(ctx, error):
+    if isinstance(error, commands.NoPrivateMessage):
+        await ctx.send("❌ Este comando solo funciona en servidores.")
 
 
 # ============================================================
@@ -8104,6 +8217,51 @@ async def slash_integraciones_toggle(interaction: discord.Interaction, identific
 bot.tree.add_command(integraciones_group)
 
 
+@bot.tree.command(name="test", description="Envía un mensaje de prueba (welcome, integraciones, etc.)")
+@app_commands.describe(tipo="Qué mensaje probar")
+@app_commands.choices(tipo=[
+    app_commands.Choice(name="welcome", value="welcome"),
+    app_commands.Choice(name="goodbye", value="goodbye"),
+    app_commands.Choice(name="boost", value="boost"),
+    app_commands.Choice(name="youtube", value="youtube"),
+    app_commands.Choice(name="twitch", value="twitch"),
+    app_commands.Choice(name="reddit", value="reddit"),
+    app_commands.Choice(name="github", value="github"),
+    app_commands.Choice(name="steam", value="steam"),
+])
+async def slash_test(interaction: discord.Interaction, tipo: app_commands.Choice[str]):
+    if interaction.guild is None:
+        return await interaction.response.send_message("❌ Este comando solo funciona en servidores.", ephemeral=True)
+    elegido = tipo.value
+    if elegido in ("welcome", "goodbye", "boost"):
+        cfg = _mensaje_cfg(interaction.guild.id, elegido)
+        if not cfg.get("canal"):
+            return await interaction.response.send_message(f"❌ El mensaje de **{elegido}** no tiene canal configurado.", ephemeral=True)
+        await _mensaje_enviar(interaction.guild, interaction.user, elegido)
+        return await interaction.response.send_message(f"📨 Prueba de **{elegido}** enviada al canal configurado, con TUS datos como usuario.")
+    meta = INTEGRACION_TIPOS[elegido]
+    cfg_g = integraciones_db.get(str(interaction.guild.id)) or {}
+    feed = next((f for f in cfg_g.get("feeds", []) if f.get("tipo") == elegido), None)
+    if feed is not None:
+        canal = interaction.guild.get_channel(int(feed["canal"])) if str(feed.get("canal", "")).isdigit() else None
+        if canal is None:
+            canal = interaction.channel
+        titulo_ej = f"{meta['emoji']} Ejemplo de novedad de {feed.get('ref', elegido)}"
+        ping = feed.get("ping", "")
+    else:
+        canal = interaction.channel
+        feed = {"tipo": elegido, "ref": "ejemplo", "mensaje": _integracion_mensaje_default()}
+        titulo_ej = f"{meta['emoji']} Ejemplo de notificación de {elegido}"
+        ping = ""
+    msg_content = "@everyone " if ping == "everyone" else ("@here " if ping == "here" else (f"<@&{ping}> " if ping and str(ping).isdigit() else ""))
+    contenido, embed = _integracion_render(feed, titulo_ej, "https://ejemplo.com/novedad")
+    try:
+        await canal.send(content=(msg_content + (contenido or "")).strip() or None, embed=embed)
+    except (discord.Forbidden, discord.HTTPException) as e:
+        return await interaction.response.send_message(f"❌ No pude enviar la prueba: {e}", ephemeral=True)
+    await interaction.response.send_message(f"🧪 Prueba de **{elegido}** enviada a {canal.mention}.")
+
+
 
 # ============================================================
 #  SLASH: /soft /softban (baneo temporal)
@@ -8206,7 +8364,7 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(name="🤖 Automod", value="`automod` (ver config) `automod on`/`off` `automod add`/`remove` `automod invites` `automod links` `automod spam` `automod accion` `automod exrol` `automod excanal`\nGrupo slash `/automod`: config, on, off, add, remove, invites, links, spam, accion, exrol, excanal.\nFiltro de palabras, invites, links y spam • Desactivado por defecto", inline=False)
     embed.add_field(name="🎫 Tickets", value="`tickets` (ver config) `tickets on`/`off` `tickets soporte` `tickets categoria` `tickets canal` `tickets limite` `tickets pregunta-add`/`pregunta-remove` `tickets panel-add`/`panel-edit`/`panel-remove` `tickets cerrar` `tickets claim` `tickets add`/`remove`\nGrupo slash `/tickets` completo.\nPaneles personalizables (color, imagen, footer, botón) • Transcript HTML y DM al autor • Desactivado por defecto", inline=False)
     embed.add_field(name="👋 Mensajes", value="`welcome`/`goodbye`/`boost` (config) `on`/`off` `canal` `titulo` `descripcion` `footer` `contenido` `color` `imagen` `miniatura` `test` `variables`\nGrupo slash `/mensajes`: config, on, off, canal, campo, test.\nVariables {usuario} {mencion} {servidor} {miembros} {avatar} • Desactivados por defecto", inline=False)
-    embed.add_field(name="🔗 Integraciones y 📊 Stats", value="`integraciones` (listar) `integraciones add <youtube|twitch|reddit|github|steam> <ref> <#canal>` `remove` `on`/`off`\nGrupo slash `/integraciones` + `/stats`.\nAcepta links de canal o nombre de usuario · Novedades cada 3 min · `.stats` con 30 días de historial", inline=False)
+    embed.add_field(name="🔗 Integraciones y 📊 Stats", value="`integraciones` (listar) `integraciones add <youtube|twitch|reddit|github|steam> <ref> <#canal>` `remove` `on`/`off`\nGrupo slash `/integraciones` + `/stats`.\nAcepta links de canal o nombre de usuario · Novedades cada 3 min · `.stats` con 30 días de historial\n`test` (:: `.test youtube`, `.test welcome`…) :: Enviar mensaje de prueba", inline=False)
     embed.add_field(name="👥 Roles", value="`roleadd`/`role add` `roleremove`/`role remove` `rolehuman`/`role human` `roleall`/`role all` `rolebot`/`role bot`\n`autorolehuman`/`autorole human` `autorolebot`/`autorole bot` `autorole`/`autorole general` `autorolelist`/`autorole list`", inline=False)
     embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
     embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob` `prestamo`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
@@ -11131,6 +11289,15 @@ def _integraciones_public(gid, guild):
     feeds = []
     for f in cfg.get("feeds", []):
         canal = guild.get_channel(int(f.get("canal", ""))) if guild is not None and str(f.get("canal", "")).isdigit() else None
+        meta = INTEGRACION_TIPOS.get(f.get("tipo"), INTEGRACION_FALLBACK)
+        m = _integracion_mensaje_cfg(f)
+        color_hex = m.get("color") or f.get("embed_color")
+        if color_hex is None:
+            color_hex = f"{meta['color']:06x}"
+        elif isinstance(color_hex, int):
+            color_hex = f"{color_hex:06x}"
+        else:
+            color_hex = str(color_hex).lstrip("#").lower()
         feeds.append({
             "id": int(f.get("id", 0)),
             "tipo": f.get("tipo", "youtube"),
@@ -11141,6 +11308,16 @@ def _integraciones_public(gid, guild):
             "use_embed": f.get("use_embed", True),
             "embed_color": f.get("embed_color"),
             "ping": f.get("ping", ""),
+            "mensaje": {
+                "titulo": m.get("titulo"),
+                "descripcion": m.get("descripcion"),
+                "footer": m.get("footer"),
+                "color": color_hex,
+                "color_default": f"{meta['color']:06x}",
+                "imagen": m.get("imagen"),
+                "miniatura": m.get("miniatura"),
+                "contenido": m.get("contenido"),
+            },
         })
     return feeds
 
@@ -12137,6 +12314,40 @@ async def _dash_integraciones_set(request):
                 break
         else:
             return dash_web.json_response({"error": f"No existe la integración #{fid}."}, status=400)
+    if "mensaje" in data:
+        mupd = data["mensaje"] if isinstance(data["mensaje"], dict) else {}
+        fid, e = _dash_int(mupd.get("id"), 1)
+        if e:
+            return dash_web.json_response({"error": "ID inválido."}, status=400)
+        for f in cfg.get("feeds", []):
+            if f.get("id") == fid:
+                mcfg = _integracion_mensaje_cfg(f)
+                if "titulo" in mupd:
+                    mcfg["titulo"] = str(mupd["titulo"]).strip()[:256] or "{titulo}"
+                if "descripcion" in mupd:
+                    mcfg["descripcion"] = str(mupd["descripcion"]).strip()[:4096] or None
+                if "contenido" in mupd:
+                    mcfg["contenido"] = str(mupd["contenido"]).strip()[:2000] or None
+                if "footer" in mupd:
+                    mcfg["footer"] = str(mupd["footer"]).strip()[:2048] or "{tipo} · {fuente}"
+                if "imagen" in mupd:
+                    mcfg["imagen"] = str(mupd["imagen"]).strip() if _url_valida(str(mupd["imagen"]).strip()) else None
+                if "miniatura" in mupd:
+                    mcfg["miniatura"] = str(mupd["miniatura"]).strip() if _url_valida(str(mupd["miniatura"]).strip()) else None
+                if "color" in mupd:
+                    hexa = str(mupd["color"]).strip().lstrip("#").lower()
+                    if not hexa:
+                        mcfg["color"] = None
+                        f["embed_color"] = None  # volver al color por defecto del tipo
+                    elif len(hexa) == 6 and all(c in "0123456789abcdef" for c in hexa):
+                        mcfg["color"] = hexa
+                    else:
+                        return dash_web.json_response({"error": "Color inválido: usa hex, ej: 8b7cf6."}, status=400)
+                guardar_integraciones()
+                cambios.append(f"#{fid} notificación personalizada")
+                break
+        else:
+            return dash_web.json_response({"error": f"No existe la integración #{fid}."}, status=400)
 
     if cambios:
         embed = discord.Embed(
@@ -12190,34 +12401,21 @@ async def _dash_integraciones_test(request):
         msg_content = f"<@&{ping}> "
 
     if use_embed:
-        color_val = feed.get("embed_color")
-        if color_val is None:
-            color_val = meta["color"]
+        titulo_ej = f"{meta['emoji']} Ejemplo de novedad de {feed.get('ref', feed.get('tipo'))}"
+        contenido, embed = _integracion_render(feed, titulo_ej, "https://ejemplo.com/novedad")
         try:
-            if isinstance(color_val, str):
-                color_val = int(color_val.replace("#", ""), 16)
-        except ValueError:
-            color_val = meta["color"]
-
-        embed = discord.Embed(
-            title="🧪 Mensaje de Prueba",
-            description=f"Este es un mensaje de prueba para la integración de **{feed.get('tipo')}**.\nAsí se verá el formato cuando haya una novedad.",
-            color=discord.Color(color_val),
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_footer(text=f"Prueba de configuración · {feed.get('tipo')}")
-        try:
-            await canal.send(content=msg_content, embed=embed)
+            await canal.send(content=(msg_content + (contenido or "")).strip() or None, embed=embed)
         except Exception as e:
             return dash_web.json_response({"error": f"Error al enviar mensaje: {e}"}, status=500)
     else:
-        texto = f"🧪 **Mensaje de Prueba**\nEste es un mensaje de prueba para la integración de **{feed.get('tipo')}**. Así se verá el texto sin embed."
+        titulo_ej = f"{meta['emoji']} Ejemplo de novedad de {feed.get('ref', feed.get('tipo'))}"
+        texto = f"{titulo_ej}\nhttps://ejemplo.com/novedad"
         try:
             await canal.send(content=msg_content + texto)
         except Exception as e:
             return dash_web.json_response({"error": f"Error al enviar mensaje: {e}"}, status=500)
 
-    return dash_web.json_response({"ok": True})
+    return dash_web.json_response({"ok": True, "msg": "🧪 Prueba enviada con tu plantilla personalizada"})
 
 
 async def _dash_leave(request):
