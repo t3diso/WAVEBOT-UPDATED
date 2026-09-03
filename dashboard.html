@@ -157,7 +157,7 @@
     transition: border-color .15s, box-shadow .15s, background .15s;
     box-shadow: inset 0 1px 3px rgba(0, 0, 0, .22);
   }
-  input:not([type="checkbox"])::placeholder { color: #5d6679; font-style: italic; }
+  input:not([type="checkbox"])::placeholder { color: #5d6679; }
   input:not([type="checkbox"]):hover, select:hover { border-color: #39425a; }
   input:not([type="checkbox"]):focus, select:focus {
     outline: none; border-color: var(--acento);
@@ -202,6 +202,31 @@
   .item-tienda .nombre { font-weight: 600; min-width: 90px; }
   .item-tienda .precio { color: var(--verde); font-weight: 700; min-width: 80px; }
   .item-tienda .desc { color: var(--texto-2); flex: 1; overflow-wrap: anywhere; }
+
+  /* ===== Previsualización de panel estilo Discord ===== */
+  .prev-zona { margin-top: 14px; }
+  .prev-etiqueta { font-size: 10.5px; font-weight: 700; color: var(--texto-2); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 8px; }
+  .prev-embed {
+    position: relative; max-width: 430px; background: #2b2d31;
+    border: 1px solid #1e1f22; border-left: 4px solid #5865f2;
+    border-radius: 6px; padding: 10px 14px 12px; overflow: hidden;
+  }
+  .prev-autor { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+  .prev-titulo { font-size: 16px; font-weight: 600; margin-bottom: 4px; overflow-wrap: anywhere; }
+  .prev-desc { font-size: 14px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 80px; }
+  .prev-thumb { position: absolute; top: 10px; right: 14px; width: 72px; height: 72px; border-radius: 4px; object-fit: cover; }
+  .prev-imagen { width: 100%; max-height: 160px; object-fit: cover; border-radius: 4px; margin-top: 8px; display: block; }
+  .prev-footer { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #b5bac1; margin-top: 8px; overflow-wrap: anywhere; }
+  .prev-botones { margin-top: 8px; display: flex; gap: 8px; }
+  .prev-boton {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 14px; min-height: 30px; border-radius: 4px;
+    font-size: 13.5px; font-weight: 500; color: #fff; max-width: 300px; overflow: hidden; white-space: nowrap;
+  }
+  .prev-boton.verde { background: #23a55a; }
+  .prev-boton.blurple { background: #5865f2; }
+  .prev-boton.gris { background: #4e5058; }
+  .prev-boton.rojo { background: #da373c; }
 
   .stats-mini { display: flex; gap: 10px; margin: 12px 0 4px; flex-wrap: wrap; }
   .mini-chip { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 7px 13px; font-size: 12.5px; color: var(--texto-2); }
@@ -605,6 +630,9 @@ function mostrarSeccion(seccion) {
   const render = SECCIONES[seccion] || SECCIONES.resumen;
   cont.innerHTML = render();
   aplicarPermisosSeccion(seccion);
+  if (seccion === "tickets") {
+    document.querySelectorAll('[id^="prev-"]').forEach(el => prevPanelActualizar(el.id.slice(5)));
+  }
 }
 
 /* ===== Helpers de render ===== */
@@ -983,10 +1011,10 @@ SECCIONES.tickets = function () {
       <details style="margin:-6px 0 12px">
         <summary style="cursor:pointer;color:var(--acento);font-size:12px">✏️ Personalizar panel #${pnl.id}</summary>
         <div class="fila-inline" style="margin-top:10px">
-          <input id="pe-${pnl.id}-titulo" placeholder="título" value="${esc(pnl.titulo || "")}" style="width:170px">
-          <input id="pe-${pnl.id}-emoji" placeholder="🎫" value="${esc(pnl.emoji || "")}" style="width:56px;text-align:center">
-          <input id="pe-${pnl.id}-boton" placeholder="texto botón" value="${esc(pnl.boton || "")}" style="width:140px">
-          <select id="pe-${pnl.id}-estilo" style="width:120px">
+          <input id="pe-${pnl.id}-titulo" placeholder="título" value="${esc(pnl.titulo || "")}" oninput="prevPanelActualizar('pe-${pnl.id}')" style="width:170px">
+          <input id="pe-${pnl.id}-emoji" placeholder="🎫" value="${esc(pnl.emoji || "")}" oninput="prevPanelActualizar('pe-${pnl.id}')" style="width:56px;text-align:center">
+          <input id="pe-${pnl.id}-boton" placeholder="texto botón" value="${esc(pnl.boton || "")}" oninput="prevPanelActualizar('pe-${pnl.id}')" style="width:140px">
+          <select id="pe-${pnl.id}-estilo" oninput="prevPanelActualizar('pe-${pnl.id}')" style="width:120px">
             <option value="verde" ${pnl.estilo === "verde" ? "selected" : ""}>verde</option>
             <option value="blurple" ${pnl.estilo === "blurple" ? "selected" : ""}>blurple</option>
             <option value="gris" ${pnl.estilo === "gris" ? "selected" : ""}>gris</option>
@@ -995,24 +1023,25 @@ SECCIONES.tickets = function () {
         </div>
         <div class="fila-inline" style="margin-top:8px">
           <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--texto-2)">
-            <input type="color" id="pe-${pnl.id}-colorpicker" value="#${esc(pnl.color || "5865f2")}" oninput="document.getElementById('pe-${pnl.id}-color').value=this.value.replace('#','')" style="width:34px;height:30px;padding:0;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer">
-            color embed
+            <input type="color" id="pe-${pnl.id}-colorpicker" value="#${esc(pnl.color || "5865f2")}" oninput="prevPanelActualizar('pe-${pnl.id}')" style="width:34px;height:30px;padding:0;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer">
+            color del embed
           </label>
-          <input id="pe-${pnl.id}-color" placeholder="hex (vacío = por defecto)" value="${esc(pnl.color || "")}" style="width:170px">
+          <input id="pe-${pnl.id}-imagen" placeholder="URL imagen grande (banner)" value="${esc(pnl.imagen || "")}" oninput="prevPanelActualizar('pe-${pnl.id}')" style="flex:1;min-width:220px;width:auto">
         </div>
         <div class="fila-inline" style="margin-top:8px">
-          <input id="pe-${pnl.id}-imagen" placeholder="URL imagen grande (banner)" value="${esc(pnl.imagen || "")}" style="flex:1;min-width:220px;width:auto">
+          <input id="pe-${pnl.id}-miniatura" placeholder="URL miniatura (esquina)" value="${esc(pnl.miniatura || "")}" oninput="prevPanelActualizar('pe-${pnl.id}')" style="flex:1;min-width:220px;width:auto">
         </div>
         <div class="fila-inline" style="margin-top:8px">
-          <input id="pe-${pnl.id}-miniatura" placeholder="URL miniatura (esquina)" value="${esc(pnl.miniatura || "")}" style="flex:1;min-width:220px;width:auto">
+          <input id="pe-${pnl.id}-autor" placeholder="autor (línea superior)" value="${esc(pnl.autor || "")}" oninput="prevPanelActualizar('pe-${pnl.id}')" style="width:170px">
+          <input id="pe-${pnl.id}-footer" placeholder="footer (línea inferior)" value="${esc(pnl.footer || "")}" oninput="prevPanelActualizar('pe-${pnl.id}')" style="flex:1;min-width:170px;width:auto">
         </div>
         <div class="fila-inline" style="margin-top:8px">
-          <input id="pe-${pnl.id}-autor" placeholder="autor (línea superior)" value="${esc(pnl.autor || "")}" style="width:170px">
-          <input id="pe-${pnl.id}-footer" placeholder="footer (línea inferior)" value="${esc(pnl.footer || "")}" style="flex:1;min-width:170px;width:auto">
-        </div>
-        <div class="fila-inline" style="margin-top:8px">
-          <input id="pe-${pnl.id}-desc" placeholder="descripción" value="${esc(pnl.desc || "")}" style="flex:1;min-width:220px;width:auto">
+          <input id="pe-${pnl.id}-desc" placeholder="descripción" value="${esc(pnl.desc || "")}" oninput="prevPanelActualizar('pe-${pnl.id}')" style="flex:1;min-width:220px;width:auto">
           <button class="btn btn-primario" onclick="ticketPanelEdit(${pnl.id})">💾 Guardar panel</button>
+        </div>
+        <div class="prev-zona">
+          <div class="prev-etiqueta">Previsualización en vivo</div>
+          <div id="prev-pe-${pnl.id}"></div>
         </div>
       </details>`).join("") || '<div style="color:var(--texto-2);font-size:12.5px">Ningún panel creado.</div>'}
       <div class="grupo-titulo">➕ Crear panel</div>
@@ -1020,10 +1049,10 @@ SECCIONES.tickets = function () {
         <select id="tk-panel-canal">${optsCanales(null, false)}</select>
       </div>
       <div class="fila-inline" style="margin-bottom:10px">
-        <input id="tk-panel-titulo" placeholder="título (ej: 🎫 Soporte)" style="width:210px">
-        <input id="tk-panel-boton" placeholder="texto del botón" style="width:150px">
-        <input id="tk-panel-emoji" placeholder="🎫" style="width:56px;text-align:center">
-        <select id="tk-panel-estilo" style="width:120px">
+        <input id="tk-panel-titulo" placeholder="título (ej: 🎫 Soporte)" oninput="prevPanelActualizar('tk-panel')" style="width:210px">
+        <input id="tk-panel-boton" placeholder="texto del botón" oninput="prevPanelActualizar('tk-panel')" style="width:150px">
+        <input id="tk-panel-emoji" placeholder="🎫" oninput="prevPanelActualizar('tk-panel')" style="width:56px;text-align:center">
+        <select id="tk-panel-estilo" oninput="prevPanelActualizar('tk-panel')" style="width:120px">
           <option value="verde" selected>verde</option>
           <option value="blurple">blurple</option>
           <option value="gris">gris</option>
@@ -1032,19 +1061,23 @@ SECCIONES.tickets = function () {
       </div>
       <div class="fila-inline" style="margin-bottom:10px">
         <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--texto-2)">
-          <input type="color" id="tk-panel-colorpicker" value="#8b7cf6" style="width:34px;height:30px;padding:0;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer">
-          color embed
+          <input type="color" id="tk-panel-colorpicker" value="#8b7cf6" oninput="prevPanelActualizar('tk-panel')" style="width:34px;height:30px;padding:0;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer">
+          color del embed
         </label>
-        <input id="tk-panel-desc" placeholder="descripción del panel (opcional)" style="flex:1;min-width:200px;width:auto">
+        <input id="tk-panel-desc" placeholder="descripción del panel (opcional)" oninput="prevPanelActualizar('tk-panel')" style="flex:1;min-width:200px;width:auto">
       </div>
       <div class="fila-inline" style="margin-bottom:10px">
-        <input id="tk-panel-imagen" placeholder="URL imagen grande / banner (opcional)" style="flex:1;min-width:220px;width:auto">
-        <input id="tk-panel-miniatura" placeholder="URL miniatura (opcional)" style="flex:1;min-width:180px;width:auto">
+        <input id="tk-panel-imagen" placeholder="URL imagen grande / banner (opcional)" oninput="prevPanelActualizar('tk-panel')" style="flex:1;min-width:220px;width:auto">
+        <input id="tk-panel-miniatura" placeholder="URL miniatura (opcional)" oninput="prevPanelActualizar('tk-panel')" style="flex:1;min-width:180px;width:auto">
       </div>
       <div class="fila-inline" style="margin-bottom:4px">
-        <input id="tk-panel-autor" placeholder="autor (opcional)" style="width:180px">
-        <input id="tk-panel-footer" placeholder="footer (opcional)" style="flex:1;min-width:160px;width:auto">
+        <input id="tk-panel-autor" placeholder="autor (opcional)" oninput="prevPanelActualizar('tk-panel')" style="width:180px">
+        <input id="tk-panel-footer" placeholder="footer (opcional)" oninput="prevPanelActualizar('tk-panel')" style="flex:1;min-width:160px;width:auto">
         <button class="btn btn-primario" onclick="ticketPanelAdd()">📋 Crear panel</button>
+      </div>
+      <div class="prev-zona">
+        <div class="prev-etiqueta">Previsualización en vivo</div>
+        <div id="prev-tk-panel"></div>
       </div>
       <div class="stats-mini">
         <span class="mini-chip">🎟️ <b>${fmtNum((tk.stats || {}).abiertos_ahora)}</b> abiertos ahora</span>
@@ -1403,6 +1436,44 @@ async function automodExcanalRemove(cid) {
 }
 
 /* ===== Tickets ===== */
+function prevPanelRender(pnl) {
+  const urlOk = u => /^https?:\/\//.test(u || "");
+  const estilo = ["verde", "blurple", "gris", "rojo"].includes(pnl.estilo) ? pnl.estilo : "verde";
+  const color = (pnl.color || "").replace("#", "");
+  const hexOk = /^[0-9a-fA-F]{6}$/.test(color);
+  return `
+    <div class="prev-embed" style="border-left-color:${hexOk ? "#" + color : "#5865f2"}">
+      ${urlOk(pnl.miniatura) ? `<img class="prev-thumb" src="${esc(pnl.miniatura)}" alt="" onerror="this.style.display='none'">` : ""}
+      ${pnl.autor ? `<div class="prev-autor">${esc(pnl.autor)}</div>` : ""}
+      ${pnl.titulo ? `<div class="prev-titulo">${esc(pnl.titulo)}</div>` : ""}
+      ${pnl.desc ? `<div class="prev-desc">${esc(pnl.desc)}</div>` : ""}
+      ${urlOk(pnl.imagen) ? `<img class="prev-imagen" src="${esc(pnl.imagen)}" alt="" onerror="this.style.display='none'">` : ""}
+      ${pnl.footer ? `<div class="prev-footer">${esc(pnl.footer)}</div>` : ""}
+    </div>
+    <div class="prev-botones">
+      <span class="prev-boton ${estilo}">${esc(pnl.emoji || "🎫")} ${esc(pnl.boton || "Abrir ticket")}</span>
+    </div>`;
+}
+
+function prevPanelActualizar(pref) {
+  const val = campo => (document.getElementById(pref + "-" + campo) || {}).value || "";
+  const picker = document.getElementById(pref + "-colorpicker");
+  const cont = document.getElementById("prev-" + pref);
+  if (!cont) return;
+  cont.innerHTML = prevPanelRender({
+    titulo: val("titulo").trim(),
+    desc: val("desc").trim(),
+    color: picker ? picker.value : "",
+    imagen: val("imagen").trim(),
+    miniatura: val("miniatura").trim(),
+    autor: val("autor").trim(),
+    footer: val("footer").trim(),
+    emoji: val("emoji").trim(),
+    boton: val("boton").trim(),
+    estilo: val("estilo"),
+  });
+}
+
 async function guardarTickets() {
   const payload = {
     enabled: document.getElementById("tk-enabled").checked,
@@ -1479,12 +1550,13 @@ async function ticketPanelAdd() {
 
 async function ticketPanelEdit(pid) {
   const val = campo => (document.getElementById("pe-" + pid + "-" + campo) || {}).value || "";
+  const picker = document.getElementById("pe-" + pid + "-colorpicker");
   const payload = {
     panel_edit: {
       id: pid,
       titulo: val("titulo").trim(),
       desc: val("desc").trim(),
-      color: val("color").trim(),
+      color: picker ? picker.value.replace("#", "") : "",
       imagen: val("imagen").trim(),
       miniatura: val("miniatura").trim(),
       autor: val("autor").trim(),

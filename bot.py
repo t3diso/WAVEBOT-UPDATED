@@ -1226,6 +1226,7 @@ async def on_ready():
     # Reanudar giveaways y reminders activos.
     bot.loop.create_task(_reanudar_giveaways())
     bot.loop.create_task(_reanudar_reminders())
+    bot.loop.create_task(_tarea_prestamos())
 
 
 @bot.command(name="sync")
@@ -4963,6 +4964,10 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}highlow <monto|all>` :: Mayor o menor (x1.9)\n"
                     f"`{p}roulette <rojo|negro|verde> <monto|all>` :: Ruleta\n"
                     f"`{p}blackjack <monto|all>` :: Blackjack (x2, natural x2.5)\n"
+                    f"`{p}prestamo pedir (monto|all)` :: Pide un préstamo (interés + plazo)\n"
+                    f"`{p}prestamo pagar (monto|all)` :: Paga tu deuda\n"
+                    f"`{p}prestamo info` :: Estado de tu préstamo\n"
+                    f"`{p}prestamo config (max|interes|plazo) (valor)` :: Ajustes (admin)\n"
                     f"`{p}baltop` :: Top de ricos\n"
                     f"`{p}add-money @usuario <monto>` :: Dar dinero (admin)\n"
                     f"`{p}remove-money @usuario <monto>` :: Quitar dinero (admin)\n"
@@ -6856,6 +6861,133 @@ async def slash_tickets_remove(interaction: discord.Interaction, usuario: discor
 bot.tree.add_command(tickets_group)
 
 
+# ============================================================
+#  SLASH: /prestamo (grupo)
+# ============================================================
+
+prestamo_group = app_commands.Group(name="prestamo", description="Préstamos de la economía (paga a tiempo o te embargan)")
+
+
+@prestamo_group.command(name="pedir", description="Pide un préstamo (con interés y plazo)")
+@app_commands.describe(monto="Cantidad a pedir (número o 'all' para el máximo)")
+async def slash_prestamo_pedir(interaction: discord.Interaction, monto: str):
+    if interaction.guild is None:
+        return await interaction.response.send_message("❌ Este comando solo funciona en servidores.", ephemeral=True)
+    cfg = get_econ_config(interaction.guild.id)
+    u = get_user_econ(interaction.guild.id, interaction.user.id)
+    carcel = econ_check_carcel(u, "préstamos")
+    if carcel:
+        return await interaction.response.send_message(carcel, ephemeral=True)
+    actual = _prestamo_estado(u)
+    if actual is not None:
+        return await interaction.response.send_message(f"❌ Ya tienes un préstamo activo: debes **{fmt_dinero(actual['deuda'], cfg)}**. Págalo primero.", ephemeral=True)
+    texto = monto.strip().lower()
+    if texto in ("all", "todo", "max"):
+        cantidad = int(cfg.get("loan_max", 5000))
+    else:
+        cantidad = _parse_entero(monto)
+        if cantidad is None or cantidad <= 0:
+            return await interaction.response.send_message("❌ El monto debe ser un número entero mayor que 0 (o `all`).", ephemeral=True)
+    if cantidad > int(cfg.get("loan_max", 5000)):
+        return await interaction.response.send_message(f"❌ El máximo por préstamo es {fmt_dinero(cfg['loan_max'], cfg)}.", ephemeral=True)
+    interes = int(cfg.get("loan_interes", 10))
+    plazo_h = int(cfg.get("loan_plazo", 24))
+    deuda = cantidad + round(cantidad * interes / 100)
+    vence = time.time() + plazo_h * 3600
+    u["cash"] += cantidad
+    u["loan"] = {"monto": cantidad, "deuda": deuda, "vencimiento": vence}
+    guardar_economy()
+    embed = discord.Embed(title="🏦 Préstamo concedido", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
+    embed.add_field(name="Recibiste", value=fmt_dinero(cantidad, cfg), inline=True)
+    embed.add_field(name="Debes", value=f"**{fmt_dinero(deuda, cfg)}** (+{interes}%)", inline=True)
+    embed.add_field(name="Vence", value=f"<t:{int(vence)}:R>", inline=True)
+    embed.set_footer(text="Si vence sin pagar, se embarga TODO tu dinero y puedes quedar en negativo.")
+    await interaction.response.send_message(embed=embed)
+
+
+@prestamo_group.command(name="pagar", description="Paga tu deuda (total o parcial)")
+@app_commands.describe(monto="Cantidad a pagar (número o 'all' para saldarla)")
+async def slash_prestamo_pagar(interaction: discord.Interaction, monto: str):
+    if interaction.guild is None:
+        return await interaction.response.send_message("❌ Este comando solo funciona en servidores.", ephemeral=True)
+    cfg = get_econ_config(interaction.guild.id)
+    u = get_user_econ(interaction.guild.id, interaction.user.id)
+    actual = _prestamo_estado(u)
+    if actual is None:
+        return await interaction.response.send_message("✨ No tienes ningún préstamo activo.", ephemeral=True)
+    deuda = int(actual["deuda"])
+    texto = monto.strip().lower()
+    if texto in ("all", "todo"):
+        cantidad = deuda
+    else:
+        cantidad = _parse_entero(monto)
+        if cantidad is None or cantidad <= 0:
+            return await interaction.response.send_message("❌ El monto debe ser un número entero mayor que 0 (o `all`).", ephemeral=True)
+    disponible = int(u.get("cash", 0)) + int(u.get("bank", 0))
+    pago = min(cantidad, deuda, max(disponible, 0))
+    if pago <= 0:
+        return await interaction.response.send_message(f"❌ No tienes dinero para pagar. Debes {fmt_dinero(deuda, cfg)}.", ephemeral=True)
+    de_cash = min(max(int(u.get("cash", 0)), 0), pago)
+    u["cash"] = int(u.get("cash", 0)) - de_cash
+    u["bank"] = int(u.get("bank", 0)) - (pago - de_cash)
+    restante = deuda - pago
+    if restante <= 0:
+        u["loan"] = None
+        guardar_economy()
+        embed = discord.Embed(title="🎉 Préstamo pagado por completo", color=discord.Color.green(), timestamp=discord.utils.utcnow())
+        embed.add_field(name="Pagaste", value=fmt_dinero(pago, cfg), inline=True)
+        await interaction.response.send_message(embed=embed)
+        return
+    actual["deuda"] = restante
+    guardar_economy()
+    embed = discord.Embed(title="💸 Pago registrado", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
+    embed.add_field(name="Pagaste", value=fmt_dinero(pago, cfg), inline=True)
+    embed.add_field(name="Deuda restante", value=f"**{fmt_dinero(restante, cfg)}**", inline=True)
+    embed.add_field(name="Vence", value=f"<t:{int(actual['vencimiento'])}:R>", inline=True)
+    await interaction.response.send_message(embed=embed)
+
+
+@prestamo_group.command(name="info", description="Estado de tu préstamo")
+async def slash_prestamo_info(interaction: discord.Interaction):
+    if interaction.guild is None:
+        return await interaction.response.send_message("❌ Este comando solo funciona en servidores.", ephemeral=True)
+    cfg = get_econ_config(interaction.guild.id)
+    u = get_user_econ(interaction.guild.id, interaction.user.id)
+    actual = _prestamo_estado(u)
+    if actual is None:
+        return await interaction.response.send_message("✨ No tienes ningún préstamo activo.", ephemeral=True)
+    vencido = actual.get("vencimiento", 0) <= time.time()
+    embed = discord.Embed(title="🏦 Tu préstamo", color=discord.Color.red() if vencido else discord.Color.gold(), timestamp=discord.utils.utcnow())
+    embed.add_field(name="Pedido", value=fmt_dinero(actual.get("monto", 0), cfg), inline=True)
+    embed.add_field(name="Deuda restante", value=f"**{fmt_dinero(actual.get('deuda', 0), cfg)}**", inline=True)
+    embed.add_field(name="Vence", value=("⚠️ **VENCIDO** — embargo inminente" if vencido else f"<t:{int(actual['vencimiento'])}:R>"), inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@prestamo_group.command(name="config", description="Ajusta los préstamos (Manage Server)")
+@app_commands.describe(campo="Campo a ajustar", valor="Nuevo valor")
+@app_commands.default_permissions(manage_guild=True)
+@app_commands.choices(campo=[
+    app_commands.Choice(name="max (máximo por préstamo)", value="max"),
+    app_commands.Choice(name="interes (%)", value="interes"),
+    app_commands.Choice(name="plazo (horas)", value="plazo"),
+])
+async def slash_prestamo_config(interaction: discord.Interaction, campo: app_commands.Choice[str], valor: int):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message("❌ Necesitas el permiso Manage Server.", ephemeral=True)
+    valor_limpio, err = _prestamo_config_validar(campo.value, valor)
+    if err:
+        return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
+    cfg = get_econ_config(interaction.guild.id)
+    clave = {"max": "loan_max", "interes": "loan_interes", "plazo": "loan_plazo"}[campo.value]
+    cfg[clave] = valor_limpio
+    guardar_economy()
+    await interaction.response.send_message(f"✅ Configuración de préstamos actualizada: **{campo.value} = {valor_limpio}**.")
+
+
+bot.tree.add_command(prestamo_group)
+
+
 
 # ============================================================
 #  SLASH: /soft /softban (baneo temporal)
@@ -6959,7 +7091,7 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(name="🎫 Tickets", value="`tickets` (ver config) `tickets on`/`off` `tickets soporte` `tickets categoria` `tickets canal` `tickets limite` `tickets pregunta-add`/`pregunta-remove` `tickets panel-add`/`panel-edit`/`panel-remove` `tickets cerrar` `tickets claim` `tickets add`/`remove`\nGrupo slash `/tickets` completo.\nPaneles personalizables (color, imagen, footer, botón) • Transcript HTML y DM al autor • Desactivado por defecto", inline=False)
     embed.add_field(name="👥 Roles", value="`roleadd`/`role add` `roleremove`/`role remove` `rolehuman`/`role human` `roleall`/`role all` `rolebot`/`role bot`\n`autorolehuman`/`autorole human` `autorolebot`/`autorole bot` `autorole`/`autorole general` `autorolelist`/`autorole list`", inline=False)
     embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
-    embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
+    embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob` `prestamo`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
     embed.add_field(name="🎉 Sorteos y utilidades", value="`gcreate`/`giveaway create` `glist`/`giveaway list` `gdelete`/`giveaway delete` `greroll`/`giveaway reroll` `avatar` `banner` `remindme`/`remind`", inline=False)
     embed.add_field(name="🔗 Canales y links", value="`linkban`/`link ban` `linkunban`/`link unban` `linkbanlist`/`link list` `logchannel`/`log channel` `logunchannel`/`log unchannel` `logschannels`/`log channels`", inline=False)
     embed.add_field(name="⚙️ Configuración", value=f"`setprefix`/`/setprefix` `prefix` `prefixremove` `sync` `dashboard` `help`", inline=False)
@@ -8065,6 +8197,9 @@ def get_econ_config(guild_id):
         "crime_min": 100, "crime_max": 500, "crime_fallo": 0.35,
         "slut_min": 150, "slut_max": 400, "slut_fallo": 0.15,
         "rob_min": 0.10, "rob_max": 0.25, "rob_fallo": 0.40,
+        "loan_max": 5000,       # máximo por préstamo
+        "loan_interes": 10,     # % de interés
+        "loan_plazo": 24,       # horas para pagar
     }
     if gid not in econ_config_db:
         econ_config_db[gid] = defaults.copy()
@@ -8081,11 +8216,13 @@ def get_user_econ(guild_id, user_id):
     if uid not in gdata:
         gdata[uid] = {
             "cash": cfg["start_balance"], "bank": 0, "inventory": {}, "jailed_until": 0,
+            "loan": None,
             "last_daily": 0, "last_weekly": 0, "last_monthly": 0,
             "last_work": 0, "last_crime": 0, "last_slut": 0, "last_rob": 0,
         }
     u = gdata[uid]
     u.setdefault("inventory", {})
+    u.setdefault("loan", None)
     return u
 
 
@@ -9042,6 +9179,223 @@ async def eco_deposit(ctx, *, monto: str = ""):
 async def eco_withdraw(ctx, *, monto: str = ""):
     """Retira dinero del banco. Uso: .withdraw <monto|all|mitad>"""
     await ctx.send(**_eco_retirar(ctx.guild, ctx.author, monto))
+
+
+# ============================================================
+#  PRÉSTAMOS (economía)
+# ============================================================
+
+def _prestamo_estado(u):
+    """Devuelve el préstamo activo del usuario, o None."""
+    prestamo = u.get("loan")
+    if not prestamo or not prestamo.get("vencimiento"):
+        return None
+    return prestamo
+
+
+def _prestamo_cobrar_vencidos():
+    """Embarga los préstamos vencidos: se queda con TODO tu dinero y puede
+    dejarte en NEGATIVO si lo que tienes no cubre la deuda."""
+    ahora = time.time()
+    cobrados = []
+    for gid, usuarios in economy_db.items():
+        for uid, u in usuarios.items():
+            if not isinstance(u, dict):
+                continue
+            prestamo = _prestamo_estado(u)
+            if prestamo is None or prestamo.get("vencimiento", 0) > ahora:
+                continue
+            deuda = int(prestamo.get("deuda", 0))
+            disponible = int(u.get("cash", 0)) + int(u.get("bank", 0))
+            u["cash"] = disponible - deuda  # puede quedar en negativo
+            u["bank"] = 0
+            u["loan"] = None
+            cobrados.append((str(gid), str(uid), deuda, u["cash"]))
+    if cobrados:
+        guardar_economy()
+    return cobrados
+
+
+async def _tarea_prestamos():
+    """Cada minuto revisa préstamos vencidos y ejecuta el embargo (DM + logs)."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            for gid, uid, deuda, nuevo in _prestamo_cobrar_vencidos():
+                guild = bot.get_guild(int(gid))
+                cfg = get_econ_config(gid) if guild is not None else {"currency": "$"}
+                try:
+                    usuario = await bot.fetch_user(int(uid))
+                except (discord.NotFound, discord.HTTPException):
+                    usuario = None
+                if usuario is not None:
+                    embed = discord.Embed(
+                        title="🚨 Préstamo vencido — embargo ejecutado",
+                        color=discord.Color.red(),
+                        timestamp=discord.utils.utcnow(),
+                    )
+                    embed.add_field(name="Deuda", value=fmt_dinero(deuda, cfg), inline=True)
+                    embed.add_field(name="Tu saldo ahora", value=f"{'⚠️ ' if nuevo < 0 else ''}{fmt_dinero(nuevo, cfg)}", inline=True)
+                    embed.set_footer(text="Si quedaste en negativo, se descontará de lo que ganes. Paga tus deudas a tiempo.")
+                    try:
+                        await usuario.send(embed=embed)
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
+                if guild is not None:
+                    log = discord.Embed(
+                        title="🚨 Préstamo embargado",
+                        color=discord.Color.red(),
+                        timestamp=discord.utils.utcnow(),
+                    )
+                    log.add_field(name="Usuario", value=f"<@{uid}> (`{uid}`)", inline=False)
+                    log.add_field(name="Deuda", value=fmt_dinero(deuda, cfg), inline=True)
+                    log.add_field(name="Saldo resultante", value=fmt_dinero(nuevo, cfg), inline=True)
+                    await enviar_logs(guild, log)
+        except Exception as e:
+            print(f"Error en la tarea de préstamos: {e}")
+        await asyncio.sleep(60)
+
+
+def _prestamo_config_validar(campo, valor):
+    """Valida un valor de configuración de préstamos. Devuelve (valor, None) o (None, error)."""
+    if campo == "max":
+        if not (1 <= valor <= 1000000):
+            return None, "El máximo debe estar entre 1 y 1000000."
+    elif campo == "interes":
+        if not (0 <= valor <= 1000):
+            return None, "El interés debe estar entre 0 y 1000 (%)."
+    elif campo == "plazo":
+        if not (1 <= valor <= 720):
+            return None, "El plazo debe estar entre 1 y 720 horas (30 días)."
+    else:
+        return None, "Campo desconocido (usa max, interes o plazo)."
+    return valor, None
+
+
+@bot.command(name="prestamo", aliases=["presto", "loan"])
+@commands.guild_only()
+async def eco_prestamo(ctx, *, args: str = ""):
+    """
+    Préstamos de la economía. Uso: .prestamo [pedir|pagar|info|config]
+    Si no pagas a tiempo, te embargan TODO y puedes quedar en negativo.
+    """
+    cfg = get_econ_config(ctx.guild.id)
+    u = get_user_econ(ctx.guild.id, ctx.author.id)
+    tokens = args.split()
+    sub = tokens[0].lower() if tokens else "info"
+    p = ctx.prefix if ctx.prefix and not MENTION_REGEX.match(ctx.prefix) else DEFAULT_PREFIX
+
+    if sub in ("pedir", "sacar", "tomar"):
+        carcel = econ_check_carcel(u, "préstamos")
+        if carcel:
+            return await ctx.send(carcel)
+        actual = _prestamo_estado(u)
+        if actual is not None:
+            return await ctx.send(f"❌ Ya tienes un préstamo activo: debes **{fmt_dinero(actual['deuda'], cfg)}**. Págalo con `{p}prestamo pagar`.")
+        if len(tokens) < 2:
+            return await ctx.send(f"❌ Uso correcto: `{p}prestamo pedir <monto|all>` (máximo {fmt_dinero(cfg['loan_max'], cfg)})")
+        texto = tokens[1].lower()
+        if texto in ("all", "todo", "max"):
+            monto = int(cfg.get("loan_max", 5000))
+        else:
+            monto = _parse_entero(tokens[1])
+            if monto is None or monto <= 0:
+                return await ctx.send("❌ El monto debe ser un número entero mayor que 0 (o `all`).")
+        if monto > int(cfg.get("loan_max", 5000)):
+            return await ctx.send(f"❌ El máximo por préstamo es {fmt_dinero(cfg['loan_max'], cfg)}.")
+        interes = int(cfg.get("loan_interes", 10))
+        plazo_h = int(cfg.get("loan_plazo", 24))
+        deuda = monto + round(monto * interes / 100)
+        vence = time.time() + plazo_h * 3600
+        u["cash"] += monto
+        u["loan"] = {"monto": monto, "deuda": deuda, "vencimiento": vence}
+        guardar_economy()
+        embed = discord.Embed(title="🏦 Préstamo concedido", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
+        embed.add_field(name="Recibiste", value=fmt_dinero(monto, cfg), inline=True)
+        embed.add_field(name="Debes", value=f"**{fmt_dinero(deuda, cfg)}** (+{interes}%)", inline=True)
+        embed.add_field(name="Vence", value=f"<t:{int(vence)}:R>", inline=True)
+        embed.set_footer(text=f"Paga con {p}prestamo pagar — si vences, se embarga TODO tu dinero y puedes quedar en negativo.")
+        return await ctx.send(embed=embed)
+
+    if sub in ("pagar", "devolver"):
+        actual = _prestamo_estado(u)
+        if actual is None:
+            return await ctx.send("✨ No tienes ningún préstamo activo.")
+        if len(tokens) < 2:
+            return await ctx.send(f"❌ Uso correcto: `{p}prestamo pagar <monto|all>` — deuda actual: {fmt_dinero(actual['deuda'], cfg)}")
+        deuda = int(actual["deuda"])
+        texto = tokens[1].lower()
+        if texto in ("all", "todo"):
+            monto = deuda
+        else:
+            monto = _parse_entero(tokens[1])
+            if monto is None or monto <= 0:
+                return await ctx.send("❌ El monto debe ser un número entero mayor que 0 (o `all`).")
+        disponible = int(u.get("cash", 0)) + int(u.get("bank", 0))
+        pago = min(monto, deuda, max(disponible, 0))
+        if pago <= 0:
+            return await ctx.send(f"❌ No tienes dinero para pagar. Debes {fmt_dinero(deuda, cfg)}.")
+        # Descontar: primero efectivo, luego banco.
+        de_cash = min(max(int(u.get("cash", 0)), 0), pago)
+        u["cash"] = int(u.get("cash", 0)) - de_cash
+        u["bank"] = int(u.get("bank", 0)) - (pago - de_cash)
+        restante = deuda - pago
+        if restante <= 0:
+            u["loan"] = None
+            guardar_economy()
+            embed = discord.Embed(title="🎉 Préstamo pagado por completo", color=discord.Color.green(), timestamp=discord.utils.utcnow())
+            embed.add_field(name="Pagaste", value=fmt_dinero(pago, cfg), inline=True)
+            embed.set_footer(text="Gracias por pagar a tiempo. La banca te aprecia.")
+            return await ctx.send(embed=embed)
+        actual["deuda"] = restante
+        guardar_economy()
+        embed = discord.Embed(title="💸 Pago registrado", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
+        embed.add_field(name="Pagaste", value=fmt_dinero(pago, cfg), inline=True)
+        embed.add_field(name="Deuda restante", value=f"**{fmt_dinero(restante, cfg)}**", inline=True)
+        embed.add_field(name="Vence", value=f"<t:{int(actual['vencimiento'])}:R>", inline=True)
+        return await ctx.send(embed=embed)
+
+    if sub in ("", "info", "estado"):
+        actual = _prestamo_estado(u)
+        if actual is None:
+            return await ctx.send("✨ No tienes ningún préstamo activo. Pide uno con `.prestamo pedir <monto>`.")
+        vencido = actual.get("vencimiento", 0) <= time.time()
+        embed = discord.Embed(title="🏦 Tu préstamo", color=discord.Color.red() if vencido else discord.Color.gold(), timestamp=discord.utils.utcnow())
+        embed.add_field(name="Pedido", value=fmt_dinero(actual.get("monto", 0), cfg), inline=True)
+        embed.add_field(name="Deuda restante", value=f"**{fmt_dinero(actual.get('deuda', 0), cfg)}**", inline=True)
+        embed.add_field(name="Vence", value=("⚠️ **VENCIDO** — embargo inminente" if vencido else f"<t:{int(actual['vencimiento'])}:R>"), inline=False)
+        embed.set_footer(text=f"Paga con {p}prestamo pagar <monto|all>")
+        return await ctx.send(embed=embed)
+
+    if sub == "config":
+        if not ctx.author.guild_permissions.manage_guild:
+            return await ctx.send("❌ Necesitas el permiso Manage Server.")
+        if len(tokens) < 3:
+            embed = discord.Embed(title="🏦 Configuración de préstamos", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
+            embed.add_field(name="Máximo por préstamo", value=fmt_dinero(cfg.get("loan_max", 5000), cfg), inline=True)
+            embed.add_field(name="Interés", value=f"{cfg.get('loan_interes', 10)}%", inline=True)
+            embed.add_field(name="Plazo", value=f"{cfg.get('loan_plazo', 24)}h", inline=True)
+            embed.set_footer(text=f"Editar: {p}prestamo config <max|interes|plazo> <valor>")
+            return await ctx.send(embed=embed)
+        campo = tokens[1].lower()
+        valor = _parse_entero(tokens[2])
+        if valor is None:
+            return await ctx.send("❌ El valor debe ser un número entero.")
+        valor, err = _prestamo_config_validar(campo, valor)
+        if err:
+            return await ctx.send(f"❌ {err}")
+        clave = {"max": "loan_max", "interes": "loan_interes", "plazo": "loan_plazo"}[campo]
+        cfg[clave] = valor
+        guardar_economy()
+        return await ctx.send(f"✅ Configuración de préstamos actualizada: **{campo} = {valor}**.")
+
+    return await ctx.send(
+        "❌ Subcomando desconocido. Usa:\n"
+        f"`{p}prestamo pedir <monto|all>` :: Pide un préstamo\n"
+        f"`{p}prestamo pagar <monto|all>` :: Paga tu deuda\n"
+        f"`{p}prestamo info` :: Estado de tu préstamo\n"
+        f"`{p}prestamo config <max|interes|plazo> <valor>` :: Config (admin)"
+    )
 
 
 @bot.command(name="shop", aliases=["tienda"])
