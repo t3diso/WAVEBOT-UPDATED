@@ -5241,6 +5241,7 @@ def _musica_cancion_de_info(info, solicitante, autoplay=False):
         "id": vid,
         "titulo": _musica_truncar(info.get("title") or "Desconocido", 100),
         "url_stream": info.get("url") or "",
+        "http_headers": info.get("http_headers") or {},
         "url_web": info.get("webpage_url") or (f"https://www.youtube.com/watch?v={vid}" if vid else None),
         "artista": _musica_truncar(info.get("uploader") or "Desconocido", 80),
         "duracion": int(info.get("duration") or 0),
@@ -5249,6 +5250,7 @@ def _musica_cancion_de_info(info, solicitante, autoplay=False):
         "solicitante": str(solicitante) if solicitante is not None else "📻 Autoplay",
         "autoplay": autoplay,
     }
+    
 
 
 def _musica_artista(cancion):
@@ -5391,6 +5393,7 @@ async def _musica_siguiente(guild):
                 info, _ = await _musica_extraer_video(cancion["url_web"])
                 if info and info.get("url"):
                     cancion["url_stream"] = info["url"]
+                    cancion["http_headers"] = info.get("http_headers") or {}
         else:
             fallos = 0
             while st["cola"] and cancion is None and fallos < 5:
@@ -5430,14 +5433,26 @@ async def _musica_siguiente(guild):
         st["actual"] = cancion
         st["historial"].append(dict(cancion))
         del st["historial"][:-MUSICA_HISTORIAL]
-        fuente = discord.PCMVolumeTransformer(
-            discord.FFmpegPCMAudio(
-                cancion["url_stream"],
-                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-                options="-vn",
-            ),
-            volume=max(0, min(st["volumen"], 150)) / 100.0,
-        )
+        
+headers = cancion.get("http_headers") or {}
+headers_ffmpeg = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+
+fuente = discord.PCMVolumeTransformer(
+    discord.FFmpegPCMAudio(
+        cancion["url_stream"],
+        before_options=(
+            "-reconnect 1 "
+            "-reconnect_streamed 1 "
+            "-reconnect_delay_max 5"
+        ),
+        options=(
+            f'-vn -headers "{headers_ffmpeg}"'
+            if headers_ffmpeg
+            else "-vn"
+        ),
+    ),
+    volume=max(0, min(st["volumen"], 150)) / 100.0,
+)
 
         def _musica_after(error):
             if error:
