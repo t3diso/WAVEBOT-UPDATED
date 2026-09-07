@@ -1311,6 +1311,20 @@ async def on_ready():
     cargar_integraciones()
     cargar_analytics()
     cargar_musica()
+    # Avisos de librerías de música/voz faltantes.
+    if yt_dlp is None:
+        print("⚠️ MÚSICA DESACTIVADA: falta yt-dlp → ejecuta `pip install -U yt-dlp` (o `pip install -r requirements.txt`).")
+    try:
+        from discord.voice_client import has_dave, has_nacl
+        faltan_voz = []
+        if not has_nacl:
+            faltan_voz.append("PyNaCl")
+        if not has_dave:
+            faltan_voz.append("davey (requerida por discord.py 2.7+ para voz)")
+        if faltan_voz:
+            print("⚠️ VOZ DESACTIVADA: falta(n) " + " · ".join(faltan_voz) + " → `pip install -U " + " ".join(p.split()[0] for p in faltan_voz) + "`")
+    except Exception:
+        pass
     cargar_dashboard()
     cargar_sesiones_dash()
     # Registrar vistas persistentes de tickets (botones que sobreviven reinicios).
@@ -4941,12 +4955,18 @@ _MUSICA_YDL = {
     "nocheckcertificate": True,
 }
 
+# Clientes alternativos: YouTube bloquea a veces las IPs de datacenter (DigitalOcean, etc.)
+# con "Sign in to confirm you're not a bot". Reintentar con otros clientes suele sortearlo.
+_MUSICA_YDL_TV = dict(_MUSICA_YDL, extractor_args={"youtube": {"player_client": ["tv"]}})
+_MUSICA_YDL_VR = dict(_MUSICA_YDL, extractor_args={"youtube": {"player_client": ["android_vr"]}})
+
 _MUSICA_YDL_FLAT = {
     "quiet": True,
     "no_warnings": True,
     "nocheckcertificate": True,
     "extract_flat": True,
 }
+_MUSICA_YDL_FLAT_TV = dict(_MUSICA_YDL_FLAT, extractor_args={"youtube": {"player_client": ["tv"]}})
 
 MUSICA_REPRODUCTORES = {}   # guild_id (str) -> estado en memoria del reproductor
 
@@ -5025,6 +5045,181 @@ async def _ydl_extraer(consulta, opciones):
     return await loop.run_in_executor(None, _run)
 
 
+def _musica_limpiar_error(e):
+    """Extrae el mensaje de error de yt-dlp sin URLs ni ruido."""
+    msg = str(e)
+    msg = re.sub(r"https?://\S+", "", msg)
+    msg = re.sub(r"ERROR:\s*\[?\w+:?\w*\]?\s*", "", msg)
+    msg = " ".join(msg.split())
+    return _musica_truncar(msg, 180) or "error desconocido"
+
+
+async def _musica_extraer_video(consulta):
+    """Extrae un vídeo (búsqueda o URL) con reintentos en clientes alternativos.
+    Devuelve (info, None) o (None, mensaje_error)."""
+    if yt_dlp is None:
+        return None, "falta yt-dlp (pip install -U yt-dlp)"
+    errores = []
+    for opciones in (_MUSICA_YDL, _MUSICA_YDL_TV, _MUSICA_YDL_VR):
+        try:
+            info = await _ydl_extraer(consulta, opciones)
+        except Exception as e:
+            errores.append(_musica_limpiar_error(e))
+            continue
+        if not info:
+            errores.append("sin resultados")
+            continue
+        if info.get("_type") == "playlist" or info.get("entries"):
+            entradas = [e for e in (info.get("entries") or []) if e]
+            if not entradas:
+                errores.append("sin resultados")
+                continue
+            return entradas[0], None
+        return info, None
+    return None, " · ".join(dict.fromkeys(errores))
+
+
+async def _musica_extraer_flat(consulta):
+    """Extracción plana (listas/búsquedas) con reintento en cliente alternativo.
+    Devuelve (entradas, None) o (None, mensaje_error)."""
+    errores = []
+    for opciones in (_MUSICA_YDL_FLAT, _MUSICA_YDL_FLAT_TV):
+        try:
+            info = await _ydl_extraer(consulta, opciones)
+        except Exception as e:
+            errores.append(_musica_limpiar_error(e))
+            continue
+        entradas = [e for e in ((info or {}).get("entries") or []) if e]
+        if entradas:
+            return entradas, None
+        errores.append("sin resultados")
+    return None, " · ".join(dict.fromkeys(errores))
+
+
+def _musica_msg_error_voz(e):
+    """Traduce errores típicos de conexión de voz a mensajes accionables."""
+    texto = str(e).lower()
+    if "davey" in texto or "dave" in texto:
+        return ("❌ Falta la librería `davey`, que discord.py 2.7+ exige para voz. "
+                "Instálala con `pip install -U davey` (o `pip install -r requirements.txt`) y reinicia el bot.")
+    if "pynacl" in texto or "nacl" in texto:
+        return "❌ Falta la librería `PyNaCl` para el audio. Instálala con `pip install -U PyNaCl` y reinicia el bot."
+    if "opus" in texto:
+        return "❌ Falta el códec Opus. Instálalo con `sudo apt install libopus0 ffmpeg` y reinicia el bot."
+    return f"❌ No pude conectarme al canal de voz: {_musica_truncar(e, 140)}"
+
+
+# ---------- Spotify (opcional; credenciales gratuitas de developer.spotify.com) ----------
+
+SPOTIFY_REGEX = re.compile(r"(?:open\.)?spotify\.com/(?:intl-[a-z-]+/)?(track|album|playlist)/([A-Za-z0-9]+)")
+_SPOTIFY_TOKEN = {"valor": None, "expira": 0.0}
+SPOTIFY_CREDENCIALES = (None, None)   # (client_id, client_secret) una vez leídas
+
+
+def _spotify_leer_credenciales():
+    global SPOTIFY_CREDENCIALES
+    if SPOTIFY_CREDENCIALES[0] is not None:
+        return SPOTIFY_CREDENCIALES
+    cid = os.environ.get("SPOTIFY_CLIENT_ID", "").strip()
+    secreto = os.environ.get("SPOTIFY_CLIENT_SECRET", "").strip()
+    if not cid or not secreto:
+        # spotify.txt junto al script, formato:  ID:SECRETO
+        ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spotify.txt")
+        if os.path.exists(ruta):
+            try:
+                with open(ruta, "r", encoding="utf-8") as f:
+                    linea = f.read().strip()
+                if ":" in linea:
+                    cid, secreto = (p.strip() for p in linea.split(":", 1))
+            except OSError:
+                pass
+    SPOTIFY_CREDENCIALES = (cid or None, secreto or None)
+    return SPOTIFY_CREDENCIALES
+
+
+SPOTIFY_MSG_SIN_CREDS = (
+    "🎧 Para reproducir enlaces de Spotify necesito credenciales gratuitas de la API de Spotify:\n"
+    "1. Crea una app en **https://developer.spotify.com/dashboard** (gratis, sin aprobaciones)\n"
+    "2. Copia el *Client ID* y el *Client Secret*\n"
+    "3. Crea un archivo `spotify.txt` junto al bot con: `CLIENT_ID:CLIENT_SECRET`\n"
+    "(o define las variables de entorno `SPOTIFY_CLIENT_ID` y `SPOTIFY_CLIENT_SECRET`) y reinicia.\n"
+    "Mientras tanto, los enlaces de YouTube y las búsquedas funcionan normal."
+)
+
+
+async def _spotify_token():
+    cid, secreto = _spotify_leer_credenciales()
+    if not cid or not secreto:
+        return None
+    if _SPOTIFY_TOKEN["valor"] and time.time() < _SPOTIFY_TOKEN["expira"] - 60:
+        return _SPOTIFY_TOKEN["valor"]
+    try:
+        async with aiohttp.ClientSession() as sesion:
+            async with sesion.post(
+                "https://accounts.spotify.com/api/token",
+                data={"grant_type": "client_credentials"},
+                auth=aiohttp.BasicAuth(cid, secreto),
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as r:
+                data = await r.json()
+                if r.status != 200:
+                    print(f"[spotify] Error pidiendo token ({r.status}): {str(data)[:150]}")
+                    return None
+                _SPOTIFY_TOKEN["valor"] = data.get("access_token")
+                _SPOTIFY_TOKEN["expira"] = time.time() + int(data.get("expires_in", 3600))
+                return _SPOTIFY_TOKEN["valor"]
+    except Exception as e:
+        print(f"[spotify] Error de conexión: {e}")
+        return None
+
+
+async def _spotify_api(ruta):
+    token = await _spotify_token()
+    if token is None:
+        return None
+    try:
+        async with aiohttp.ClientSession() as sesion:
+            async with sesion.get(
+                f"https://api.spotify.com/v1/{ruta}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as r:
+                if r.status == 401:
+                    _SPOTIFY_TOKEN["valor"] = None
+                if r.status != 200:
+                    print(f"[spotify] API {ruta} respondió {r.status}")
+                    return None
+                return await r.json()
+    except Exception as e:
+        print(f"[spotify] Error consultando {ruta}: {e}")
+        return None
+
+
+async def _spotify_obtener(tipo, sid):
+    """Devuelve la pista ("consulta", "titulo") o la lista de pistas de un álbum/playlist.
+    None si no hay credenciales o falló la API."""
+    if tipo == "track":
+        datos = await _spotify_api(f"tracks/{sid}")
+        if not datos:
+            return None
+        artistas = ", ".join(a["name"] for a in (datos.get("artists") or [])[:2])
+        titulo = datos.get("name") or "Desconocido"
+        return {"consulta": f"{artistas} - {titulo}".strip(" -"), "titulo": titulo, "artista": artistas}
+    ruta_api = f"playlists/{sid}/tracks" if tipo == "playlist" else f"albums/{sid}/tracks"
+    datos = await _spotify_api(ruta_api)
+    if not datos:
+        return None
+    pistas = []
+    for item in (datos.get("items") or [])[:MUSICA_MAX_PLAYLIST]:
+        # En playlists la pista va dentro de item["track"]; en álbumes, directamente en item
+        pista = item.get("track") if tipo == "playlist" else item
+        if not pista or not pista.get("name"):
+            continue
+        artistas = ", ".join(a.get("name", "") for a in (pista.get("artists") or [])[:2] if a)
+        pistas.append({"consulta": f"{artistas} - {pista['name']}".strip(" -"), "titulo": pista["name"]})
+    return pistas
+
+
 def _musica_cancion_de_info(info, solicitante, autoplay=False):
     vid = info.get("id") or ""
     return {
@@ -5066,11 +5261,9 @@ async def _musica_buscar_autoplay(artista, ids_excluidos):
     consultas = [f"ytsearch15:{artista} topic", f"ytsearch15:{artista} songs", f"ytsearch15:{artista}"]
     excluidos = set(ids_excluidos or [])
     for consulta in consultas:
-        try:
-            info = await _ydl_extraer(consulta, _MUSICA_YDL_FLAT)
-        except Exception:
+        entradas, err = await _musica_extraer_flat(consulta)
+        if not entradas:
             continue
-        entradas = (info or {}).get("entries") or []
         candidatas = []
         for e in entradas:
             if not e:
@@ -5180,53 +5373,37 @@ async def _musica_siguiente(guild):
         if st["bucle"] == "cancion" and st["actual"] is not None:
             cancion = dict(st["actual"])
             if cancion.get("url_web"):
-                try:
-                    info = await _ydl_extraer(cancion["url_web"], _MUSICA_YDL)
-                    if info and info.get("url"):
-                        cancion["url_stream"] = info["url"]
-                except Exception:
-                    pass
+                info, _ = await _musica_extraer_video(cancion["url_web"])
+                if info and info.get("url"):
+                    cancion["url_stream"] = info["url"]
         else:
             fallos = 0
             while st["cola"] and cancion is None and fallos < 5:
                 item = st["cola"].pop(0)
                 if item.get("pendiente"):
-                    try:
-                        info = await _ydl_extraer(item["pendiente"], _MUSICA_YDL)
-                    except Exception:
+                    info, err = await _musica_extraer_video(item["pendiente"])
+                    if info is None:
                         fallos += 1
                         continue
-                    if not info:
+                    if info.get("is_live"):
                         fallos += 1
                         continue
-                    if info.get("_type") == "playlist" or info.get("entries"):
-                        entradas = [e for e in (info.get("entries") or []) if e]
-                        if not entradas:
-                            fallos += 1
-                            continue
-                        info = entradas[0]
                     cancion = _musica_cancion_de_info(info, None)
                     cancion["solicitante_id"] = item.get("solicitante_id")
                     cancion["solicitante"] = item.get("solicitante") or "Anónimo"
                 else:
                     cancion = item
+            if fallos >= 5:
+                await _musica_anunciar(guild, contenido="⚠️ Salté varias canciones de la cola porque no se pudieron cargar.")
             if cancion is None and cfg.get("autoplay", True) and st["historial"]:
                 anterior = st["historial"][-1]
                 artista = _musica_artista(anterior)
                 ids = [c.get("id") for c in st["historial"] if c.get("id")]
                 url = await _musica_buscar_autoplay(artista, ids)
                 if url:
-                    try:
-                        info = await _ydl_extraer(url, _MUSICA_YDL)
-                        if info:
-                            if info.get("_type") == "playlist" or info.get("entries"):
-                                entradas = [e for e in (info.get("entries") or []) if e]
-                                if entradas:
-                                    info = entradas[0]
-                            if not info.get("is_live") and info.get("url"):
-                                cancion = _musica_cancion_de_info(info, None, autoplay=True)
-                    except Exception:
-                        cancion = None
+                    info, err = await _musica_extraer_video(url)
+                    if info and not info.get("is_live") and info.get("url"):
+                        cancion = _musica_cancion_de_info(info, None, autoplay=True)
         if cancion is None:
             if st["actual"] is not None or st["historial"]:
                 await _musica_fin(guild, autoplay_off=not cfg.get("autoplay", True))
@@ -5309,7 +5486,7 @@ async def _musica_accion_join(guild, miembro, canal_texto=None):
     try:
         await canal.connect(self_deaf=True)
     except Exception as e:
-        return False, f"❌ No pude conectarme al canal de voz: {e}"
+        return False, _musica_msg_error_voz(e)
     if canal_texto is not None:
         _musica_estado(gid)["canal_anuncio_id"] = canal_texto.id
     return True, f"✅ Conectado a **{canal.name}**. Pon música con `play`."
@@ -5335,14 +5512,50 @@ async def _musica_accion_play(guild, miembro, consulta, canal_texto=None):
     st = _musica_estado(gid)
     if canal_texto is not None:
         st["canal_anuncio_id"] = canal_texto.id
+    cola_antes = len(st["cola"])
     es_url = bool(re.match(r"https?://", consulta))
     es_playlist = es_url and ("list=" in consulta and "watch?v=" not in consulta)
-    if es_playlist:
-        try:
-            info = await _ydl_extraer(consulta, _MUSICA_YDL_FLAT)
-        except Exception as e:
-            return False, f"❌ No pude leer esa playlist: {e}", None
-        entradas = [e for e in ((info or {}).get("entries") or []) if e and (e.get("url") or e.get("id"))]
+    msg = None
+    cancion = None
+    pos = None
+    origen_spotify = None
+
+    # --- Enlaces de Spotify (requiere credenciales gratuitas de la API) ---
+    m_spotify = SPOTIFY_REGEX.search(consulta)
+    if m_spotify:
+        tipo_sp, sid_sp = m_spotify.group(1), m_spotify.group(2)
+        datos_sp = await _spotify_obtener(tipo_sp, sid_sp)
+        if datos_sp is None:
+            cid, _ = _spotify_leer_credenciales()
+            if cid:
+                return False, "❌ No pude leer ese enlace de Spotify (revisa que sea público y que las credenciales sean correctas).", None
+            return False, SPOTIFY_MSG_SIN_CREDS, None
+        if tipo_sp == "track":
+            consulta = datos_sp["consulta"]
+            origen_spotify = datos_sp["titulo"]
+            es_url = False
+            es_playlist = False
+        else:
+            hueco = MUSICA_MAX_COLA - len(st["cola"])
+            if hueco <= 0:
+                return False, "❌ La cola está llena.", None
+            for pista in datos_sp[:hueco]:
+                st["cola"].append({
+                    "pendiente": pista["consulta"],
+                    "id": None,
+                    "titulo": _musica_truncar(pista["titulo"], 100),
+                    "solicitante_id": miembro.id,
+                    "solicitante": str(miembro),
+                })
+            tipo_nombre = "Playlist" if tipo_sp == "playlist" else "Álbum"
+            msg = f"🎧 {tipo_nombre} de Spotify añadida: **{len(datos_sp)}** canciones en la cola."
+            origen_spotify = "playlist"
+
+    if not msg and not origen_spotify and es_playlist:
+        entradas, err = await _musica_extraer_flat(consulta)
+        if not entradas:
+            return False, f"❌ No pude leer esa playlist: {err}", None
+        entradas = [e for e in entradas if e and (e.get("url") or e.get("id"))]
         if not entradas:
             return False, "❌ No encontré canciones en esa playlist.", None
         hueco = MUSICA_MAX_COLA - len(st["cola"])
@@ -5359,26 +5572,16 @@ async def _musica_accion_play(guild, miembro, consulta, canal_texto=None):
                 "solicitante": str(miembro),
             })
         msg = f"✅ Playlist añadida: **{len(entradas)}** canciones en la cola."
-        cancion = None
-    else:
-        try:
-            info = await _ydl_extraer(consulta, _MUSICA_YDL)
-        except Exception:
-            return False, f"❌ No encontré nada con `{_musica_truncar(consulta, 60)}`.", None
-        if not info:
-            return False, "❌ No encontré resultados.", None
-        if info.get("_type") == "playlist" or info.get("entries"):
-            entradas = [e for e in (info.get("entries") or []) if e]
-            if not entradas:
-                return False, "❌ No encontré resultados.", None
-            info = entradas[0]
+    elif not origen_spotify or origen_spotify != "playlist":
+        info, err = await _musica_extraer_video(consulta)
+        if info is None:
+            return False, f"❌ No pude reproducir `{_musica_truncar(consulta, 60)}`: {err}\nSi el error habla de *bot* o *cookies*, es YouTube bloqueando la IP del servidor: ejecuta `pip install -U yt-dlp` y prueba de nuevo.", None
         if info.get("is_live"):
             return False, "❌ No puedo reproducir directos (en vivo). Busca la versión normal.", None
-        if not info.get("url") and info.get("url_web"):
-            try:
-                info = await _ydl_extraer(info["url_web"], _MUSICA_YDL)
-            except Exception:
-                pass
+        if not info.get("url") and info.get("webpage_url"):
+            info, err2 = await _musica_extraer_video(info["webpage_url"])
+            if info is None:
+                return False, f"❌ No pude obtener el audio de ese resultado: {err2}", None
         if not info or not info.get("url"):
             return False, "❌ No pude obtener el audio de ese resultado. Prueba con otro.", None
         cancion = _musica_cancion_de_info(info, miembro)
@@ -5386,7 +5589,6 @@ async def _musica_accion_play(guild, miembro, consulta, canal_texto=None):
             return False, "❌ La cola está llena.", None
         st["cola"].append(cancion)
         pos = len(st["cola"])
-        msg = None
     vc = guild.voice_client
     if vc is None:
         perms = canal_voz.permissions_for(guild.me)
@@ -5395,16 +5597,24 @@ async def _musica_accion_play(guild, miembro, consulta, canal_texto=None):
         try:
             await canal_voz.connect(self_deaf=True)
         except Exception as e:
-            st["cola"].pop()
-            return False, f"❌ No pude conectarme al canal de voz: {e}", None
+            del st["cola"][cola_antes:]
+            return False, _musica_msg_error_voz(e), None
     vc = guild.voice_client
     st["detener"] = False
+    if origen_spotify and origen_spotify == "playlist":
+        if vc is not None and not vc.is_playing() and not vc.is_paused():
+            asyncio.create_task(_musica_siguiente(guild))
+        return True, msg, None
+    if origen_spotify:
+        prefijo = f"🎧 Spotify → **{origen_spotify}** · "
+    else:
+        prefijo = ""
     if vc is not None and not vc.is_playing() and not vc.is_paused():
         asyncio.create_task(_musica_siguiente(guild))
-        return True, (msg or f"▶ Reproduciendo: **{cancion['titulo']}**"), None
+        return True, prefijo + (msg or f"▶ Reproduciendo: **{cancion['titulo']}**"), None
     if msg:
-        return True, msg, None
-    return True, f"✅ Añadida a la cola en posición **{pos}**: **{cancion['titulo']}**", None
+        return True, prefijo + msg, None
+    return True, prefijo + f"✅ Añadida a la cola en posición **{pos}**: **{cancion['titulo']}**", None
 
 
 async def _musica_accion_pause(guild, miembro):
@@ -5640,7 +5850,7 @@ async def on_voice_state_update(miembro, antes, despues):
 
 @bot.command(name="play", aliases=["p", "reproducir"])
 async def play(ctx, *, consulta: str = ""):
-    """Reproduce una canción (búsqueda o enlace de YouTube). Uso: .play <canción o enlace>"""
+    """Reproduce una canción: búsqueda, enlace de YouTube o de Spotify. Uso: .play <canción o enlace>"""
     if not consulta:
         return await ctx.send("❌ Dime qué reproducir. Uso: `.play <canción o enlace>`")
     aviso = await ctx.send("🔍 Buscando…")
@@ -5766,8 +5976,8 @@ async def clear(ctx):
 
 # ---------- Comandos de música slash ----------
 
-@bot.tree.command(name="play", description="Reproduce música (búsqueda o enlace de YouTube, sin anuncios)")
-@app_commands.describe(cancion="Nombre de la canción o enlace de YouTube")
+@bot.tree.command(name="play", description="Reproduce música: búsqueda, enlace de YouTube o Spotify, sin anuncios")
+@app_commands.describe(cancion="Nombre de la canción o enlace de YouTube/Spotify")
 @app_commands.guild_only()
 async def slash_play(interaction: discord.Interaction, cancion: str):
     await interaction.response.defer()
@@ -6116,7 +6326,7 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}remindme (duración) (mensaje) (MD: sí/no)` :: Recordatorio"
                 ), color=discord.Color.purple()),
                 "musica": discord.Embed(title="🎵 Música", description=(
-                    f"`{p}play (canción o enlace)` :: Reproduce (aliases p, reproducir)\n"
+                    f"`{p}play (canción o enlace)` :: Reproduce: búsqueda, YouTube o Spotify (aliases p, reproducir)\n"
                     f"`{p}pause` :: Pausa · `{p}resume` :: Reanuda\n"
                     f"`{p}skip` :: Salta a la siguiente · `{p}stop` :: Para, vacía y se sale\n"
                     f"`{p}queue [página]` :: Ver cola (aliases q, cola)\n"
@@ -9437,7 +9647,7 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
     embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob` `prestamo`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
     embed.add_field(name="🎉 Sorteos y utilidades", value="`gcreate`/`giveaway create` `glist`/`giveaway list` `gdelete`/`giveaway delete` `greroll`/`giveaway reroll` `avatar` `banner` `remindme`/`remind`", inline=False)
-    embed.add_field(name="🎵 Música", value="`play` `pause` `resume` `skip` `stop` `queue` `nowplaying` `volume` `join` `leave` `loop` `shuffle` `autoplay` `remove` `clear`\nSin anuncios • Al vaciarse la cola, autoplay con canciones aleatorias del mismo artista • El bot se sale solo si no queda nadie escuchando", inline=False)
+    embed.add_field(name="🎵 Música", value="`play` `pause` `resume` `skip` `stop` `queue` `nowplaying` `volume` `join` `leave` `loop` `shuffle` `autoplay` `remove` `clear`\nBúsquedas, enlaces de YouTube y Spotify • Sin anuncios • Al vaciarse la cola, autoplay con canciones aleatorias del mismo artista • El bot se sale solo si no queda nadie escuchando", inline=False)
     embed.add_field(name="🔗 Canales y links", value="`linkban`/`link ban` `linkunban`/`link unban` `linkbanlist`/`link list` `logchannel`/`log channel` `logunchannel`/`log unchannel` `logschannels`/`log channels`", inline=False)
     embed.add_field(name="⚙️ Configuración", value=f"`setprefix`/`/setprefix` `prefix` `prefixremove` `sync` `dashboard` `help`", inline=False)
     embed.set_footer(text="Todos funcionan con el prefix indicado y con slash commands.")
