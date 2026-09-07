@@ -4977,6 +4977,8 @@ _MUSICA_YDL_FLAT = {
     "js_runtimes": {
         "deno": {
             "path": "/root/.deno/bin/deno"
+        }
+    }
 }
 _MUSICA_YDL_FLAT_TV = dict(_MUSICA_YDL_FLAT, extractor_args={"youtube": {"player_client": ["tv"]}})
 
