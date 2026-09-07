@@ -4965,10 +4965,10 @@ _MUSICA_YDL_TV = dict(_MUSICA_YDL, extractor_args={"youtube": {"player_client": 
 _MUSICA_YDL_VR = dict(_MUSICA_YDL, extractor_args={"youtube": {"player_client": ["android_vr"]}})
 
 _MUSICA_YDL_FLAT = {
+    "format": "bestaudio/best",
     "quiet": True,
     "no_warnings": True,
-    "extract_flat": True,
-    "skip_download": True,
+    "noplaylist": True,
     "default_search": "ytsearch",
     "nocheckcertificate": True,
     "cookiefile": "/root/wave/cookies.txt",
