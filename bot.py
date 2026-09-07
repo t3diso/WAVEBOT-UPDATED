@@ -4953,6 +4953,10 @@ _MUSICA_YDL = {
     "noplaylist": True,
     "default_search": "ytsearch",
     "nocheckcertificate": True,
+    "cookiefile": "/root/wave/cookies.txt",
+    "js_runtimes": {
+        "deno": {
+            "path": "/root/.deno/bin/deno"
 }
 
 # Clientes alternativos: YouTube bloquea a veces las IPs de datacenter (DigitalOcean, etc.)
@@ -4963,8 +4967,14 @@ _MUSICA_YDL_VR = dict(_MUSICA_YDL, extractor_args={"youtube": {"player_client": 
 _MUSICA_YDL_FLAT = {
     "quiet": True,
     "no_warnings": True,
-    "nocheckcertificate": True,
     "extract_flat": True,
+    "skip_download": True,
+    "default_search": "ytsearch",
+    "nocheckcertificate": True,
+    "cookiefile": "/root/wave/cookies.txt",
+    "js_runtimes": {
+        "deno": {
+            "path": "/root/.deno/bin/deno"
 }
 _MUSICA_YDL_FLAT_TV = dict(_MUSICA_YDL_FLAT, extractor_args={"youtube": {"player_client": ["tv"]}})
 
