@@ -5177,7 +5177,8 @@ async def _spotify_token():
             ) as r:
                 data = await r.json()
                 if r.status != 200:
-                    print(f"[spotify] Error pidiendo token ({r.status}): {str(data)[:150]}")
+                    cuerpo = await r.text()
+                    print(f"[spotify] API {ruta} respondió {r.status}: {cuerpo[:500]}")
                     return None
                 _SPOTIFY_TOKEN["valor"] = data.get("access_token")
                 _SPOTIFY_TOKEN["expira"] = time.time() + int(data.get("expires_in", 3600))
