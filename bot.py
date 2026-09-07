@@ -4957,6 +4957,8 @@ _MUSICA_YDL = {
     "js_runtimes": {
         "deno": {
             "path": "/root/.deno/bin/deno"
+        }
+    },
 }
 
 # Clientes alternativos: YouTube bloquea a veces las IPs de datacenter (DigitalOcean, etc.)
