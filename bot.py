@@ -122,7 +122,7 @@ ARCHIVOS_DATOS = [
     "honeypots.json", "xp_data.json", "level_roles.json", "autoroles.json",
     "prefixes.json", "reminders.json", "starboard.json", "antiraid.json",
     "economy.json", "economy_shop.json", "automod.json", "tickets.json",
-    "mensajes.json", "integraciones.json", "analytics.json",
+    "mensajes.json", "integraciones.json", "analytics.json", "musica.json",
 ]
 
 
@@ -1310,6 +1310,7 @@ async def on_ready():
     cargar_mensajes()
     cargar_integraciones()
     cargar_analytics()
+    cargar_musica()
     cargar_dashboard()
     cargar_sesiones_dash()
     # Registrar vistas persistentes de tickets (botones que sobreviven reinicios).
@@ -4911,6 +4912,987 @@ async def remindme_error(ctx, error):
 #  HELP, PREFIX, SETPREFIX, PREFIXREMOVE
 # ============================================================
 
+# ============================================================
+#  MÚSICA — yt-dlp + FFmpeg, cola por servidor, sin anuncios
+#  · .play y /play aceptan búsqueda de YouTube, enlaces y playlists
+#  · Autoplay: al vaciarse la cola, sigue con canciones aleatorias
+#    del artista de la última canción
+#  · El bot se sale solo del canal de voz si no queda nadie escuchando
+# ============================================================
+
+try:
+    import yt_dlp
+except ImportError:
+    yt_dlp = None
+
+MUSICA_PATH = ruta_datos("musica.json")
+musica_db = {}    # guild_id (str) -> {"enabled": bool, "autoplay": bool, "volumen": int, "canal_texto": int|None}
+
+MUSICA_MAX_COLA = 300
+MUSICA_MAX_PLAYLIST = 50
+MUSICA_HISTORIAL = 30
+
+_MUSICA_YDL = {
+    "format": "bestaudio/best",
+    "quiet": True,
+    "no_warnings": True,
+    "noplaylist": True,
+    "default_search": "ytsearch",
+    "nocheckcertificate": True,
+}
+
+_MUSICA_YDL_FLAT = {
+    "quiet": True,
+    "no_warnings": True,
+    "nocheckcertificate": True,
+    "extract_flat": True,
+}
+
+MUSICA_REPRODUCTORES = {}   # guild_id (str) -> estado en memoria del reproductor
+
+
+def _musica_cfg(gid):
+    cfg = musica_db.setdefault(gid, {})
+    cfg.setdefault("enabled", True)
+    cfg.setdefault("autoplay", True)
+    cfg.setdefault("volumen", 100)
+    cfg.setdefault("canal_texto", None)
+    return cfg
+
+
+def cargar_musica():
+    global musica_db
+    if os.path.exists(MUSICA_PATH):
+        try:
+            with open(MUSICA_PATH, "r", encoding="utf-8") as f:
+                musica_db = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            musica_db = {}
+    else:
+        musica_db = {}
+    for gid in list(musica_db):
+        _musica_cfg(gid)
+    print(f"Configs de música cargadas: {len(musica_db)} servidores.")
+
+
+def guardar_musica():
+    try:
+        with open(MUSICA_PATH, "w", encoding="utf-8") as f:
+            json.dump(musica_db, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error guardando musica.json: {e}")
+
+
+def _musica_estado(gid):
+    st = MUSICA_REPRODUCTORES.get(gid)
+    if st is None:
+        cfg = _musica_cfg(gid)
+        st = {
+            "cola": [],
+            "actual": None,
+            "bucle": "off",            # off | cancion | cola
+            "volumen": int(cfg.get("volumen", 100)),
+            "historial": [],
+            "canal_anuncio_id": None,
+            "detener": False,
+            "iniciando": False,
+        }
+        MUSICA_REPRODUCTORES[gid] = st
+    return st
+
+
+def _musica_truncar(texto, limite=80):
+    texto = str(texto or "")
+    return texto if len(texto) <= limite else texto[: limite - 1] + "…"
+
+
+def _musica_fmt_duracion(segundos):
+    segundos = int(segundos or 0)
+    horas, resto = divmod(segundos, 3600)
+    minutos, segs = divmod(resto, 60)
+    if horas:
+        return f"{horas}:{minutos:02d}:{segs:02d}"
+    return f"{minutos}:{segs:02d}"
+
+
+async def _ydl_extraer(consulta, opciones):
+    loop = asyncio.get_running_loop()
+
+    def _run():
+        with yt_dlp.YoutubeDL(opciones) as ydl:
+            return ydl.extract_info(consulta, download=False)
+
+    return await loop.run_in_executor(None, _run)
+
+
+def _musica_cancion_de_info(info, solicitante, autoplay=False):
+    vid = info.get("id") or ""
+    return {
+        "id": vid,
+        "titulo": _musica_truncar(info.get("title") or "Desconocido", 100),
+        "url_stream": info.get("url") or "",
+        "url_web": info.get("webpage_url") or (f"https://www.youtube.com/watch?v={vid}" if vid else None),
+        "artista": _musica_truncar(info.get("uploader") or "Desconocido", 80),
+        "duracion": int(info.get("duration") or 0),
+        "miniatura": info.get("thumbnail"),
+        "solicitante_id": solicitante.id if solicitante is not None else None,
+        "solicitante": str(solicitante) if solicitante is not None else "📻 Autoplay",
+        "autoplay": autoplay,
+    }
+
+
+def _musica_artista(cancion):
+    subidor = (cancion.get("artista") or "").strip()
+    if subidor.endswith(" - Topic"):
+        return subidor[: -len(" - Topic")].strip()
+    titulo = (cancion.get("titulo") or "").strip()
+    subidor_norm = subidor.lower()
+    if " - " in titulo:
+        partes = titulo.split(" - ", 1)
+        izquierda = partes[0].strip()
+        derecha = re.split(r"\s+(?:ft\.?|feat\.?|with|x)\s+", partes[1], flags=re.IGNORECASE)[0].strip()
+        # "Artista - Canción" (el artista aparece en el canal) o "Canción - Artista" (el canal menciona al artista)
+        if izquierda and 0 < len(izquierda) <= 60 and (izquierda.lower() in subidor_norm or subidor_norm in izquierda.lower()):
+            return izquierda
+        if derecha and 0 < len(derecha) <= 60 and (derecha.lower() in subidor_norm or subidor_norm in derecha.lower()):
+            return derecha
+        if izquierda and 0 < len(izquierda) <= 60:
+            return izquierda
+    return subidor or "Desconocido"
+
+
+async def _musica_buscar_autoplay(artista, ids_excluidos):
+    """Busca canciones del artista (extracción plana) y devuelve una al azar."""
+    consultas = [f"ytsearch15:{artista} topic", f"ytsearch15:{artista} songs", f"ytsearch15:{artista}"]
+    excluidos = set(ids_excluidos or [])
+    for consulta in consultas:
+        try:
+            info = await _ydl_extraer(consulta, _MUSICA_YDL_FLAT)
+        except Exception:
+            continue
+        entradas = (info or {}).get("entries") or []
+        candidatas = []
+        for e in entradas:
+            if not e:
+                continue
+            vid = e.get("id")
+            dur = e.get("duration")
+            if not vid or vid in excluidos:
+                continue
+            if not dur or not (20 <= dur <= 1200):
+                continue
+            url = e.get("url") or f"https://www.youtube.com/watch?v={vid}"
+            if "list=" in url:
+                continue    # evita mixes/playlistas en el autoplay
+            candidatas.append(url)
+        if candidatas:
+            return random.choice(candidatas)
+    return None
+
+
+async def _musica_anunciar(guild, contenido=None, embed=None):
+    gid = str(guild.id)
+    st = _musica_estado(gid)
+    canal = guild.get_channel(st.get("canal_anuncio_id") or 0)
+    if canal is None:
+        canal = guild.get_channel(_musica_cfg(gid).get("canal_texto") or 0)
+    if canal is None:
+        return
+    try:
+        await canal.send(contenido=contenido, embed=embed)
+    except Exception:
+        pass
+
+
+def _musica_embed_np(guild, cancion):
+    gid = str(guild.id)
+    st = _musica_estado(gid)
+    dur = _musica_fmt_duracion(cancion.get("duracion"))
+    desc = f"**[{cancion['titulo']}]({cancion.get('url_web')})**\n"
+    desc += f"`👤 {_musica_truncar(cancion.get('artista') or 'Desconocido', 60)}` · `⏱ {dur}`"
+    embed = discord.Embed(title="🎵 Reproduciendo ahora", description=desc, color=discord.Color.green())
+    if cancion.get("miniatura"):
+        embed.set_thumbnail(url=cancion["miniatura"])
+    if cancion.get("autoplay"):
+        artista = _musica_artista(cancion)
+        pie = f"📻 Autoplay (artista: {artista})"
+    else:
+        pie = f"Pedida por {cancion.get('solicitante') or 'alguien'}"
+    bucles = {"off": "desactivado", "cancion": "canción", "cola": "cola"}
+    pie += f" · Volumen: {st['volumen']}% · Bucle: {bucles.get(st['bucle'], 'desactivado')}"
+    embed.set_footer(text=_musica_truncar(pie, 200))
+    return embed
+
+
+async def _musica_fin(guild, autoplay_off=False, sin_voz=False):
+    """Fin natural de la reproducción: limpia y desconecta."""
+    gid = str(guild.id)
+    st = _musica_estado(gid)
+    st["cola"] = []
+    st["actual"] = None
+    vc = guild.voice_client
+    if vc is not None:
+        try:
+            await vc.disconnect(force=True)
+        except Exception:
+            pass
+    if sin_voz:
+        return
+    if autoplay_off:
+        razon = "La cola terminó y el autoplay está desactivado."
+    else:
+        razon = "La cola terminó y no encontré más canciones del artista para el autoplay."
+    await _musica_anunciar(guild, contenido=f"👋 {razon} ¡Usa `play` cuando quieras más música!")
+
+
+async def _musica_salir(guild, avisar=True, razon=None):
+    """Parada manual: corta la reproducción, vacía la cola y desconecta."""
+    gid = str(guild.id)
+    st = _musica_estado(gid)
+    st["detener"] = True
+    st["cola"] = []
+    st["actual"] = None
+    vc = guild.voice_client
+    if vc is not None:
+        try:
+            if vc.is_playing() or vc.is_paused():
+                vc.stop()
+            await vc.disconnect(force=True)
+        except Exception:
+            pass
+    if avisar:
+        await _musica_anunciar(guild, contenido="👋 " + (razon or "Me he salido del canal de voz."))
+
+
+async def _musica_siguiente(guild):
+    """Motor de reproducción: saca la siguiente canción (o la genera por autoplay) y la toca."""
+    gid = str(guild.id)
+    st = _musica_estado(gid)
+    if st["detener"]:
+        st["detener"] = False
+        return
+    if st["iniciando"]:
+        return
+    st["iniciando"] = True
+    try:
+        cfg = _musica_cfg(gid)
+        cancion = None
+        if st["bucle"] == "cancion" and st["actual"] is not None:
+            cancion = dict(st["actual"])
+            if cancion.get("url_web"):
+                try:
+                    info = await _ydl_extraer(cancion["url_web"], _MUSICA_YDL)
+                    if info and info.get("url"):
+                        cancion["url_stream"] = info["url"]
+                except Exception:
+                    pass
+        else:
+            fallos = 0
+            while st["cola"] and cancion is None and fallos < 5:
+                item = st["cola"].pop(0)
+                if item.get("pendiente"):
+                    try:
+                        info = await _ydl_extraer(item["pendiente"], _MUSICA_YDL)
+                    except Exception:
+                        fallos += 1
+                        continue
+                    if not info:
+                        fallos += 1
+                        continue
+                    if info.get("_type") == "playlist" or info.get("entries"):
+                        entradas = [e for e in (info.get("entries") or []) if e]
+                        if not entradas:
+                            fallos += 1
+                            continue
+                        info = entradas[0]
+                    cancion = _musica_cancion_de_info(info, None)
+                    cancion["solicitante_id"] = item.get("solicitante_id")
+                    cancion["solicitante"] = item.get("solicitante") or "Anónimo"
+                else:
+                    cancion = item
+            if cancion is None and cfg.get("autoplay", True) and st["historial"]:
+                anterior = st["historial"][-1]
+                artista = _musica_artista(anterior)
+                ids = [c.get("id") for c in st["historial"] if c.get("id")]
+                url = await _musica_buscar_autoplay(artista, ids)
+                if url:
+                    try:
+                        info = await _ydl_extraer(url, _MUSICA_YDL)
+                        if info:
+                            if info.get("_type") == "playlist" or info.get("entries"):
+                                entradas = [e for e in (info.get("entries") or []) if e]
+                                if entradas:
+                                    info = entradas[0]
+                            if not info.get("is_live") and info.get("url"):
+                                cancion = _musica_cancion_de_info(info, None, autoplay=True)
+                    except Exception:
+                        cancion = None
+        if cancion is None:
+            if st["actual"] is not None or st["historial"]:
+                await _musica_fin(guild, autoplay_off=not cfg.get("autoplay", True))
+            return
+        vc = guild.voice_client
+        if vc is None or not vc.is_connected():
+            await _musica_fin(guild, sin_voz=True)
+            return
+        st["actual"] = cancion
+        st["historial"].append(dict(cancion))
+        del st["historial"][:-MUSICA_HISTORIAL]
+        fuente = discord.PCMVolumeTransformer(
+            discord.FFmpegPCMAudio(
+                cancion["url_stream"],
+                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                options="-vn",
+            ),
+            volume=max(0, min(st["volumen"], 150)) / 100.0,
+        )
+
+        def _musica_after(error):
+            if error:
+                print(f"[música] Error de reproducción en {gid}: {error}")
+            fut = asyncio.run_coroutine_threadsafe(_musica_siguiente(guild), bot.loop)
+
+            def _cb(f):
+                try:
+                    exc = f.exception()
+                except Exception:
+                    exc = None
+                if exc:
+                    print(f"[música] Error en la cola: {exc}")
+
+            fut.add_done_callback(_cb)
+
+        try:
+            vc.play(fuente, after=_musica_after)
+        except Exception as e:
+            print(f"[música] No pude reproducir en {gid}: {e}")
+            await _musica_anunciar(guild, contenido="❌ No pude reproducir el audio. Comprueba que FFmpeg esté instalado en el servidor (`sudo apt install ffmpeg`).")
+            await _musica_fin(guild, sin_voz=False)
+            return
+        await _musica_anunciar(guild, embed=_musica_embed_np(guild, cancion))
+    except Exception as e:
+        print(f"[música] Error en el motor de {guild.id}: {e}")
+    finally:
+        st["iniciando"] = False
+
+
+def _musica_voz_check(guild, miembro=None):
+    """Comprueba que el bot está conectado (y que el usuario está en su canal)."""
+    vc = guild.voice_client
+    if vc is None or not vc.is_connected() or vc.channel is None:
+        return False, "❌ No estoy en ningún canal de voz. Usa `join` o `play` primero."
+    if miembro is not None:
+        canal = getattr(getattr(miembro, "voice", None), "channel", None)
+        if canal is None or canal.id != vc.channel.id:
+            return False, f"❌ Debes estar en mi canal de voz (**{vc.channel.name}**) para hacer eso."
+    return True, ""
+
+
+async def _musica_accion_join(guild, miembro, canal_texto=None):
+    if yt_dlp is None:
+        return False, "❌ El módulo de música no está disponible en el servidor (falta `yt-dlp`: `pip install -U yt-dlp`)."
+    gid = str(guild.id)
+    cfg = _musica_cfg(gid)
+    if not cfg.get("enabled", True):
+        return False, "🔴 La música está desactivada en este servidor. Actívala desde el dashboard."
+    canal = getattr(getattr(miembro, "voice", None), "channel", None)
+    if canal is None:
+        return False, "❌ Debes estar en un canal de voz."
+    vc = guild.voice_client
+    if vc is not None and vc.channel is not None and vc.channel.id == canal.id:
+        return True, f"ℹ️ Ya estoy en **{canal.name}**."
+    if vc is not None:
+        return False, f"❌ Ya estoy en **{vc.channel.name}**. Haz que me salga con `leave` primero."
+    perms = canal.permissions_for(guild.me)
+    if not (perms.connect and perms.speak):
+        return False, f"❌ No tengo permisos para conectarme o hablar en **{canal.name}**."
+    try:
+        await canal.connect(self_deaf=True)
+    except Exception as e:
+        return False, f"❌ No pude conectarme al canal de voz: {e}"
+    if canal_texto is not None:
+        _musica_estado(gid)["canal_anuncio_id"] = canal_texto.id
+    return True, f"✅ Conectado a **{canal.name}**. Pon música con `play`."
+
+
+async def _musica_accion_play(guild, miembro, consulta, canal_texto=None):
+    """Devuelve (ok, mensaje, embed)."""
+    if yt_dlp is None:
+        return False, "❌ El módulo de música no está disponible en el servidor (falta `yt-dlp`: `pip install -U yt-dlp`).", None
+    consulta = (consulta or "").strip()
+    if not consulta:
+        return False, "❌ Dime qué reproducir.", None
+    gid = str(guild.id)
+    cfg = _musica_cfg(gid)
+    if not cfg.get("enabled", True):
+        return False, "🔴 La música está desactivada en este servidor. Actívala desde el dashboard.", None
+    canal_voz = getattr(getattr(miembro, "voice", None), "channel", None)
+    if canal_voz is None:
+        return False, "❌ Debes estar en un canal de voz para poner música.", None
+    vc = guild.voice_client
+    if vc is not None and vc.channel is not None and vc.channel.id != canal_voz.id:
+        return False, f"❌ Ya estoy en otro canal de voz (**{vc.channel.name}**). Únete ahí o usa `leave`.", None
+    st = _musica_estado(gid)
+    if canal_texto is not None:
+        st["canal_anuncio_id"] = canal_texto.id
+    es_url = bool(re.match(r"https?://", consulta))
+    es_playlist = es_url and ("list=" in consulta and "watch?v=" not in consulta)
+    if es_playlist:
+        try:
+            info = await _ydl_extraer(consulta, _MUSICA_YDL_FLAT)
+        except Exception as e:
+            return False, f"❌ No pude leer esa playlist: {e}", None
+        entradas = [e for e in ((info or {}).get("entries") or []) if e and (e.get("url") or e.get("id"))]
+        if not entradas:
+            return False, "❌ No encontré canciones en esa playlist.", None
+        hueco = MUSICA_MAX_COLA - len(st["cola"])
+        if hueco <= 0:
+            return False, "❌ La cola está llena.", None
+        entradas = entradas[: min(hueco, MUSICA_MAX_PLAYLIST)]
+        for e in entradas:
+            url = e.get("url") or f"https://www.youtube.com/watch?v={e.get('id')}"
+            st["cola"].append({
+                "pendiente": url,
+                "id": e.get("id"),
+                "titulo": _musica_truncar(e.get("title") or "Desconocido", 100),
+                "solicitante_id": miembro.id,
+                "solicitante": str(miembro),
+            })
+        msg = f"✅ Playlist añadida: **{len(entradas)}** canciones en la cola."
+        cancion = None
+    else:
+        try:
+            info = await _ydl_extraer(consulta, _MUSICA_YDL)
+        except Exception:
+            return False, f"❌ No encontré nada con `{_musica_truncar(consulta, 60)}`.", None
+        if not info:
+            return False, "❌ No encontré resultados.", None
+        if info.get("_type") == "playlist" or info.get("entries"):
+            entradas = [e for e in (info.get("entries") or []) if e]
+            if not entradas:
+                return False, "❌ No encontré resultados.", None
+            info = entradas[0]
+        if info.get("is_live"):
+            return False, "❌ No puedo reproducir directos (en vivo). Busca la versión normal.", None
+        if not info.get("url") and info.get("url_web"):
+            try:
+                info = await _ydl_extraer(info["url_web"], _MUSICA_YDL)
+            except Exception:
+                pass
+        if not info or not info.get("url"):
+            return False, "❌ No pude obtener el audio de ese resultado. Prueba con otro.", None
+        cancion = _musica_cancion_de_info(info, miembro)
+        if len(st["cola"]) >= MUSICA_MAX_COLA:
+            return False, "❌ La cola está llena.", None
+        st["cola"].append(cancion)
+        pos = len(st["cola"])
+        msg = None
+    vc = guild.voice_client
+    if vc is None:
+        perms = canal_voz.permissions_for(guild.me)
+        if not (perms.connect and perms.speak):
+            return False, f"❌ No tengo permisos para conectarme o hablar en **{canal_voz.name}**.", None
+        try:
+            await canal_voz.connect(self_deaf=True)
+        except Exception as e:
+            st["cola"].pop()
+            return False, f"❌ No pude conectarme al canal de voz: {e}", None
+    vc = guild.voice_client
+    st["detener"] = False
+    if vc is not None and not vc.is_playing() and not vc.is_paused():
+        asyncio.create_task(_musica_siguiente(guild))
+        return True, (msg or f"▶ Reproduciendo: **{cancion['titulo']}**"), None
+    if msg:
+        return True, msg, None
+    return True, f"✅ Añadida a la cola en posición **{pos}**: **{cancion['titulo']}**", None
+
+
+async def _musica_accion_pause(guild, miembro):
+    ok, err = _musica_voz_check(guild, miembro)
+    if not ok:
+        return False, err, None
+    vc = guild.voice_client
+    if vc.is_paused():
+        return True, "ℹ️ Ya estaba en pausa.", None
+    if not vc.is_playing():
+        return False, "❌ No estoy reproduciendo nada.", None
+    vc.pause()
+    return True, "⏸️ Música en pausa.", None
+
+
+async def _musica_accion_resume(guild, miembro):
+    ok, err = _musica_voz_check(guild, miembro)
+    if not ok:
+        return False, err, None
+    vc = guild.voice_client
+    if not vc.is_paused():
+        return False, "❌ No hay nada en pausa.", None
+    vc.resume()
+    return True, "▶ Reanudado.", None
+
+
+async def _musica_accion_skip(guild, miembro):
+    ok, err = _musica_voz_check(guild, miembro)
+    if not ok:
+        return False, err, None
+    vc = guild.voice_client
+    if not vc.is_playing() and not vc.is_paused():
+        return False, "❌ No estoy reproduciendo nada.", None
+    vc.stop()
+    return True, "⏭️ Saltando canción…", None
+
+
+async def _musica_accion_stop(guild, miembro):
+    ok, err = _musica_voz_check(guild, miembro)
+    if not ok:
+        return False, err, None
+    await _musica_salir(guild, avisar=False)
+    return True, "⏹️ Música detenida y cola vaciada. ¡Hasta luego!", None
+
+
+async def _musica_accion_leave(guild):
+    vc = guild.voice_client
+    if vc is None or not vc.is_connected():
+        return False, "❌ No estoy en ningún canal de voz.", None
+    await _musica_salir(guild, avisar=False)
+    return True, "👋 Me he salido del canal de voz.", None
+
+
+async def _musica_accion_shuffle(guild, miembro):
+    ok, err = _musica_voz_check(guild, miembro)
+    if not ok:
+        return False, err, None
+    st = _musica_estado(str(guild.id))
+    if len(st["cola"]) < 2:
+        return False, "❌ No hay suficientes canciones en la cola para mezclar.", None
+    random.shuffle(st["cola"])
+    return True, f"🔀 Cola mezclada (**{len(st['cola'])}** canciones).", None
+
+
+async def _musica_accion_remove(guild, miembro, numero):
+    ok, err = _musica_voz_check(guild, miembro)
+    if not ok:
+        return False, err, None
+    st = _musica_estado(str(guild.id))
+    if not st["cola"]:
+        return False, "❌ La cola está vacía.", None
+    if not (1 <= numero <= len(st["cola"])):
+        return False, f"❌ Número fuera de rango. Hay **{len(st['cola'])}** canciones en la cola.", None
+    quitada = st["cola"].pop(numero - 1)
+    return True, f"🗑️ Quitada: **{quitada.get('titulo') or 'Desconocido'}**", None
+
+
+async def _musica_accion_clear(guild, miembro):
+    ok, err = _musica_voz_check(guild, miembro)
+    if not ok:
+        return False, err, None
+    st = _musica_estado(str(guild.id))
+    n = len(st["cola"])
+    st["cola"] = []
+    if n == 0:
+        return False, "ℹ️ La cola ya estaba vacía.", None
+    return True, f"🧹 Cola vaciada ({n} canciones quitadas). La canción actual sigue sonando.", None
+
+
+async def _musica_accion_volume(guild, miembro, valor):
+    ok, err = _musica_voz_check(guild, miembro)
+    if not ok:
+        return False, err, None
+    if not (0 <= valor <= 150):
+        return False, "❌ El volumen debe estar entre 0 y 150.", None
+    gid = str(guild.id)
+    st = _musica_estado(gid)
+    st["volumen"] = valor
+    cfg = _musica_cfg(gid)
+    cfg["volumen"] = valor
+    guardar_musica()
+    vc = guild.voice_client
+    if vc is not None and vc.source is not None:
+        vc.source.volume = valor / 100.0
+    return True, f"🔊 Volumen: **{valor}%**", None
+
+
+async def _musica_accion_loop(guild, miembro, modo):
+    ok, err = _musica_voz_check(guild, miembro)
+    if not ok:
+        return False, err, None
+    if modo not in ("off", "cancion", "cola"):
+        return False, "❌ Modo inválido. Usa `off`, `cancion` o `cola`.", None
+    st = _musica_estado(str(guild.id))
+    st["bucle"] = modo
+    nombres = {"off": "desactivado", "cancion": "canción actual", "cola": "cola completa"}
+    return True, f"🔁 Bucle: **{nombres[modo]}**", None
+
+
+async def _musica_accion_autoplay(guild, estado):
+    gid = str(guild.id)
+    cfg = _musica_cfg(gid)
+    if estado not in ("on", "off"):
+        actual = "activado" if cfg.get("autoplay", True) else "desactivado"
+        return False, f"ℹ️ El autoplay está **{actual}**. Usa `autoplay on` u `autoplay off`.", None
+    cfg["autoplay"] = estado == "on"
+    guardar_musica()
+    return True, f"📻 Autoplay **{'activado' if estado == 'on' else 'desactivado'}**: " + (
+        "al vaciarse la cola seguiré con canciones aleatorias del artista."
+        if estado == "on"
+        else "al vaciarse la cola me detendré."
+    ), None
+
+
+def _musica_embed_np_actual(guild):
+    st = _musica_estado(str(guild.id))
+    actual = st.get("actual")
+    if not actual:
+        return None, "ℹ️ No hay nada en reproducción.", None
+    vc = guild.voice_client
+    extra = "⏸️ (en pausa)" if vc is not None and vc.is_paused() else ""
+    embed = _musica_embed_np(guild, actual)
+    embed.title = f"🎵 Reproduciendo ahora {extra}".strip()
+    return embed, None, None
+
+
+def _musica_embed_cola(guild, pagina=1):
+    gid = str(guild.id)
+    st = _musica_estado(gid)
+    if not st["cola"]:
+        return None, "ℹ️ La cola está vacía.", None
+    por_pag = 10
+    total = len(st["cola"])
+    paginas = max(1, (total + por_pag - 1) // por_pag)
+    pagina = max(1, min(pagina, paginas))
+    ini = (pagina - 1) * por_pag
+    fin = min(ini + por_pag, total)
+    dur_total = sum(c.get("duracion") or 0 for c in st["cola"])
+    lineas = []
+    for i in range(ini, fin):
+        c = st["cola"][i]
+        titulo = c.get("titulo") or c.get("pendiente") or "Desconocido"
+        link = c.get("url_web") or c.get("pendiente")
+        dur = _musica_fmt_duracion(c["duracion"]) if c.get("duracion") else "--:--"
+        texto = f"`{i + 1}.` [{_musica_truncar(titulo, 70)}]({link}) · `⏱ {dur}` — {c.get('solicitante', 'anónimo')}"
+        lineas.append(texto)
+    desc = "\n".join(lineas)
+    if st.get("actual"):
+        act = st["actual"]
+        desc = f"**▶ Ahora:** [{act['titulo']}]({act.get('url_web') or act.get('url_stream')})\n\n" + desc
+    embed = discord.Embed(title="🎵 Cola de reproducción", description=desc[:4000], color=discord.Color.green())
+    embed.set_footer(text=f"Página {pagina}/{paginas} · {total} en cola · Restante aprox: {_musica_fmt_duracion(dur_total)}")
+    return embed, None, None
+
+
+def _musica_public(guild):
+    """Estado y config de música para el dashboard."""
+    gid = str(guild.id)
+    cfg = _musica_cfg(gid)
+    st = MUSICA_REPRODUCTORES.get(gid, {})
+    vc = guild.voice_client
+    actual = st.get("actual")
+    canal_voz = vc.channel.name if (vc is not None and vc.channel is not None) else None
+    return {
+        "config": {
+            "enabled": bool(cfg.get("enabled", True)),
+            "autoplay": bool(cfg.get("autoplay", True)),
+            "volumen": int(cfg.get("volumen", 100)),
+            "canal_texto": str(cfg["canal_texto"]) if cfg.get("canal_texto") else None,
+        },
+        "estado": {
+            "conectado": vc is not None and vc.is_connected(),
+            "canal_voz": canal_voz,
+            "pausado": bool(vc is not None and vc.is_paused()),
+            "en_cola": len(st.get("cola", [])),
+            "bucle": st.get("bucle", "off"),
+            "reproduciendo": {
+                "titulo": actual.get("titulo"),
+                "artista": actual.get("artista"),
+                "url": actual.get("url_web"),
+                "duracion": int(actual.get("duracion") or 0),
+                "solicitante": actual.get("solicitante"),
+                "autoplay": bool(actual.get("autoplay")),
+            } if actual else None,
+        },
+    }
+
+
+@bot.event
+async def on_voice_state_update(miembro, antes, despues):
+    """Auto-leave: si no queda nadie escuchando, el bot se sale del canal de voz."""
+    if miembro.guild is None:
+        return
+    gid = str(miembro.guild.id)
+    st = MUSICA_REPRODUCTORES.get(gid)
+    if miembro.id == bot.user.id:
+        if st is not None and despues.channel is None:
+            st["detener"] = True
+            st["cola"] = []
+            st["actual"] = None
+        return
+    vc = miembro.guild.voice_client
+    if vc is None or vc.channel is None or not vc.is_connected():
+        return
+    if despues.channel is not None and despues.channel.id == vc.channel.id:
+        return
+    humanos = [m for m in vc.channel.members if not m.bot]
+    if not humanos:
+        await _musica_salir(miembro.guild, razon="No queda nadie en el canal de voz, me salgo.")
+
+
+# ---------- Comandos de música con prefijo ----------
+
+@bot.command(name="play", aliases=["p", "reproducir"])
+async def play(ctx, *, consulta: str = ""):
+    """Reproduce una canción (búsqueda o enlace de YouTube). Uso: .play <canción o enlace>"""
+    if not consulta:
+        return await ctx.send("❌ Dime qué reproducir. Uso: `.play <canción o enlace>`")
+    aviso = await ctx.send("🔍 Buscando…")
+    ok, msg, embed = await _musica_accion_play(ctx.guild, ctx.author, consulta, canal_texto=ctx.channel)
+    try:
+        await aviso.edit(content=msg, embed=embed)
+    except Exception:
+        await ctx.send(content=msg, embed=embed)
+
+
+@bot.command(name="join", aliases=["conectar"])
+async def join(ctx):
+    """Entra al canal de voz donde estás. Uso: .join"""
+    ok, msg = await _musica_accion_join(ctx.guild, ctx.author, canal_texto=ctx.channel)
+    await ctx.send(msg)
+
+
+@bot.command(name="leave", aliases=["salir", "disconnect"])
+async def leave(ctx):
+    """Sale del canal de voz. Uso: .leave"""
+    ok, msg, embed = await _musica_accion_leave(ctx.guild)
+    await ctx.send(msg)
+
+
+@bot.command(name="pause", aliases=["pausa"])
+async def pause(ctx):
+    """Pausa la canción actual. Uso: .pause"""
+    ok, msg, embed = await _musica_accion_pause(ctx.guild, ctx.author)
+    await ctx.send(msg)
+
+
+@bot.command(name="resume", aliases=["reanudar", "resumir"])
+async def resume(ctx):
+    """Reanuda la música pausada. Uso: .resume"""
+    ok, msg, embed = await _musica_accion_resume(ctx.guild, ctx.author)
+    await ctx.send(msg)
+
+
+@bot.command(name="skip", aliases=["saltar", "next"])
+async def skip(ctx):
+    """Salta a la siguiente canción. Uso: .skip"""
+    ok, msg, embed = await _musica_accion_skip(ctx.guild, ctx.author)
+    await ctx.send(msg)
+
+
+@bot.command(name="stop", aliases=["detener"])
+async def stop(ctx):
+    """Detiene la música, vacía la cola y se sale del canal. Uso: .stop"""
+    ok, msg, embed = await _musica_accion_stop(ctx.guild, ctx.author)
+    await ctx.send(msg)
+
+
+@bot.command(name="queue", aliases=["q", "cola"])
+async def queue(ctx, pagina: int = 1):
+    """Muestra la cola de reproducción. Uso: .queue [página]"""
+    embed, msg, _ = _musica_embed_cola(ctx.guild, pagina)
+    if embed is None:
+        await ctx.send(msg)
+    else:
+        await ctx.send(embed=embed)
+
+
+@bot.command(name="np", aliases=["nowplaying", "sonando"])
+async def np(ctx):
+    """Muestra la canción que suena ahora. Uso: .np"""
+    embed, msg, _ = _musica_embed_np_actual(ctx.guild)
+    if embed is None:
+        await ctx.send(msg)
+    else:
+        await ctx.send(embed=embed)
+
+
+@bot.command(name="volume", aliases=["vol", "volumen"])
+async def volume(ctx, valor: int = None):
+    """Cambia el volumen (0-150). Uso: .volume <0-150>"""
+    if valor is None:
+        st = _musica_estado(str(ctx.guild.id))
+        return await ctx.send(f"🔊 Volumen actual: **{st['volumen']}%**. Uso: `.volume <0-150>`")
+    ok, msg, embed = await _musica_accion_volume(ctx.guild, ctx.author, valor)
+    await ctx.send(msg)
+
+
+@bot.command(name="loop", aliases=["repeat", "bucle"])
+async def loop(ctx, modo: str = None):
+    """Bucle: off, cancion o cola. Uso: .loop <off|cancion|cola>"""
+    st = _musica_estado(str(ctx.guild.id))
+    if modo is None:
+        nombres = {"off": "desactivado", "cancion": "canción actual", "cola": "cola completa"}
+        return await ctx.send(f"🔁 Bucle actual: **{nombres.get(st['bucle'], 'desactivado')}**. Uso: `.loop <off|cancion|cola>`")
+    ok, msg, embed = await _musica_accion_loop(ctx.guild, ctx.author, modo.lower().strip())
+    await ctx.send(msg)
+
+
+@bot.command(name="shuffle", aliases=["mezclar"])
+async def shuffle(ctx):
+    """Mezcla la cola de reproducción. Uso: .shuffle"""
+    ok, msg, embed = await _musica_accion_shuffle(ctx.guild, ctx.author)
+    await ctx.send(msg)
+
+
+@bot.command(name="autoplay")
+async def autoplay(ctx, estado: str = None):
+    """Activa/desactiva la radio por artista. Uso: .autoplay <on|off>"""
+    ok, msg, embed = await _musica_accion_autoplay(ctx.guild, (estado or "").lower().strip())
+    await ctx.send(msg)
+
+
+@bot.command(name="remove", aliases=["quitar"])
+async def remove(ctx, numero: int = None):
+    """Quita una canción de la cola por su número. Uso: .remove <número>"""
+    if numero is None:
+        return await ctx.send("❌ Dime el número de la canción. Uso: `.remove <número>` (míralo con `.queue`)")
+    ok, msg, embed = await _musica_accion_remove(ctx.guild, ctx.author, numero)
+    await ctx.send(msg)
+
+
+@bot.command(name="clear", aliases=["limpiar"])
+async def clear(ctx):
+    """Vacía la cola (sin parar la canción actual). Uso: .clear"""
+    ok, msg, embed = await _musica_accion_clear(ctx.guild, ctx.author)
+    await ctx.send(msg)
+
+
+# ---------- Comandos de música slash ----------
+
+@bot.tree.command(name="play", description="Reproduce música (búsqueda o enlace de YouTube, sin anuncios)")
+@app_commands.describe(cancion="Nombre de la canción o enlace de YouTube")
+@app_commands.guild_only()
+async def slash_play(interaction: discord.Interaction, cancion: str):
+    await interaction.response.defer()
+    ok, msg, embed = await _musica_accion_play(interaction.guild, interaction.user, cancion, canal_texto=interaction.channel)
+    await interaction.followup.send(content=msg, embed=embed)
+
+
+@bot.tree.command(name="join", description="Entra al canal de voz donde estás")
+@app_commands.guild_only()
+async def slash_join(interaction: discord.Interaction):
+    ok, msg = await _musica_accion_join(interaction.guild, interaction.user, canal_texto=interaction.channel)
+    await interaction.response.send_message(msg)
+
+
+@bot.tree.command(name="leave", description="Sale del canal de voz")
+@app_commands.guild_only()
+async def slash_leave(interaction: discord.Interaction):
+    ok, msg, embed = await _musica_accion_leave(interaction.guild)
+    await interaction.response.send_message(msg)
+
+
+@bot.tree.command(name="pause", description="Pausa la canción actual")
+@app_commands.guild_only()
+async def slash_pause(interaction: discord.Interaction):
+    ok, msg, embed = await _musica_accion_pause(interaction.guild, interaction.user)
+    await interaction.response.send_message(msg)
+
+
+@bot.tree.command(name="resume", description="Reanuda la música pausada")
+@app_commands.guild_only()
+async def slash_resume(interaction: discord.Interaction):
+    ok, msg, embed = await _musica_accion_resume(interaction.guild, interaction.user)
+    await interaction.response.send_message(msg)
+
+
+@bot.tree.command(name="skip", description="Salta a la siguiente canción")
+@app_commands.guild_only()
+async def slash_skip(interaction: discord.Interaction):
+    ok, msg, embed = await _musica_accion_skip(interaction.guild, interaction.user)
+    await interaction.response.send_message(msg)
+
+
+@bot.tree.command(name="stop", description="Detiene la música, vacía la cola y se sale del canal")
+@app_commands.guild_only()
+async def slash_stop(interaction: discord.Interaction):
+    ok, msg, embed = await _musica_accion_stop(interaction.guild, interaction.user)
+    await interaction.response.send_message(msg)
+
+
+@bot.tree.command(name="queue", description="Muestra la cola de reproducción")
+@app_commands.describe(pagina="Número de página de la cola")
+@app_commands.guild_only()
+async def slash_queue(interaction: discord.Interaction, pagina: app_commands.Range[int, 1, 1000] = 1):
+    embed, msg, _ = _musica_embed_cola(interaction.guild, pagina)
+    if embed is None:
+        await interaction.response.send_message(msg)
+    else:
+        await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="nowplaying", description="Muestra la canción que suena ahora")
+@app_commands.guild_only()
+async def slash_nowplaying(interaction: discord.Interaction):
+    embed, msg, _ = _musica_embed_np_actual(interaction.guild)
+    if embed is None:
+        await interaction.response.send_message(msg)
+    else:
+        await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="volume", description="Cambia el volumen (0-150%)")
+@app_commands.describe(volumen="Volumen entre 0 y 150")
+@app_commands.guild_only()
+async def slash_volume(interaction: discord.Interaction, volumen: app_commands.Range[int, 0, 150]):
+    ok, msg, embed = await _musica_accion_volume(interaction.guild, interaction.user, volumen)
+    await interaction.response.send_message(msg)
+
+
+@bot.tree.command(name="loop", description="Bucle: desactivado, canción actual o cola completa")
+@app_commands.describe(modo="Modo de bucle")
+@app_commands.choices(modo=[
+    app_commands.Choice(name="Apagado", value="off"),
+    app_commands.Choice(name="Canción actual", value="cancion"),
+    app_commands.Choice(name="Cola completa", value="cola"),
+])
+@app_commands.guild_only()
+async def slash_loop(interaction: discord.Interaction, modo: app_commands.Choice[str]):
+    ok, msg, embed = await _musica_accion_loop(interaction.guild, interaction.user, modo.value)
+    await interaction.response.send_message(msg)
+
+
+@bot.tree.command(name="shuffle", description="Mezcla la cola de reproducción")
+@app_commands.guild_only()
+async def slash_shuffle(interaction: discord.Interaction):
+    ok, msg, embed = await _musica_accion_shuffle(interaction.guild, interaction.user)
+    await interaction.response.send_message(msg)
+
+
+@bot.tree.command(name="autoplay", description="Radio por artista: al vaciarse la cola, sigue con el mismo artista")
+@app_commands.describe(estado="Activar o desactivar el autoplay")
+@app_commands.choices(estado=[
+    app_commands.Choice(name="Activar", value="on"),
+    app_commands.Choice(name="Desactivar", value="off"),
+])
+@app_commands.guild_only()
+async def slash_autoplay(interaction: discord.Interaction, estado: app_commands.Choice[str]):
+    ok, msg, embed = await _musica_accion_autoplay(interaction.guild, estado.value)
+    await interaction.response.send_message(msg)
+
+
+@bot.tree.command(name="remove", description="Quita una canción de la cola por su número")
+@app_commands.describe(numero="Número de la canción en la cola (míralo con /queue)")
+@app_commands.guild_only()
+async def slash_remove(interaction: discord.Interaction, numero: app_commands.Range[int, 1, 300]):
+    ok, msg, embed = await _musica_accion_remove(interaction.guild, interaction.user, numero)
+    await interaction.response.send_message(msg)
+
+
+@bot.tree.command(name="clear", description="Vacía la cola (sin parar la canción actual)")
+@app_commands.guild_only()
+async def slash_clear(interaction: discord.Interaction):
+    ok, msg, embed = await _musica_accion_clear(interaction.guild, interaction.user)
+    await interaction.response.send_message(msg)
+
+
 @bot.command(name="help", aliases=["ayuda", "comandos"])
 async def ayuda(ctx, *, comando: str = None):
     """Muestra la lista de comandos disponibles."""
@@ -4945,6 +5927,7 @@ async def ayuda(ctx, *, comando: str = None):
         f"`{p}help niveles` :: Niveles / XP\n"
         f"`{p}help economia` :: Economía\n"
         f"`{p}help sorteos` :: Sorteos y utilidades\n"
+        f"`{p}help musica` :: Música 🎵\n"
         f"`{p}help canales` :: Canales y links\n"
         f"`{p}help config` :: Configuración"
     ), inline=False)
@@ -4967,6 +5950,7 @@ async def ayuda(ctx, *, comando: str = None):
                 discord.SelectOption(label="Niveles / XP", value="niveles", description="Rank, level, leaderboard, level-config, etc."),
                 discord.SelectOption(label="Economía", value="economia", description="Balance, work, crime, rob, tienda, juegos, etc."),
                 discord.SelectOption(label="Sorteos y utilidades", value="sorteos", description="Giveaways, avatar, banner, remindme, etc."),
+                discord.SelectOption(label="Música", value="musica", description="Play, queue, skip, volume, autoplay, loop, etc."),
                 discord.SelectOption(label="Canales y links", value="canales", description="Linkban, logchannel, honeypot, etc."),
                 discord.SelectOption(label="Configuración", value="config", description="Setprefix, prefix, prefixremove, sync, etc."),
             ],
@@ -5131,6 +6115,21 @@ async def ayuda(ctx, *, comando: str = None):
                     f"`{p}banner (@usuario)` :: Banner 4K\n"
                     f"`{p}remindme (duración) (mensaje) (MD: sí/no)` :: Recordatorio"
                 ), color=discord.Color.purple()),
+                "musica": discord.Embed(title="🎵 Música", description=(
+                    f"`{p}play (canción o enlace)` :: Reproduce (aliases p, reproducir)\n"
+                    f"`{p}pause` :: Pausa · `{p}resume` :: Reanuda\n"
+                    f"`{p}skip` :: Salta a la siguiente · `{p}stop` :: Para, vacía y se sale\n"
+                    f"`{p}queue [página]` :: Ver cola (aliases q, cola)\n"
+                    f"`{p}np` :: Canción actual (alias nowplaying)\n"
+                    f"`{p}volume (0-150)` :: Volumen (aliases vol, volumen)\n"
+                    f"`{p}join` :: Entra a tu canal · `{p}leave` :: Se va\n"
+                    f"`{p}loop <off|cancion|cola>` :: Bucle (aliases repeat, bucle)\n"
+                    f"`{p}shuffle` :: Mezcla la cola\n"
+                    f"`{p}autoplay <on|off>` :: Radio por artista\n"
+                    f"`{p}remove (nº)` :: Quita una de la cola · `{p}clear` :: Vacía la cola\n\n"
+                    f"Sin anuncios 🚫📢 · Autoplay: al acabarse la cola, sigo solo con canciones aleatorias del mismo artista 📻\n"
+                    f"Me salgo solo si no queda nadie escuchando 👋 · Todos también funcionan como slash commands (/play, /queue…)"
+                ), color=discord.Color.green()),
                 "canales": discord.Embed(title="Canales y links", description=(
                     f"`{p}linkban (#canal)` :: Prohíbe enlaces\n"
                     f"`{p}linkunban (#canal)` :: Permite enlaces\n"
@@ -8438,6 +9437,7 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(name="📊 Niveles / XP", value="`/level rank [usuario]` `/level levels [usuario]` `/level leaderboard [página]`\n`/level-admin config enabled/xp/cooldown/channel/message/announce`\n`/level-admin set-role/remove-role/set-xp/set-level/add-xp/remove-xp/reset`", inline=False)
     embed.add_field(name="💰 Economía", value="`balance` `pay` `daily` `weekly` `monthly` `work` `crime` `slut` `rob` `prestamo`\n`deposit` `withdraw` `shop`/`shop-add`/`shop-remove` `buy` `sell` `inventory` `use` `gift`\n`slots` `coinflip` `dice` `highlow` `roulette` `blackjack` `baltop`\n`add-money` `remove-money` `set-money` `set-currency` `set-start-balance` `economy-config` `reset-economy`", inline=False)
     embed.add_field(name="🎉 Sorteos y utilidades", value="`gcreate`/`giveaway create` `glist`/`giveaway list` `gdelete`/`giveaway delete` `greroll`/`giveaway reroll` `avatar` `banner` `remindme`/`remind`", inline=False)
+    embed.add_field(name="🎵 Música", value="`play` `pause` `resume` `skip` `stop` `queue` `nowplaying` `volume` `join` `leave` `loop` `shuffle` `autoplay` `remove` `clear`\nSin anuncios • Al vaciarse la cola, autoplay con canciones aleatorias del mismo artista • El bot se sale solo si no queda nadie escuchando", inline=False)
     embed.add_field(name="🔗 Canales y links", value="`linkban`/`link ban` `linkunban`/`link unban` `linkbanlist`/`link list` `logchannel`/`log channel` `logunchannel`/`log unchannel` `logschannels`/`log channels`", inline=False)
     embed.add_field(name="⚙️ Configuración", value=f"`setprefix`/`/setprefix` `prefix` `prefixremove` `sync` `dashboard` `help`", inline=False)
     embed.set_footer(text="Todos funcionan con el prefix indicado y con slash commands.")
@@ -11867,6 +12867,7 @@ async def _dash_guild(request):
             "honeypots": honeypots_nombres,
             "autoroles": autoroles_count,
         },
+        "musica": _musica_public(guild),
         "canales": [{"id": str(c.id), "nombre": c.name} for c in sorted(guild.text_channels, key=lambda x: x.position)],
         "categorias": [{"id": str(c.id), "nombre": c.name} for c in guild.categories],
         "roles": [{"id": str(r.id), "nombre": r.name} for r in guild.roles if not r.is_default() and not r.managed],
@@ -12728,6 +13729,88 @@ async def _dash_starboard_set(request):
     }})
 
 
+async def _dash_musica_set(request):
+    """POST /api/guild/<id>/musica — enabled/autoplay/volumen/canal de anuncios (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["manage_guild"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Manage Server en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    gid = str(guild.id)
+    cfg = _musica_cfg(gid)
+    cambios = []
+    if "enabled" in data:
+        if not isinstance(data["enabled"], bool):
+            return dash_web.json_response({"error": "enabled debe ser true/false."}, status=400)
+        cfg["enabled"] = data["enabled"]
+        cambios.append("sistema " + ("activado" if data["enabled"] else "desactivado"))
+    if "autoplay" in data:
+        if not isinstance(data["autoplay"], bool):
+            return dash_web.json_response({"error": "autoplay debe ser true/false."}, status=400)
+        cfg["autoplay"] = data["autoplay"]
+        cambios.append("autoplay " + ("activado" if data["autoplay"] else "desactivado"))
+    if "volumen" in data:
+        v, e = _dash_int(data["volumen"], 0, 150)
+        if e:
+            return dash_web.json_response({"error": f"El volumen {e}."}, status=400)
+        cfg["volumen"] = v
+        st = MUSICA_REPRODUCTORES.get(gid)
+        if st is not None:
+            st["volumen"] = v
+        vc = guild.voice_client
+        if vc is not None and vc.source is not None:
+            vc.source.volume = v / 100.0
+        cambios.append(f"volumen {v}%")
+    if "canal_texto" in data:
+        v = data["canal_texto"]
+        if v is None:
+            cfg["canal_texto"] = None
+            cambios.append("canal de anuncios quitado")
+        elif isinstance(v, str) and v.isdigit() and guild.get_channel(int(v)) is not None:
+            cfg["canal_texto"] = int(v)
+            cambios.append(f"canal de anuncios <#{v}>")
+        else:
+            return dash_web.json_response({"error": "Canal no encontrado en este servidor."}, status=400)
+    guardar_musica()
+    if cambios:
+        embed = discord.Embed(
+            title="🎵 Música actualizada desde el dashboard",
+            description=" • ".join(cambios),
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow(),
+        )
+        await enviar_logs(guild, embed)
+    return dash_web.json_response({"ok": True, "musica": _musica_public(guild)})
+
+
+async def _dash_musica_control(request):
+    """POST /api/guild/<id>/musica/control — skip / stop (Manage Server)."""
+    guild = _dash_buscar_guild(request.match_info["gid"])
+    if guild is None:
+        return dash_web.json_response({"error": "Servidor no encontrado"}, status=404)
+    if not _dash_permisos_miembro(request, guild)["manage_guild"]:
+        return dash_web.json_response({"error": "Necesitas el permiso Manage Server en este servidor."}, status=403)
+    data, err = await _dash_leer_json(request)
+    if err:
+        return err
+    accion = data.get("accion")
+    vc = guild.voice_client
+    if accion == "skip":
+        if vc is None or not vc.is_connected() or not (vc.is_playing() or vc.is_paused()):
+            return dash_web.json_response({"ok": False, "msg": "No hay nada reproduciendo."})
+        vc.stop()
+        return dash_web.json_response({"ok": True, "msg": "⏭️ Canción saltada."})
+    if accion == "stop":
+        if vc is None or not vc.is_connected():
+            return dash_web.json_response({"ok": False, "msg": "El bot no está conectado a ningún canal de voz."})
+        await _musica_salir(guild, avisar=False)
+        return dash_web.json_response({"ok": True, "msg": "⏹️ Música detenida y bot desconectado."})
+    return dash_web.json_response({"error": "Acción inválida (skip o stop)."}, status=400)
+
+
 async def _dash_xp_set(request):
     """POST /api/guild/<id>/xp — configuración del sistema de niveles (Manage Server)."""
     guild = _dash_buscar_guild(request.match_info["gid"])
@@ -13022,6 +14105,8 @@ async def _iniciar_dashboard():
     app.router.add_post("/api/guild/{gid}/economy/item", _dash_economy_item)
     app.router.add_post("/api/guild/{gid}/shop", _dash_shop_set)
     app.router.add_post("/api/guild/{gid}/starboard", _dash_starboard_set)
+    app.router.add_post("/api/guild/{gid}/musica", _dash_musica_set)
+    app.router.add_post("/api/guild/{gid}/musica/control", _dash_musica_control)
     app.router.add_post("/api/guild/{gid}/xp", _dash_xp_set)
     app.router.add_post("/api/guild/{gid}/canales", _dash_canales_set)
     app.router.add_post("/api/guild/{gid}/honeypot", _dash_honeypot_set)

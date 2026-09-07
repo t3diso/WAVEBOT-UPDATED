@@ -573,6 +573,7 @@ const NAV_GRUPOS = [
     ["economia", "Economía"],
     ["mensajes", "Mensajes"],
     ["integraciones", "Integraciones"],
+    ["musica", "Música"],
   ]],
   ["🎫", "Soporte", [
     ["tickets", "Tickets"],
@@ -736,6 +737,7 @@ SECCIONES.resumen = function () {
     ["📊 Niveles / XP", g.xp.enabled, g.xp.enabled ? "Activado" : "Desactivado", "niveles"],
     ["💰 Economía", true, g.economia.usuarios + " usuarios", "economia"],
     ["🔗 Canales de logs", (g.logs_detalle || []).length > 0, (g.logs_detalle || []).length + " canales", "canales"],
+    ["🎵 Música", (g.musica || {}).config ? g.musica.config.enabled : true, (g.musica || {}).config && g.musica.config.enabled ? "Activada" : "Desactivada", "musica"],
   ];
   return `
     <div class="tiles">
@@ -1413,6 +1415,81 @@ SECCIONES.starboard = function () {
     </div>`;
 };
 
+SECCIONES.musica = function () {
+  const g = DATOS_GUILD;
+  const mu = g.musica || {};
+  const cfg = mu.config || {};
+  const est = mu.estado || {};
+  const perms = g.permisos || {};
+  const sonando = est.reproduciendo;
+  const durTexto = s => {
+    if (!s) return "--:--";
+    s = Math.floor(s);
+    const m = Math.floor(s / 60), seg = s % 60;
+    return m + ":" + String(seg).padStart(2, "0");
+  };
+  return `
+    <div class="card" id="card-musica">
+      <h2>🎵 Música <span class="sub">cola por servidor · sin anuncios · autoplay por artista</span></h2>
+      ${notaRO(perms.manage_guild)}
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Sistema de música</div>
+          <div class="opcion-desc">Permite usar los comandos de música (play, queue, skip…) en este servidor.</div></div>
+        <label class="switch"><input type="checkbox" id="mu-enabled" ${cfg.enabled ? "checked" : ""}><span class="pista"></span></label>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">📻 Autoplay (radio por artista)</div>
+          <div class="opcion-desc">Cuando la cola se acaba, el bot sigue solo con canciones aleatorias del artista de la última canción.</div></div>
+        <label class="switch"><input type="checkbox" id="mu-autoplay" ${cfg.autoplay ? "checked" : ""}><span class="pista"></span></label>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Volumen por defecto</div></div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input class="mini-input" type="number" id="mu-volumen" min="0" max="150" value="${cfg.volumen ?? 100}">
+          <span style="color:var(--texto-2)">%</span>
+        </div>
+      </div>
+      <div class="fila-opcion">
+        <div><div class="opcion-label">Canal de anuncios</div>
+          <div class="opcion-desc">Donde el bot anuncia cada canción (opcional; si no, anuncia en el canal donde se pidió).</div></div>
+        <select id="mu-canal">${optsCanales(cfg.canal_texto, true)}</select>
+      </div>
+      <div class="acciones-form">
+        <button class="btn btn-primario" onclick="guardarMusica()">💾 Guardar música</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>🔊 Reproductor en vivo</h2>
+      ${est.conectado
+        ? `<div class="fila-opcion">
+             <div><div class="opcion-label">Canal de voz</div></div>
+             <span class="etiqueta">🎙️ ${esc(est.canal_voz || "desconocido")}</span>
+           </div>
+           ${sonando
+             ? `<div class="fila-opcion">
+                  <div><div class="opcion-label">${est.pausado ? "⏸️" : "▶️"} Sonando ahora</div>
+                    <div class="opcion-desc">${sonando.autoplay ? "📻 Encontrada por autoplay" : "Pedida por " + esc(sonando.solicitante || "alguien")} · ⏱ ${durTexto(sonando.duracion)}</div></div>
+                  <span class="etiqueta">${sonando.url ? `<a href="${esc(sonando.url)}" target="_blank" rel="noopener">${esc(sonando.titulo || "Desconocido")}</a>` : esc(sonando.titulo || "Desconocido")}</span>
+                </div>
+                <div class="fila-opcion">
+                  <div><div class="opcion-label">En cola</div></div>
+                  <span class="etiqueta">🎵 ${fmtNum(est.en_cola || 0)} canción(es) · 🔁 ${est.bucle === "cancion" ? "canción" : est.bucle === "cola" ? "cola" : "off"}</span>
+                </div>
+                <div class="acciones-form">
+                  <button class="btn" onclick="musicaControl('skip')">⏭️ Saltar canción</button>
+                  <button class="btn btn-peligro" onclick="musicaControl('stop')">⏹️ Detener y salir</button>
+                </div>`
+             : `<div class="fila-opcion">
+                  <div><div class="opcion-label">Estado</div></div>
+                  <span class="etiqueta">⏸️ Conectado pero sin reproducir</span>
+                </div>
+                <div class="acciones-form">
+                  <button class="btn btn-peligro" onclick="musicaControl('stop')">⏹️ Desconectar</button>
+                </div>`}`
+        : `<div style="color:var(--texto-2);font-size:13.5px;padding:4px 0">🔴 El bot no está conectado a ningún canal de voz. Pon música con <b>/play</b> o <b>.play</b> en Discord.</div>`}
+    </div>`;
+};
+
 SECCIONES.niveles = function () {
   const g = DATOS_GUILD;
   const xp = g.xp || {};
@@ -2085,6 +2162,29 @@ async function guardarStarboard() {
   try {
     await api("/api/guild/" + GUILD_ACTUAL + "/starboard", { method: "POST", body: JSON.stringify(payload) });
     toast("✅ Starboard guardado");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function guardarMusica() {
+  const payload = {
+    enabled: document.getElementById("mu-enabled").checked,
+    autoplay: document.getElementById("mu-autoplay").checked,
+    volumen: parseInt(document.getElementById("mu-volumen").value, 10) || 100,
+    canal_texto: document.getElementById("mu-canal").value || null,
+  };
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/musica", { method: "POST", body: JSON.stringify(payload) });
+    toast("✅ Música guardada");
+    await seleccionarGuild(GUILD_ACTUAL);
+  } catch (e) { toast("❌ " + e.message, false); }
+}
+
+async function musicaControl(accion) {
+  if (accion === "stop" && !confirm("¿Detener la música y sacar el bot del canal de voz?")) return;
+  try {
+    const r = await api("/api/guild/" + GUILD_ACTUAL + "/musica/control", { method: "POST", body: JSON.stringify({ accion }) });
+    toast(r.ok ? r.msg : "ℹ️ " + (r.msg || "Nada que hacer"), r.ok);
     await seleccionarGuild(GUILD_ACTUAL);
   } catch (e) { toast("❌ " + e.message, false); }
 }
